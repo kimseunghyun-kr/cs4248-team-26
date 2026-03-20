@@ -29,16 +29,30 @@ def load_tsad(dataset_name: str = "tweet_eval", dataset_config: str = "sentiment
     Returns (train_texts, train_labels, val_texts, val_labels, test_texts, test_labels).
     Labels: 0=negative, 1=neutral, 2=positive.
     """
-    # --- Try 1: TSAD from Kaggle -----------------------------------------------
+    # --- Try 1: TSAD from Kaggle (try multiple encodings) ----------------------
     try:
         import kagglehub
         from kagglehub import KaggleDatasetAdapter
         print("Loading TSAD from Kaggle (abhi8923shriv/sentiment-analysis-dataset) ...")
-        df = kagglehub.load_dataset(
-            KaggleDatasetAdapter.PANDAS,
-            "abhi8923shriv/sentiment-analysis-dataset",
-            "train.csv",
-        )
+        df = None
+        for encoding in ["utf-8", "latin-1", "cp1252"]:
+            try:
+                df = kagglehub.load_dataset(
+                    KaggleDatasetAdapter.PANDAS,
+                    "abhi8923shriv/sentiment-analysis-dataset",
+                    "train.csv",
+                    pandas_kwargs={"encoding": encoding},
+                )
+                print(f"  Loaded with encoding={encoding}")
+                break
+            except Exception as enc_err:
+                err_str = str(enc_err).lower()
+                if "codec" in err_str or "decode" in err_str or "utf" in err_str:
+                    print(f"  encoding={encoding} failed, trying next ...")
+                    continue
+                raise  # non-encoding error — propagate immediately
+        if df is None:
+            raise RuntimeError("All encodings failed for TSAD CSV")
         return _parse_tsad_kaggle(df)
     except Exception as e:
         print(f"  Kaggle load failed: {e}")
@@ -161,10 +175,21 @@ def load_formal_sentences() -> List[str]:
       1. financial_phrasebank (sentences_allagree) from HuggingFace
       2. Synthetic template-based fallback (~2000 sentences)
     """
-    # --- Try 1: financial_phrasebank ------------------------------------------
+    # --- Try 1: takala/financial_phrasebank (Parquet mirror, no loading script) --
     try:
         from datasets import load_dataset
-        print("Loading financial_phrasebank (sentences_allagree) ...")
+        print("Loading takala/financial_phrasebank (sentences_allagree) ...")
+        ds = load_dataset("takala/financial_phrasebank", "sentences_allagree")
+        texts = [ex["sentence"] for ex in ds["train"]]
+        print(f"  financial_phrasebank: {len(texts)} formal sentences")
+        return texts
+    except Exception as e:
+        print(f"  takala/financial_phrasebank load failed: {e}")
+
+    # --- Try 2: original financial_phrasebank with trust_remote_code ----------
+    try:
+        from datasets import load_dataset
+        print("Loading financial_phrasebank (trust_remote_code=True) ...")
         ds = load_dataset("financial_phrasebank", "sentences_allagree", trust_remote_code=True)
         texts = [ex["sentence"] for ex in ds["train"]]
         print(f"  financial_phrasebank: {len(texts)} formal sentences")
