@@ -77,11 +77,11 @@ def extract_style_direction(
     print(f"  Top-{top_k} style features | max_score={top_k_scores[0]:.4f} | "
           f"min_score={top_k_scores[-1]:.4f}")
 
-    # Decoder columns for top-K features: (input_dim, K)
-    decoder_weights = model.decoder.weight.data          # (input_dim, hidden_dim)
+    # Decoder columns for top-K features: (input_dim, K) — pull to CPU for indexing
+    decoder_weights = model.decoder.weight.data.cpu()    # (input_dim, hidden_dim)
     top_k_decoder   = decoder_weights[:, top_k_indices]  # (input_dim, K)
 
-    # Weighted sum of decoder columns → style direction
+    # Weighted sum of decoder columns → style direction (both on CPU)
     v_style = top_k_decoder @ top_k_scores               # (input_dim,)
     v_style = F.normalize(v_style, dim=-1)
 
