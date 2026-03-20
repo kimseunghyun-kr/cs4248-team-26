@@ -169,37 +169,34 @@ def _parse_tsad_kaggle(df):
 # ---------------------------------------------------------------------------
 def load_formal_sentences() -> List[str]:
     """
-    Returns a list of formal financial sentences (no labels needed).
-
-    Sources tried in order:
-      1. financial_phrasebank (sentences_allagree) from HuggingFace
-      2. Synthetic template-based fallback (~2000 sentences)
+    Returns Financial PhraseBank sentences via Kaggle (primary), with a
+    hardcoded FPB-style fallback only if Kaggle is unavailable.
     """
-    from datasets import load_dataset
+    import io
+    try:
+        import kagglehub
+        from kagglehub import KaggleDatasetAdapter
+        print("Loading Financial PhraseBank from Kaggle (ankurzing/sentiment-analysis-for-financial-news) ...")
+        for enc in ["utf-8", "latin-1", "cp1252"]:
+            try:
+                df = kagglehub.load_dataset(
+                    KaggleDatasetAdapter.PANDAS,
+                    "ankurzing/sentiment-analysis-for-financial-news",
+                    "all-data.csv",
+                    pandas_kwargs={"header": None, "names": ["label", "sentence"], "encoding": enc},
+                )
+                texts = df["sentence"].dropna().tolist()
+                if len(texts) > 100:
+                    print(f"  Financial PhraseBank: {len(texts)} sentences (encoding={enc})")
+                    return texts
+            except Exception as inner:
+                if "codec" in str(inner).lower() or "decode" in str(inner).lower():
+                    continue
+                raise
+    except Exception as e:
+        print(f"  Kaggle FPB load failed: {e}")
 
-    # Candidate datasets in Parquet format (no loading scripts required).
-    # Each entry: (dataset_id, config_or_None, text_field)
-    candidates = [
-        ("nickmuchi/financial-classification", None,                   "text"),
-        ("FinanceInc/auditor_sentiment",       None,                   "sentence"),
-        ("Dogeek/financial_phrasebank",        "sentences_allagree",   "sentence"),
-        ("Satarupa/financial_phrasebank",      "sentences_allagree",   "sentence"),
-    ]
-
-    for dataset_id, config, text_field in candidates:
-        try:
-            print(f"Loading {dataset_id} ...")
-            ds = load_dataset(dataset_id, config) if config else load_dataset(dataset_id)
-            split = "train" if "train" in ds else list(ds.keys())[0]
-            texts = [ex[text_field] for ex in ds[split] if ex.get(text_field)]
-            if len(texts) > 100:
-                print(f"  {dataset_id}: {len(texts)} formal sentences")
-                return texts
-        except Exception as e:
-            print(f"  {dataset_id} failed: {e}")
-
-    # --- Fallback: handcrafted FPB-style financial news sentences -------------
-    print("  Using handcrafted FPB-style formal sentences as fallback.")
+    print("  Using hardcoded FPB-style sentences as fallback.")
     return _fpb_style_sentences()
 
 
