@@ -1,8 +1,16 @@
 """
 Dataset loading and PyTorch Dataset wrapper.
 
-Primary: tweet_eval / sentiment  (0=negative, 1=neutral, 2=positive)
-Fallback: synthetic 500-sample dataset (noted in output)
+Primary tweet data:
+  1. TSAD via Kaggle  (abhi8923shriv/sentiment-analysis-dataset)
+  2. tweet_eval/sentiment from HuggingFace
+  3. Synthetic 500-sample fallback
+
+Formal financial sentences:
+  1. financial_phrasebank (sentences_allagree) from HuggingFace
+  2. Synthetic template-based fallback
+
+Labels: 0=negative, 1=neutral, 2=positive throughout.
 """
 
 import random
@@ -14,13 +22,28 @@ from transformers import PreTrainedTokenizer
 
 
 # ---------------------------------------------------------------------------
-# Load raw data
+# Load raw tweet data (TSAD / tweet_eval / synthetic)
 # ---------------------------------------------------------------------------
 def load_tsad(dataset_name: str = "tweet_eval", dataset_config: str = "sentiment"):
     """
     Returns (train_texts, train_labels, val_texts, val_labels, test_texts, test_labels).
     Labels: 0=negative, 1=neutral, 2=positive.
     """
+    # --- Try 1: TSAD from Kaggle -----------------------------------------------
+    try:
+        import kagglehub
+        from kagglehub import KaggleDatasetAdapter
+        print("Loading TSAD from Kaggle (abhi8923shriv/sentiment-analysis-dataset) ...")
+        df = kagglehub.load_dataset(
+            KaggleDatasetAdapter.PANDAS,
+            "abhi8923shriv/sentiment-analysis-dataset",
+            "train.csv",
+        )
+        return _parse_tsad_kaggle(df)
+    except Exception as e:
+        print(f"  Kaggle load failed: {e}")
+
+    # --- Try 2: tweet_eval from HuggingFace ------------------------------------
     try:
         from datasets import load_dataset
         print(f"Loading dataset '{dataset_name}' config='{dataset_config}' ...")
@@ -44,6 +67,163 @@ def load_tsad(dataset_name: str = "tweet_eval", dataset_config: str = "sentiment
         print(f"WARNING: Could not load '{dataset_name}/{dataset_config}': {e}")
         print("Falling back to synthetic 500-sample dataset.")
         return _make_synthetic_dataset()
+
+
+def _parse_tsad_kaggle(df):
+    """
+    Parse the TSAD Kaggle dataframe.
+
+    Expected columns (auto-detected):
+      text column  : 'text', 'Text', 'tweet', 'Tweet', 'sentence'
+      label column : 'sentiment', 'Sentiment', 'label', 'Label', 'polarity'
+
+    Label values → 0/1/2:
+      'negative' / 'Negative' / '-1' / 0  → 0
+      'neutral'  / 'Neutral'  / '0'  / 1  → 1
+      'positive' / 'Positive' / '1'  / 2  → 2
+    """
+    # Detect text column
+    text_col = None
+    for c in ["text", "Text", "tweet", "Tweet", "sentence", "Sentence", "content"]:
+        if c in df.columns:
+            text_col = c
+            break
+    if text_col is None:
+        raise ValueError(f"Cannot find text column. Columns: {list(df.columns)}")
+
+    # Detect label column
+    label_col = None
+    for c in ["sentiment", "Sentiment", "label", "Label", "polarity", "Polarity"]:
+        if c in df.columns:
+            label_col = c
+            break
+    if label_col is None:
+        raise ValueError(f"Cannot find label column. Columns: {list(df.columns)}")
+
+    print(f"  TSAD: using text_col='{text_col}', label_col='{label_col}'")
+
+    # Drop rows with NaN text or label
+    df = df[[text_col, label_col]].dropna()
+
+    # Map labels to 0/1/2
+    label_map = {
+        "negative": 0, "Negative": 0, "-1": 0, -1: 0,
+        "neutral":  1, "Neutral":  1,  "0": 1,  0: 1,
+        "positive": 2, "Positive": 2,  "1": 2,  1: 2,
+    }
+
+    def map_label(v):
+        # Handle both string and numeric
+        if v in label_map:
+            return label_map[v]
+        try:
+            v_str = str(v).strip().lower()
+            if "neg" in v_str:
+                return 0
+            elif "neu" in v_str:
+                return 1
+            elif "pos" in v_str:
+                return 2
+        except Exception:
+            pass
+        return None
+
+    df["_label"] = df[label_col].apply(map_label)
+    df = df.dropna(subset=["_label"])
+    df["_label"] = df["_label"].astype(int)
+
+    texts  = df[text_col].tolist()
+    labels = df["_label"].tolist()
+
+    print(f"  TSAD loaded: {len(texts)} samples | "
+          f"neg={labels.count(0)} neu={labels.count(1)} pos={labels.count(2)}")
+
+    # Stratified 70/15/15 split
+    from sklearn.model_selection import train_test_split
+    tr_t, tmp_t, tr_l, tmp_l = train_test_split(
+        texts, labels, test_size=0.30, random_state=42, stratify=labels
+    )
+    va_t, te_t, va_l, te_l = train_test_split(
+        tmp_t, tmp_l, test_size=0.50, random_state=42, stratify=tmp_l
+    )
+    print(f"  split → train={len(tr_t)} | val={len(va_t)} | test={len(te_t)}")
+    return tr_t, tr_l, va_t, va_l, te_t, te_l
+
+
+# ---------------------------------------------------------------------------
+# Load formal financial sentences (for style contrast corpus)
+# ---------------------------------------------------------------------------
+def load_formal_sentences() -> List[str]:
+    """
+    Returns a list of formal financial sentences (no labels needed).
+
+    Sources tried in order:
+      1. financial_phrasebank (sentences_allagree) from HuggingFace
+      2. Synthetic template-based fallback (~2000 sentences)
+    """
+    # --- Try 1: financial_phrasebank ------------------------------------------
+    try:
+        from datasets import load_dataset
+        print("Loading financial_phrasebank (sentences_allagree) ...")
+        ds = load_dataset("financial_phrasebank", "sentences_allagree", trust_remote_code=True)
+        texts = [ex["sentence"] for ex in ds["train"]]
+        print(f"  financial_phrasebank: {len(texts)} formal sentences")
+        return texts
+    except Exception as e:
+        print(f"  financial_phrasebank load failed: {e}")
+
+    # --- Fallback: synthetic formal sentences ---------------------------------
+    print("  Using synthetic formal financial sentences as fallback.")
+    return _make_synthetic_formal_sentences()
+
+
+def _make_synthetic_formal_sentences(n: int = 2000) -> List[str]:
+    """Generate diverse formal financial sentences for style contrast."""
+    random.seed(42)
+    tickers = ["Apple Inc.", "Alphabet Inc.", "Tesla Inc.", "Microsoft Corp.",
+               "Amazon.com Inc.", "NVIDIA Corp.", "Meta Platforms Inc.", "JPMorgan Chase & Co.",
+               "Berkshire Hathaway Inc.", "Johnson & Johnson"]
+    sectors = ["technology", "healthcare", "energy", "financial services",
+                "consumer goods", "industrials", "utilities", "materials"]
+    templates = [
+        "{company} reported quarterly revenue of ${amount} billion, representing a {pct}% change year-over-year.",
+        "The board of directors of {company} approved a dividend of ${div} per share.",
+        "{company} announced the acquisition of a {sector} firm for approximately ${amount} billion.",
+        "Analysts at Goldman Sachs maintained a Buy rating on {company} with a price target of ${price}.",
+        "{company} disclosed in its 10-Q filing that operating income declined by {pct}% in the third quarter.",
+        "The Federal Reserve's interest rate decision is expected to affect {sector} sector valuations.",
+        "{company} completed a share repurchase program, retiring {amount} million shares.",
+        "Credit rating agency Moody's affirmed {company}'s investment-grade rating of Baa2.",
+        "Regulatory filings indicate that {company} has increased its capital expenditure guidance for fiscal year 2025.",
+        "{company} management reaffirmed full-year earnings per share guidance of ${price}.",
+        "The Securities and Exchange Commission approved {company}'s proposed merger with its subsidiary.",
+        "{company} issued $2.{amount} billion in senior unsecured notes due 2031 at a yield of {pct}%.",
+        "Institutional ownership of {company} increased to {pct}% according to the latest 13F filings.",
+        "The {sector} sector underperformed the broader market index by {pct} basis points last quarter.",
+        "{company}'s gross margin expanded by {pct} basis points driven by improved supply chain efficiency.",
+        "Free cash flow for {company} totaled ${amount} billion in the trailing twelve months.",
+        "{company} disclosed a material weakness in its internal controls over financial reporting.",
+        "The consensus earnings estimate for {company} was revised upward by analysts following strong preliminary results.",
+        "{company} filed for Chapter 11 bankruptcy protection, citing elevated debt levels and declining revenues.",
+        "Working capital for {company} increased to ${amount} billion as of the end of the reporting period.",
+    ]
+    sentences = []
+    for i in range(n):
+        tmpl = templates[i % len(templates)]
+        company = tickers[i % len(tickers)]
+        sector  = sectors[i % len(sectors)]
+        amount  = round(random.uniform(0.5, 50.0), 1)
+        pct     = round(random.uniform(1.0, 25.0), 1)
+        div     = round(random.uniform(0.10, 2.50), 2)
+        price   = round(random.uniform(50, 500), 0)
+        try:
+            s = tmpl.format(company=company, sector=sector, amount=amount,
+                            pct=pct, div=div, price=int(price))
+        except KeyError:
+            s = tmpl.format(company=company, sector=sector, amount=amount, pct=pct,
+                            div=div, price=int(price))
+        sentences.append(s)
+    return sentences
 
 
 def _make_synthetic_dataset():
