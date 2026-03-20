@@ -1,6 +1,25 @@
 from dataclasses import dataclass, field
 from typing import List
 
+# ---------------------------------------------------------------------------
+# Model registry for ablation studies
+# ---------------------------------------------------------------------------
+MODEL_REGISTRY = {
+    "finbert":  "ProsusAI/finbert",
+    "bert":     "bert-base-uncased",
+    "bertweet": "vinai/bertweet-base",
+}
+
+
+def get_model_name(key: str) -> str:
+    """Resolve a registry key or pass-through a full HuggingFace model ID."""
+    return MODEL_REGISTRY.get(key, key)
+
+
+def model_slug(key: str) -> str:
+    """Return a filesystem-safe slug for cache directory naming."""
+    return key.replace("/", "_").replace("-", "_")
+
 
 @dataclass
 class PGDConfig:

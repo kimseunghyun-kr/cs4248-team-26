@@ -24,7 +24,8 @@ from sklearn.metrics import f1_score, classification_report
 
 from pipeline.classify import LinearProbe, CONDITIONS
 
-CACHE_DIR   = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache")
+_DEFAULT_CACHE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache")
+CACHE_DIR   = os.environ.get("CACHE_DIR", _DEFAULT_CACHE)
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "results")
 
 

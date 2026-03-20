@@ -24,7 +24,8 @@ from encoder import FinBERTEncoder
 from dataset import load_tsad, load_formal_sentences
 
 
-CACHE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache")
+_DEFAULT_CACHE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache")
+CACHE_DIR = os.environ.get("CACHE_DIR", _DEFAULT_CACHE)
 
 
 def encode_texts(encoder: FinBERTEncoder, texts: list[str], batch_size: int, max_length: int) -> torch.Tensor:
@@ -40,7 +41,7 @@ def encode_texts(encoder: FinBERTEncoder, texts: list[str], batch_size: int, max
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", default="ProsusAI/finbert")
+    parser.add_argument("--model_name", default=os.environ.get("MODEL_NAME", "ProsusAI/finbert"))
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--max_length", type=int, default=128)
     args = parser.parse_args()

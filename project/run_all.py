@@ -27,6 +27,10 @@ import time
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# Import registry here so run_all.py is the single entry point for model selection
+sys.path.insert(0, PROJECT_DIR)
+from config import MODEL_REGISTRY, get_model_name, model_slug
+
 PHASES = [
     (1, "data/embed.py",          "Embedding extraction"),
     (2, "sae/sae.py",             "SAE training"),
@@ -38,7 +42,7 @@ PHASES = [
 ]
 
 
-def run_phase(script_path: str, description: str) -> bool:
+def run_phase(script_path: str, description: str, extra_env: dict) -> bool:
     """Run a phase script. Returns True on success, False on failure."""
     abs_path = os.path.join(PROJECT_DIR, script_path)
     print(f"\n{'#'*70}")
@@ -50,7 +54,7 @@ def run_phase(script_path: str, description: str) -> bool:
     result = subprocess.run(
         [sys.executable, "-u", abs_path],
         cwd=PROJECT_DIR,
-        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        env={**os.environ, "PYTHONUNBUFFERED": "1", **extra_env},
     )
     elapsed = time.time() - t0
 
@@ -69,7 +73,22 @@ def main():
                         help="Resume from this phase number (1-7). Default=1 (run all).")
     parser.add_argument("--only_phase",  type=int, default=None,
                         help="Run only this phase number (overrides start_phase).")
+    parser.add_argument(
+        "--model",
+        default="finbert",
+        choices=list(MODEL_REGISTRY.keys()),
+        help=f"Backbone encoder for ablation. Choices: {list(MODEL_REGISTRY.keys())}. Default: finbert",
+    )
     args = parser.parse_args()
+
+    # Resolve model name and dedicate a cache sub-directory per model
+    hf_model_name = get_model_name(args.model)
+    slug = model_slug(args.model)
+    cache_dir = os.path.join(PROJECT_DIR, "cache", slug)
+    extra_env = {
+        "MODEL_NAME": hf_model_name,
+        "CACHE_DIR":  cache_dir,
+    }
 
     if args.only_phase is not None:
         phases_to_run = [p for p in PHASES if p[0] == args.only_phase]
@@ -79,18 +98,20 @@ def main():
     else:
         phases_to_run = [p for p in PHASES if p[0] >= args.start_phase]
 
-    os.makedirs(os.path.join(PROJECT_DIR, "cache"), exist_ok=True)
+    os.makedirs(cache_dir, exist_ok=True)
     os.makedirs(os.path.join(PROJECT_DIR, "results"), exist_ok=True)
 
     print("=" * 70)
     print("SAE + CBDC Financial Sentiment Pipeline")
     print("=" * 70)
+    print(f"Model:         {hf_model_name}  (--model {args.model})")
+    print(f"Cache dir:     {cache_dir}")
     print(f"Running phases: {[p[0] for p in phases_to_run]}")
-    print(f"Project dir: {PROJECT_DIR}")
+    print(f"Project dir:   {PROJECT_DIR}")
 
     total_start = time.time()
     for phase_num, script, description in phases_to_run:
-        success = run_phase(script, f"[{phase_num}/{len(PHASES)}] {description}")
+        success = run_phase(script, f"[{phase_num}/{len(PHASES)}] {description}", extra_env)
         if not success:
             print(f"\nPipeline stopped at phase {phase_num}.")
             print(f"To resume: python run_all.py --start_phase {phase_num}")
