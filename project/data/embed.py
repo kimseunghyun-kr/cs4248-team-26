@@ -2,10 +2,11 @@
 Phase 1: Encode all corpora and cache embeddings to disk.
 
 Outputs (saved to project/cache/):
-  z_tweet_train.pt  — dict {"embeddings": (N,768), "labels": (N,)}
+  z_tweet_train.pt  — dict {"embeddings": (N,768), "labels": (N,),
+                             "input_ids": (N,L), "attention_mask": (N,L)}
   z_tweet_val.pt
   z_tweet_test.pt
-  z_formal.pt       — dict {"embeddings": (N,768)}  (no labels)
+  z_formal.pt       — dict {"embeddings": (N,768)}  (no labels, no token tensors)
 
 Run from project/ directory:
   python data/embed.py [--batch_size 64] [--max_length 128]
@@ -32,26 +33,36 @@ def encode_texts_with_tokens(
     encoder: FinBERTEncoder,
     texts: list[str],
     batch_size: int,
-    max_length: int
+    max_length: int,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Returns (embeddings (N,H), input_ids (N,L), attention_mask (N,L))"""
+    """
+    Encode texts and return (embeddings, input_ids, attention_mask).
+    padding='max_length' ensures uniform shape across batches for torch.cat.
+    Returns:
+        embeddings    : (N, H)  L2-normalized CLS vectors
+        input_ids     : (N, L)  token ids
+        attention_mask: (N, L)  1/0 mask
+    """
     all_vecs, all_ids, all_masks = [], [], []
     for i in tqdm(range(0, len(texts), batch_size), desc="  encoding batches"):
-        batch = texts[i:i+batch_size]
-        # padding='max_length' → 모든 배치 동일 shape → cat 가능
+        batch = texts[i : i + batch_size]
         enc = encoder.tokenizer(
-            batch, padding="max_length", truncation=True,
-            max_length=max_length, return_tensors="pt"
+            batch,
+            padding="max_length",
+            truncation=True,
+            max_length=max_length,
+            return_tensors="pt",
         )
         ids  = enc["input_ids"].to(encoder.device)
         mask = enc["attention_mask"].to(encoder.device)
         with torch.no_grad():
             embeds = encoder._forward_from_embeds(
                 encoder._get_embeddings(ids), mask
-            )
+            )  # (B, H)
         all_vecs.append(embeds.cpu())
         all_ids.append(ids.cpu())
         all_masks.append(mask.cpu())
+
     return torch.cat(all_vecs), torch.cat(all_ids), torch.cat(all_masks)
 
 
@@ -70,7 +81,7 @@ def main():
     try:
         encoder = FinBERTEncoder(model_name=args.model_name, device=device)
     except Exception:
-        print(f"Falling back to distilbert-base-uncased")
+        print("Falling back to distilbert-base-uncased")
         encoder = FinBERTEncoder(model_name="distilbert-base-uncased", device=device)
 
     # ---- Load tweet data -----------------------------------------------------
@@ -83,18 +94,28 @@ def main():
     ]:
         out_path = os.path.join(CACHE_DIR, f"z_tweet_{split_name}.pt")
         print(f"\nEncoding tweet {split_name} ({len(texts)} samples) ...")
-        embs = encode_texts_with_tokens(encoder, texts, args.batch_size, args.max_length)
+        embs, ids, masks = encode_texts_with_tokens(
+            encoder, texts, args.batch_size, args.max_length
+        )
         torch.save(
-            {"embeddings": embs, "labels": torch.tensor(labels, dtype=torch.long)},
+            {
+                "embeddings":     embs,
+                "labels":         torch.tensor(labels, dtype=torch.long),
+                "input_ids":      ids,
+                "attention_mask": masks,
+            },
             out_path,
         )
         print(f"  Saved → {out_path}  shape={tuple(embs.shape)}")
 
     # ---- Load formal sentences -----------------------------------------------
+    # formal은 refine.py에서 input_ids 불필요 → embeddings만 저장
     formal_texts = load_formal_sentences()
     out_path = os.path.join(CACHE_DIR, "z_formal.pt")
     print(f"\nEncoding formal sentences ({len(formal_texts)} samples) ...")
-    embs = encode_texts_with_tokens(encoder, formal_texts, args.batch_size, args.max_length)
+    embs, _, _ = encode_texts_with_tokens(
+        encoder, formal_texts, args.batch_size, args.max_length
+    )
     torch.save({"embeddings": embs}, out_path)
     print(f"  Saved → {out_path}  shape={tuple(embs.shape)}")
 
@@ -103,12 +124,11 @@ def main():
     z_tw = torch.load(os.path.join(CACHE_DIR, "z_tweet_train.pt"))["embeddings"]
     z_fo = torch.load(out_path)["embeddings"]
 
-    # Sample 500 random pairs
-    n = min(500, len(z_tw), len(z_fo))
+    n      = min(500, len(z_tw), len(z_fo))
     idx_tw = torch.randperm(len(z_tw))[:n]
     idx_fo = torch.randperm(len(z_fo))[:n]
     sim_tw_tw = F.cosine_similarity(z_tw[idx_tw], z_tw[idx_fo[:n]], dim=-1).mean().item()
-    sim_tw_fo = F.cosine_similarity(z_tw[idx_tw], z_fo[idx_fo], dim=-1).mean().item()
+    sim_tw_fo = F.cosine_similarity(z_tw[idx_tw], z_fo[idx_fo],     dim=-1).mean().item()
     print(f"  mean cosine(tweet, tweet) = {sim_tw_tw:.4f}")
     print(f"  mean cosine(tweet, formal) = {sim_tw_fo:.4f}")
     if sim_tw_fo < sim_tw_tw:
