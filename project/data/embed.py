@@ -28,15 +28,31 @@ _DEFAULT_CACHE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__
 CACHE_DIR = os.environ.get("CACHE_DIR", _DEFAULT_CACHE)
 
 
-def encode_texts(encoder: FinBERTEncoder, texts: list[str], batch_size: int, max_length: int) -> torch.Tensor:
-    """Encode a list of texts in batches. Returns (N, H) L2-normalized tensor."""
-    all_vecs = []
+def encode_texts_with_tokens(
+    encoder: FinBERTEncoder,
+    texts: list[str],
+    batch_size: int,
+    max_length: int
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Returns (embeddings (N,H), input_ids (N,L), attention_mask (N,L))"""
+    all_vecs, all_ids, all_masks = [], [], []
     for i in tqdm(range(0, len(texts), batch_size), desc="  encoding batches"):
-        batch = texts[i : i + batch_size]
+        batch = texts[i:i+batch_size]
+        # padding='max_length' → 모든 배치 동일 shape → cat 가능
+        enc = encoder.tokenizer(
+            batch, padding="max_length", truncation=True,
+            max_length=max_length, return_tensors="pt"
+        )
+        ids  = enc["input_ids"].to(encoder.device)
+        mask = enc["attention_mask"].to(encoder.device)
         with torch.no_grad():
-            vecs = encoder.encode_text(batch, max_length=max_length)  # (B, H)
-        all_vecs.append(vecs.cpu())
-    return torch.cat(all_vecs, dim=0)  # (N, H)
+            embeds = encoder._forward_from_embeds(
+                encoder._get_embeddings(ids), mask
+            )
+        all_vecs.append(embeds.cpu())
+        all_ids.append(ids.cpu())
+        all_masks.append(mask.cpu())
+    return torch.cat(all_vecs), torch.cat(all_ids), torch.cat(all_masks)
 
 
 def main():
@@ -67,7 +83,7 @@ def main():
     ]:
         out_path = os.path.join(CACHE_DIR, f"z_tweet_{split_name}.pt")
         print(f"\nEncoding tweet {split_name} ({len(texts)} samples) ...")
-        embs = encode_texts(encoder, texts, args.batch_size, args.max_length)
+        embs = encode_texts_with_tokens(encoder, texts, args.batch_size, args.max_length)
         torch.save(
             {"embeddings": embs, "labels": torch.tensor(labels, dtype=torch.long)},
             out_path,
@@ -78,7 +94,7 @@ def main():
     formal_texts = load_formal_sentences()
     out_path = os.path.join(CACHE_DIR, "z_formal.pt")
     print(f"\nEncoding formal sentences ({len(formal_texts)} samples) ...")
-    embs = encode_texts(encoder, formal_texts, args.batch_size, args.max_length)
+    embs = encode_texts_with_tokens(encoder, formal_texts, args.batch_size, args.max_length)
     torch.save({"embeddings": embs}, out_path)
     print(f"  Saved → {out_path}  shape={tuple(embs.shape)}")
 
