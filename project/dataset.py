@@ -175,80 +175,139 @@ def load_formal_sentences() -> List[str]:
       1. financial_phrasebank (sentences_allagree) from HuggingFace
       2. Synthetic template-based fallback (~2000 sentences)
     """
-    # --- Try 1: takala/financial_phrasebank (Parquet mirror, no loading script) --
-    try:
-        from datasets import load_dataset
-        print("Loading takala/financial_phrasebank (sentences_allagree) ...")
-        ds = load_dataset("takala/financial_phrasebank", "sentences_allagree")
-        texts = [ex["sentence"] for ex in ds["train"]]
-        print(f"  financial_phrasebank: {len(texts)} formal sentences")
-        return texts
-    except Exception as e:
-        print(f"  takala/financial_phrasebank load failed: {e}")
+    from datasets import load_dataset
 
-    # --- Try 2: original financial_phrasebank with trust_remote_code ----------
-    try:
-        from datasets import load_dataset
-        print("Loading financial_phrasebank (trust_remote_code=True) ...")
-        ds = load_dataset("financial_phrasebank", "sentences_allagree", trust_remote_code=True)
-        texts = [ex["sentence"] for ex in ds["train"]]
-        print(f"  financial_phrasebank: {len(texts)} formal sentences")
-        return texts
-    except Exception as e:
-        print(f"  financial_phrasebank load failed: {e}")
-
-    # --- Fallback: synthetic formal sentences ---------------------------------
-    print("  Using synthetic formal financial sentences as fallback.")
-    return _make_synthetic_formal_sentences()
-
-
-def _make_synthetic_formal_sentences(n: int = 2000) -> List[str]:
-    """Generate diverse formal financial sentences for style contrast."""
-    random.seed(42)
-    tickers = ["Apple Inc.", "Alphabet Inc.", "Tesla Inc.", "Microsoft Corp.",
-               "Amazon.com Inc.", "NVIDIA Corp.", "Meta Platforms Inc.", "JPMorgan Chase & Co.",
-               "Berkshire Hathaway Inc.", "Johnson & Johnson"]
-    sectors = ["technology", "healthcare", "energy", "financial services",
-                "consumer goods", "industrials", "utilities", "materials"]
-    templates = [
-        "{company} reported quarterly revenue of ${amount} billion, representing a {pct}% change year-over-year.",
-        "The board of directors of {company} approved a dividend of ${div} per share.",
-        "{company} announced the acquisition of a {sector} firm for approximately ${amount} billion.",
-        "Analysts at Goldman Sachs maintained a Buy rating on {company} with a price target of ${price}.",
-        "{company} disclosed in its 10-Q filing that operating income declined by {pct}% in the third quarter.",
-        "The Federal Reserve's interest rate decision is expected to affect {sector} sector valuations.",
-        "{company} completed a share repurchase program, retiring {amount} million shares.",
-        "Credit rating agency Moody's affirmed {company}'s investment-grade rating of Baa2.",
-        "Regulatory filings indicate that {company} has increased its capital expenditure guidance for fiscal year 2025.",
-        "{company} management reaffirmed full-year earnings per share guidance of ${price}.",
-        "The Securities and Exchange Commission approved {company}'s proposed merger with its subsidiary.",
-        "{company} issued $2.{amount} billion in senior unsecured notes due 2031 at a yield of {pct}%.",
-        "Institutional ownership of {company} increased to {pct}% according to the latest 13F filings.",
-        "The {sector} sector underperformed the broader market index by {pct} basis points last quarter.",
-        "{company}'s gross margin expanded by {pct} basis points driven by improved supply chain efficiency.",
-        "Free cash flow for {company} totaled ${amount} billion in the trailing twelve months.",
-        "{company} disclosed a material weakness in its internal controls over financial reporting.",
-        "The consensus earnings estimate for {company} was revised upward by analysts following strong preliminary results.",
-        "{company} filed for Chapter 11 bankruptcy protection, citing elevated debt levels and declining revenues.",
-        "Working capital for {company} increased to ${amount} billion as of the end of the reporting period.",
+    # Candidate datasets in Parquet format (no loading scripts required).
+    # Each entry: (dataset_id, config_or_None, text_field)
+    candidates = [
+        ("nickmuchi/financial-classification", None,                   "text"),
+        ("FinanceInc/auditor_sentiment",       None,                   "sentence"),
+        ("Dogeek/financial_phrasebank",        "sentences_allagree",   "sentence"),
+        ("Satarupa/financial_phrasebank",      "sentences_allagree",   "sentence"),
     ]
-    sentences = []
-    for i in range(n):
-        tmpl = templates[i % len(templates)]
-        company = tickers[i % len(tickers)]
-        sector  = sectors[i % len(sectors)]
-        amount  = round(random.uniform(0.5, 50.0), 1)
-        pct     = round(random.uniform(1.0, 25.0), 1)
-        div     = round(random.uniform(0.10, 2.50), 2)
-        price   = round(random.uniform(50, 500), 0)
+
+    for dataset_id, config, text_field in candidates:
         try:
-            s = tmpl.format(company=company, sector=sector, amount=amount,
-                            pct=pct, div=div, price=int(price))
-        except KeyError:
-            s = tmpl.format(company=company, sector=sector, amount=amount, pct=pct,
-                            div=div, price=int(price))
-        sentences.append(s)
-    return sentences
+            print(f"Loading {dataset_id} ...")
+            ds = load_dataset(dataset_id, config) if config else load_dataset(dataset_id)
+            split = "train" if "train" in ds else list(ds.keys())[0]
+            texts = [ex[text_field] for ex in ds[split] if ex.get(text_field)]
+            if len(texts) > 100:
+                print(f"  {dataset_id}: {len(texts)} formal sentences")
+                return texts
+        except Exception as e:
+            print(f"  {dataset_id} failed: {e}")
+
+    # --- Fallback: handcrafted FPB-style financial news sentences -------------
+    print("  Using handcrafted FPB-style formal sentences as fallback.")
+    return _fpb_style_sentences()
+
+
+def _fpb_style_sentences() -> List[str]:
+    """
+    Handcrafted sentences written in the register of Financial PhraseBank
+    (Reuters financial news, short factual statements).
+    These represent the distribution FinBERT was fine-tuned on.
+    """
+    return [
+        # --- Positive sentiment ---
+        "Operating profit rose to EUR 13.1 mn from EUR 8.7 mn in the year-earlier period.",
+        "The company's net sales increased by 9.5 percent to EUR 562.5 million.",
+        "Net profit for the period climbed to EUR 37.6 million from EUR 21.3 million a year ago.",
+        "The board proposed a dividend of EUR 0.22 per share, up from EUR 0.18 the previous year.",
+        "Revenue grew 11 percent year-on-year to reach EUR 1.04 billion.",
+        "The firm reported a record operating margin of 14.2 percent for the quarter.",
+        "Earnings per share rose to EUR 1.43, beating analyst expectations of EUR 1.31.",
+        "The company raised its full-year guidance following stronger-than-expected second-quarter results.",
+        "Order intake increased 18 percent compared with the same period last year.",
+        "The group's EBITDA improved to EUR 88 million from EUR 71 million.",
+        "Shares in the company rose 6.2 percent after the earnings announcement.",
+        "The acquisition is expected to be earnings accretive from the first full year of consolidation.",
+        "Cash flow from operations increased to EUR 142 million, up from EUR 98 million previously.",
+        "The company secured a EUR 320 million contract with a major European utility provider.",
+        "Return on equity improved to 17.4 percent from 13.8 percent a year earlier.",
+        "The firm's market share in the Nordic region expanded to 34 percent.",
+        "Comparable sales growth reached 7.3 percent, driven by strong performance in Asia-Pacific.",
+        "The company completed the divestiture of its non-core logistics unit for EUR 415 million.",
+        "Net interest income rose 8 percent to EUR 1.2 billion in the first half.",
+        "The group announced a EUR 200 million share buyback programme.",
+        "Personnel costs declined as a proportion of revenue, reflecting improved operational efficiency.",
+        "The company's credit rating was upgraded to A- by Standard & Poor's.",
+        "Gross margin improved by 1.8 percentage points to 42.6 percent.",
+        "The firm reported its fifth consecutive quarter of double-digit revenue growth.",
+        "Loan portfolio quality improved with non-performing loans declining to 1.8 percent.",
+        # --- Negative sentiment ---
+        "Operating loss widened to EUR 12.3 million from EUR 4.7 million a year ago.",
+        "The company lowered its full-year sales forecast citing weaker demand in Europe.",
+        "Net loss for the period amounted to EUR 28.4 million compared with a profit of EUR 6.2 million.",
+        "The firm announced plans to cut 1,200 jobs as part of a restructuring programme.",
+        "Revenue fell 7.4 percent to EUR 381 million, missing the consensus estimate of EUR 412 million.",
+        "The company filed for creditor protection following a deterioration in liquidity.",
+        "Impairment charges of EUR 95 million were recorded on goodwill related to the 2019 acquisition.",
+        "The board suspended the annual dividend in response to the deteriorating financial position.",
+        "Operating cash flow turned negative, declining to minus EUR 23 million in the quarter.",
+        "The company warned that full-year EBIT would fall short of prior guidance by approximately 20 percent.",
+        "Shares fell 11.3 percent to their lowest level in three years following the profit warning.",
+        "The firm's debt-to-equity ratio rose to 2.8 times following the refinancing of its credit facility.",
+        "Write-downs on inventory totalling EUR 47 million weighed on quarterly results.",
+        "The company's order backlog declined by 14 percent compared with the same period last year.",
+        "Market conditions in the construction segment remained challenging throughout the period.",
+        "The rating agency placed the company's debt on negative credit watch.",
+        "Cost overruns on a major infrastructure project led to an exceptional charge of EUR 63 million.",
+        "The company reported that its largest customer had terminated a long-term supply agreement.",
+        "Gross margin contracted by 3.1 percentage points due to rising raw material costs.",
+        "The firm disclosed a regulatory investigation into its pricing practices in three markets.",
+        # --- Neutral sentiment ---
+        "The company will publish its half-year results on 14 August.",
+        "Nokian Tyres said it would hold its annual general meeting on 28 March in Helsinki.",
+        "The board of directors decided to maintain the dividend at EUR 0.30 per share.",
+        "The firm appointed Mikko Helander as its new chief executive officer, effective 1 March.",
+        "Outokumpu said it would release its interim report for the first quarter on 29 April.",
+        "The company operates 47 production facilities across 18 countries.",
+        "Nokia confirmed that discussions with the potential acquirer were ongoing.",
+        "The group employs approximately 8,400 people in Finland and 21,000 worldwide.",
+        "The company said the transaction remained subject to regulatory approval.",
+        "Fortum's board proposed an unchanged dividend of EUR 1.14 per share for 2013.",
+        "The interim chief financial officer will assume the role on a permanent basis pending board confirmation.",
+        "The company reiterated its full-year financial targets at the investor day presentation.",
+        "YIT said it would divest its industrial services division by the end of the financial year.",
+        "The firm stated that it did not comment on market speculation regarding potential transactions.",
+        "Kesko Corporation reported that its retail division accounted for 61 percent of group sales.",
+        "The company's fiscal year ends on 31 December.",
+        "UPM-Kymmene said it had completed the previously announced capacity reduction.",
+        "The group operates three reportable business segments: energy, paper, and pulp.",
+        "Metso said it would transfer its mining and construction equipment businesses to a new entity.",
+        "The company confirmed the terms of the rights issue announced on 7 February.",
+        "Elisa Corporation released its third-quarter results in line with preliminary figures.",
+        "The supervisory board approved the proposed amendments to the articles of association.",
+        "Wärtsilä said the acquisition had been completed following receipt of all required regulatory approvals.",
+        "The annual report is available on the company's investor relations website.",
+        "The company's shares are listed on the Nasdaq Helsinki exchange.",
+        "Stora Enso said it would invest EUR 170 million in its packaging board mill in Imatra.",
+        "The chief executive stated that the business environment remained uncertain.",
+        "The company has not yet determined the size or timing of any potential capital markets transaction.",
+        "Neste Oil said it would continue to evaluate strategic options for its retail network.",
+        "The board noted that the results were broadly in line with management expectations.",
+        "The company said operating conditions in its main markets showed little change from the prior quarter.",
+        "Sanoma Corporation confirmed that the divestiture process was proceeding according to plan.",
+        "The firm stated that its financial position remained solid with adequate liquidity reserves.",
+        "The annual general meeting approved all items on the agenda as proposed by the board.",
+        "Tieto said its services segment had been reorganised into four business lines.",
+        "The company maintained its outlook for the full financial year.",
+        "Talvivaara Mining Company said it had received the necessary environmental permits.",
+        "Stockmann noted that the weak consumer sentiment had persisted into the second half.",
+        "The company issued a stock exchange release correcting an error in its previous announcement.",
+        "Cargotec said the Board of Directors had authorised the company to repurchase its own shares.",
+        "The firm confirmed that there had been no material changes to its financial position since the last report.",
+        "Ramirent's board decided to convene an extraordinary general meeting on 5 December.",
+        "The company disclosed that it had received an offer for one of its business units.",
+        "F-Secure said it would focus its product portfolio on cybersecurity solutions for enterprises.",
+        "The board of Fiskars resolved to distribute a dividend of EUR 0.68 per share.",
+        "Huhtamäki said the new production line had commenced operations as scheduled.",
+        "The group's net debt stood at EUR 1.3 billion at the end of the reporting period.",
+        "Cramo said the integration of the acquired businesses was progressing according to plan.",
+        "The company noted that currency fluctuations had a limited impact on reported results.",
+    ]
 
 
 def _make_synthetic_dataset():
