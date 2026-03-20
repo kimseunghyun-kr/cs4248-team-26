@@ -1,29 +1,48 @@
 """
 Phase 3b: CBDC-PGD refinement of v_style → delta_star.
 
-Unlike the original direction_finder.py (which perturbs through the frozen
-transformer), this operates directly in the pre-cached CLS embedding space.
-This is valid because the CBDC paper's latent-space PGD operates on z = Ψ(x)
-directly (section 4.2), without re-encoding through the transformer at each step.
+NLP adaptation of CBDC (CVPR 2026, Section 4.3–4.4) for FinBERT embeddings.
 
-Algorithm:
+Key structural difference from the original CLIP implementation:
+  CLIP uses a contrastive (cross-entropy) bias loss L_B against opposing text
+  prompt embeddings (e.g. "he" vs "she").  In the NLP/FinBERT setting there is
+  no paired image encoder, so we replace that with cosine alignment to the
+  SAE-extracted style direction v_style (tweet corpus) and its negation
+  (formal corpus direction).
+
+Bipolar PGD  (paper eq. 10 → Section 4.4):
   For each anchor batch from z_tweet_train:
-    1. Initialize δ = 0
-    2. For n_steps iterations:
-         z_pert = L2_normalize(z + δ)
-         L_B    = -cosine_sim(z_pert, v_style)      # push toward tweet style
-         L_s    = || v_semantic · (z_pert - z) ||²  # preserve formal semantics
-         loss   = L_B + lambda_s * L_s
-         δ ← Adam step on loss
-         δ ← clip(δ, -ε, ε)   # ℓ∞ projection
-    3. direction_i = normalize(mean(z_pert - z))
-  delta_star = normalize(mean(all direction_i))
+    Positive pole — push toward tweet style:
+      L_B+ = -cosine(z + δ+, v_style)
+      L_s+ =  || v_semantic · (z_pert+ − z) ||²
+      δ+ optimized to minimize  L_B+ + λ_s · L_s+
+    Negative pole — push away from tweet style (toward formal):
+      L_B− = +cosine(z + δ−, v_style)      [same sign flip as −cosine to -v_style]
+      L_s− =  || v_semantic · (z_pert− − z) ||²
+      δ− optimized to minimize  L_B− + λ_s · L_s−
+    Clean direction (paper eq. 6):
+      V_B = normalize(mean(z_pert+ − z_pert−))
+
+  delta_star = normalize(mean(V_B over all runs))
+
+Reasonable compromises vs. CLIP version:
+  * No encoder re-pass per PGD step — perturbation is applied directly to
+    final CLS embeddings (valid per Section 4.2: "latent-space PGD operates
+    on z = Ψ(x) directly").
+  * v_style (SAE-derived) replaces the contrastive text prompt pairs used
+    in CLIP; v_semantic = formal centroid replaces the neutral concept v_C.
+  * Single aggregated delta_star replaces the full subspace S_B; clean.py
+    applies a single orthogonal projection (sufficient for our linear-probe
+    evaluation pipeline).
+  * Random restarts within each run (n_restarts) mirror the num_samples
+    loop in perturb_bafa_txt_multi_ablation_lb_ls from simple_pgd.py.
 
 Outputs:
-  cache/delta_star.pt  — (768,) refined style direction
+  cache/delta_star.pt  — (H,) refined bipolar style direction
 
 Run from project/ directory:
   python cbdc/refine.py [--n_anchors 500] [--n_steps 50] [--n_runs 16]
+                        [--n_restarts 3] [--epsilon 0.10] [--lambda_s 0.2]
 """
 
 import sys
@@ -43,51 +62,69 @@ CACHE_DIR = os.environ.get("CACHE_DIR", _DEFAULT_CACHE)
 
 
 # ---------------------------------------------------------------------------
-# Core PGD loop (operates directly on cached embeddings — no encoder needed)
+# Bipolar PGD on pre-cached embeddings
 # ---------------------------------------------------------------------------
-def _pgd_on_embeddings(
-    z: torch.Tensor,          # (B, H) — L2-normalized anchor embeddings
-    v_target: torch.Tensor,   # (H,)   — direction to push toward (v_style)
-    v_semantic: torch.Tensor, # (H,)   — semantic axis to preserve (formal centroid)
+def _pgd_bipolar(
+    z: torch.Tensor,           # (B, H) — L2-normalized anchor embeddings
+    v_style: torch.Tensor,     # (H,)   — tweet-style direction (positive pole)
+    v_semantic: torch.Tensor,  # (H,)   — formal centroid (semantic axis to preserve)
     cfg: PGDConfig,
     device: str,
-) -> torch.Tensor:
+    rand_eps: float = 0.0,     # optional random initialization radius
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    Runs PGD on a batch of pre-cached embeddings.
-    Returns the per-sample delta* of shape (B, H).
+    Bipolar PGD: run two opposing perturbations from the same anchor batch.
+
+    Positive δ+: aligns z+δ with v_style  (tweet pole)
+    Negative δ−: aligns z+δ with −v_style (formal pole)
+
+    Semantic preservation (L_s, paper eq. 9) is applied to both poles.
+
+    Returns:
+        z_pos (B, H)  — L2-normalized perturbed embeddings at tweet pole
+        z_neg (B, H)  — L2-normalized perturbed embeddings at formal pole
     """
     z         = z.to(device).detach()
-    v_target  = F.normalize(v_target.to(device), dim=-1)
+    v_style   = F.normalize(v_style.to(device),   dim=-1)
     v_semantic = F.normalize(v_semantic.to(device), dim=-1)
 
-    B, H = z.shape
-    delta = torch.zeros(B, H, device=device, requires_grad=True)
-    optimizer = torch.optim.Adam([delta], lr=cfg.step_lr)
+    def _run_pole(push_toward_style: bool) -> torch.Tensor:
+        """Run PGD for one pole. Returns z_pert (B, H)."""
+        if rand_eps > 0.0:
+            init = (torch.rand_like(z) * 2 - 1) * rand_eps
+        else:
+            init = torch.zeros_like(z)
 
-    for _ in range(cfg.n_steps):
-        optimizer.zero_grad()
+        delta = init.clone().requires_grad_(True)
+        optimizer = torch.optim.Adam([delta], lr=cfg.step_lr)
 
-        z_pert = F.normalize(z + delta, dim=-1)   # (B, H)
+        for _ in range(cfg.n_steps):
+            optimizer.zero_grad()
+            z_pert = F.normalize(z + delta, dim=-1)
 
-        # L_B: maximize cosine similarity with v_target (tweet-style direction)
-        L_B = -F.cosine_similarity(z_pert, v_target.unsqueeze(0), dim=-1).mean()
+            # L_B: align with (+v_style) for tweet pole, (−v_style) for formal pole
+            cos = F.cosine_similarity(z_pert, v_style.unsqueeze(0), dim=-1)
+            L_B = -cos.mean() if push_toward_style else cos.mean()
 
-        # L_s: penalize deviation from formal semantic axis
-        L_s = l_semantic_preservation(z_pert, z, v_semantic)
+            # L_s: preserve projection onto formal semantic axis (paper eq. 9)
+            L_s = l_semantic_preservation(z_pert, z, v_semantic)
 
-        loss = L_B + cfg.lambda_s * L_s
-        loss.backward()
-        optimizer.step()
+            loss = L_B + cfg.lambda_s * L_s
+            loss.backward()
+            optimizer.step()
 
-        # ℓ∞ projection
-        with torch.no_grad():
-            delta.data.clamp_(-cfg.epsilon, cfg.epsilon)
+            with torch.no_grad():
+                delta.data.clamp_(-cfg.epsilon, cfg.epsilon)
 
-    return delta.detach()
+        return F.normalize((z + delta.detach()), dim=-1)   # (B, H)
+
+    z_pos = _run_pole(push_toward_style=True)
+    z_neg = _run_pole(push_toward_style=False)
+    return z_pos, z_neg
 
 
 # ---------------------------------------------------------------------------
-# Collect delta_star over multiple runs
+# Collect delta_star over multiple runs (with optional random restarts)
 # ---------------------------------------------------------------------------
 def collect_delta_star(
     z_tweet: torch.Tensor,    # (N, H)
@@ -95,43 +132,73 @@ def collect_delta_star(
     z_formal: torch.Tensor,   # (M, H)
     cfg: PGDConfig,
     n_runs: int,
+    n_restarts: int,
     device: str,
 ) -> torch.Tensor:
     """
-    Runs PGD n_runs times on random sub-batches of z_tweet.
+    Collects bipolar directions V_B = normalize(mean(z_pos − z_neg)) over
+    n_runs random anchor batches, each with n_restarts random initialisations.
+
+    This mirrors the num_samples loop in perturb_bafa_txt_multi_ablation_lb_ls
+    (simple_pgd.py).
+
     Returns delta_star: (H,) normalized aggregated direction.
     """
-    # Semantic preservation axis = L2-normalized formal centroid
+    # Semantic axis: L2-normalized formal centroid  (= v_C in the paper)
     v_semantic = F.normalize(z_formal.mean(0), dim=-1)
     print(f"  v_semantic = formal centroid  norm={v_semantic.norm():.4f}")
 
     batch_size = min(cfg.n_anchors, len(z_tweet))
+
+    # Each element is one V_B direction (H,)
     all_directions = []
 
-    for run in tqdm(range(n_runs), desc="PGD runs"):
-        # Random sub-batch of anchors
-        indices = torch.randperm(len(z_tweet))[:batch_size]
-        z_batch = z_tweet[indices]   # (B, H)
+    for run in tqdm(range(n_runs), desc="PGD bipolar runs"):
+        indices  = torch.randperm(len(z_tweet))[:batch_size]
+        z_batch  = z_tweet[indices]   # (B, H)
 
-        delta_star_batch = _pgd_on_embeddings(z_batch, v_style, v_semantic, cfg, device)
+        # --- multiple restarts per batch (mirrors num_samples) ---------------
+        restart_directions = []
+        rand_eps = cfg.epsilon * 0.5 if n_restarts > 1 else 0.0
 
-        with torch.no_grad():
-            z_pert = F.normalize(z_batch.to(device) + delta_star_batch, dim=-1)
-            z_orig = F.normalize(z_batch.to(device), dim=-1)
-            direction = (z_pert - z_orig).mean(dim=0)     # (H,)
-            direction = F.normalize(direction, dim=-1)
-            all_directions.append(direction.cpu())
+        for restart in range(n_restarts):
+            ep = rand_eps if restart > 0 else 0.0
+            z_pos, z_neg = _pgd_bipolar(
+                z_batch, v_style, v_semantic, cfg, device, rand_eps=ep
+            )
 
-    directions = torch.stack(all_directions, dim=0)   # (n_runs, H)
-    delta_star = F.normalize(directions.mean(dim=0), dim=-1)
+            with torch.no_grad():
+                # V_B = v+ − v−  (paper eq. 6, clean bias direction)
+                V_B = (z_pos - z_neg).mean(dim=0)   # (H,)
+                V_B = F.normalize(V_B, dim=-1)
+                restart_directions.append(V_B.cpu())
 
-    # Report alignment stats
-    cos_with_vstyle = F.cosine_similarity(delta_star.unsqueeze(0), v_style.unsqueeze(0)).item()
-    cos_with_vsem   = F.cosine_similarity(delta_star.unsqueeze(0), v_semantic.cpu().unsqueeze(0)).item()
-    print(f"\n  cosine(delta_star, v_style)   = {cos_with_vstyle:.4f}  (should be > 0.3)")
-    print(f"  cosine(delta_star, v_semantic) = {cos_with_vsem:.4f}  (should be small)")
+        # Average across restarts for this run → one stable direction per run
+        V_B_run = F.normalize(
+            torch.stack(restart_directions, dim=0).mean(dim=0), dim=-1
+        )
+        all_directions.append(V_B_run)
+
+    directions  = torch.stack(all_directions, dim=0)   # (n_runs, H)
+    delta_star  = F.normalize(directions.mean(dim=0), dim=-1)
+
+    # --- Alignment diagnostics -----------------------------------------------
+    cos_with_vstyle = F.cosine_similarity(
+        delta_star.unsqueeze(0), v_style.unsqueeze(0)
+    ).item()
+    cos_with_vsem = F.cosine_similarity(
+        delta_star.unsqueeze(0), v_semantic.cpu().unsqueeze(0)
+    ).item()
+    print(f"\n  cosine(delta_star, v_style)    = {cos_with_vstyle:.4f}  (should be > 0.3)")
+    print(f"  cosine(delta_star, v_semantic) = {cos_with_vsem:.4f}   (should be small)")
+
+    # Report per-direction variance (diversity of discovered directions)
+    pairwise = directions @ directions.T   # (n_runs, n_runs)
+    off_diag = pairwise[~torch.eye(n_runs, dtype=torch.bool)].mean().item()
+    print(f"  mean pairwise cosine between runs = {off_diag:.4f}  (lower → more diverse)")
+
     if cos_with_vstyle > 0.3:
-        print("  ✓ CBDC refinement preserved alignment with v_style")
+        print("  ✓ CBDC bipolar refinement preserved alignment with v_style")
     else:
         print("  ⚠ Low alignment — try more n_steps or larger epsilon")
 
@@ -143,12 +210,14 @@ def collect_delta_star(
 # ---------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--n_anchors", type=int,   default=500)
-    parser.add_argument("--n_steps",   type=int,   default=50)
-    parser.add_argument("--n_runs",    type=int,   default=16)
-    parser.add_argument("--epsilon",   type=float, default=0.10)
-    parser.add_argument("--lambda_s",  type=float, default=0.2)
-    parser.add_argument("--step_lr",   type=float, default=0.01)
+    parser.add_argument("--n_anchors",   type=int,   default=500)
+    parser.add_argument("--n_steps",     type=int,   default=50)
+    parser.add_argument("--n_runs",      type=int,   default=16)
+    parser.add_argument("--n_restarts",  type=int,   default=3,
+                        help="Random restarts per run (mirrors num_samples in CLIP code).")
+    parser.add_argument("--epsilon",     type=float, default=0.10)
+    parser.add_argument("--lambda_s",    type=float, default=0.2)
+    parser.add_argument("--step_lr",     type=float, default=0.01)
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -180,23 +249,25 @@ def main():
         device       = device,
     )
 
-    print(f"\nRunning CBDC-PGD refinement ...")
-    print(f"  n_runs={args.n_runs} | n_anchors={args.n_anchors} | "
-          f"n_steps={args.n_steps} | ε={args.epsilon} | λ_s={args.lambda_s}")
+    print(f"\nRunning CBDC bipolar PGD refinement ...")
+    print(f"  n_runs={args.n_runs} | n_restarts={args.n_restarts} | "
+          f"n_anchors={args.n_anchors} | n_steps={args.n_steps} | "
+          f"ε={args.epsilon} | λ_s={args.lambda_s}")
 
     delta_star = collect_delta_star(
-        z_tweet  = z_tweet,
-        v_style  = v_style,
-        z_formal = z_formal,
-        cfg      = cfg,
-        n_runs   = args.n_runs,
-        device   = device,
+        z_tweet    = z_tweet,
+        v_style    = v_style,
+        z_formal   = z_formal,
+        cfg        = cfg,
+        n_runs     = args.n_runs,
+        n_restarts = args.n_restarts,
+        device     = device,
     )
 
     out_path = os.path.join(CACHE_DIR, "delta_star.pt")
     torch.save(delta_star, out_path)
     print(f"\ndelta_star saved → {out_path}")
-    print("CBDC refinement complete.")
+    print("CBDC bipolar refinement complete.")
 
 
 if __name__ == "__main__":
