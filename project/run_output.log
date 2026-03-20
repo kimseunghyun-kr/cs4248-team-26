@@ -1,0 +1,21 @@
+
+Loading weights:   0%|          | 0/199 [00:00<?, ?it/s]
+Loading weights: 100%|██████████| 199/199 [00:00<00:00, 39098.11it/s]
+[1mBertModel LOAD REPORT[0m from: ProsusAI/finbert
+Key                          | Status     |  | 
+-----------------------------+------------+--+-
+bert.embeddings.position_ids | UNEXPECTED |  | 
+classifier.bias              | UNEXPECTED |  | 
+classifier.weight            | UNEXPECTED |  | 
+
+[3mNotes:
+- UNEXPECTED[3m	:can be ignored when loading from different task/architecture; not ok if you expect identical arch.[0m
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+/var/folders/cp/w10ryd6n5ldfd94f04c8b_800000gn/T/tmpt6mpepy9: line 3: 39947 Terminated: 15          python run_pipeline.py
+/opt/anaconda3/envs/cbdc/lib/python3.11/multiprocessing/resource_tracker.py:254: UserWarning: resource_tracker: There appear to be 1 leaked semaphore objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '
+
+ERROR conda.cli.main_run:execute(127): `conda run python run_pipeline.py` failed. (See above for error)
+Using device: cpu
+Loading tokenizer and model from 'ProsusAI/finbert' ...
+
