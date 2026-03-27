@@ -1,263 +1,397 @@
-# CBDC Financial Sentiment Pipeline
+# CBDC Financial Sentiment Pipeline — Program Flow & Call Stack
 
-NLP adaptation of **CBDC (Clean Bias Direction Construction)** (CVPR 2026) applied to FinBERT embeddings for tweet financial sentiment classification. The core idea: use an SAE to find a tweet-style direction, then use PGD-based bipolar search to refine it into a clean, semantics-preserving style axis (`delta_star`). Projecting this out of embeddings removes stylistic confounds before classification.
+NLP adaptation of **CBDC (Clean Bias Direction Construction)** (CVPR 2026) applied to FinBERT embeddings for tweet financial sentiment classification.
 
-## Quick Start
+---
 
-```bash
-cd project/
+## Top-Level Entry Point
 
-# Full pipeline (all 7 phases)
-python run_all.py
+```
+run_all.py :: main()
+  └─ for each phase: subprocess.run([sys.executable, script_path])
+       ├─ Phase 1  data/embed.py
+       ├─ Phase 2  sae/sae.py
+       ├─ Phase 3a sae/sae_analysis.py
+       ├─ Phase 3b cbdc/refine.py
+       ├─ Phase 4  pipeline/clean.py
+       ├─ Phase 5  pipeline/classify.py
+       └─ Phase 6  pipeline/evaluate.py
+```
 
-# Or run phases individually:
-python data/embed.py          # Phase 1
-python sae/sae.py             # Phase 2
-python sae/sae_analysis.py    # Phase 3a
-python cbdc/refine.py         # Phase 3b
-python pipeline/clean.py      # Phase 4
-python pipeline/classify.py   # Phase 5
-python pipeline/evaluate.py   # Phase 6
+Each phase runs as an independent subprocess. `MODEL_NAME` and `CACHE_DIR` are passed via environment variables so each model (`finbert`, `bert`, `bertweet`) writes to its own cache subdirectory.
+
+---
+
+## Phase 1 — `data/embed.py`
+
+**Purpose:** Encode all corpora with FinBERT, cache embeddings + token tensors to disk.
+
+```
+embed.py :: main()
+  │
+  ├─ FinBERTEncoder.__init__(model_name, device)
+  │    ├─ AutoTokenizer.from_pretrained(model_name)
+  │    ├─ AutoModel.from_pretrained(model_name)          → self.backbone (12-layer BERT)
+  │    └─ for p in backbone.parameters(): p.requires_grad_(False)   ← freeze all
+  │
+  ├─ load_tsad_dataset() / load_tweet_eval()             → raw tweet text + labels
+  ├─ load_formal_sentences()                             → raw formal text
+  │
+  ├─ for each split (train / val / test):
+  │    └─ encode_batch(texts, encoder)
+  │         └─ FinBERTEncoder.encode_text(texts)
+  │              ├─ tokenizer(texts, padding, truncation) → input_ids, attention_mask
+  │              ├─ _get_embeddings(input_ids)
+  │              │    └─ backbone.embeddings(input_ids)   → (B, L, 768) word+pos+type embeds
+  │              └─ _forward_from_embeds(embeds, mask)
+  │                   ├─ backbone(inputs_embeds=embeds, attention_mask=mask)
+  │                   │    └─ 12 BertLayer forward passes  → last_hidden_state (B, L, 768)
+  │                   └─ F.normalize(last_hidden_state[:, 0, :], dim=-1)  → (B, 768) CLS
+  │
+  └─ torch.save({embeddings, labels, input_ids, attention_mask}, cache/z_tweet_train.pt)
+     torch.save({embeddings, labels, input_ids, attention_mask}, cache/z_tweet_val.pt)
+     torch.save({embeddings, labels, input_ids, attention_mask}, cache/z_tweet_test.pt)
+     torch.save({embeddings},                                    cache/z_formal.pt)
+```
+
+**Outputs:** `z_tweet_{train,val,test}.pt`, `z_formal.pt` — all in 768-dim normalized CLS space.
+
+---
+
+## Phase 2 — `sae/sae.py`
+
+**Purpose:** Train a Sparse Autoencoder on the mixed embedding corpus to learn an overcomplete feature dictionary.
+
+```
+sae.py :: main()
+  │
+  ├─ load z_tweet_train.pt + z_formal.pt  (concatenated → mixed_corpus)
+  │
+  ├─ SparseAutoencoder.__init__(input_dim=768, hidden_dim=1536)
+  │    ├─ encoder: Linear(768, 1536) + ReLU   ← sparse activations
+  │    └─ decoder: Linear(1536, 768, bias=False)
+  │
+  └─ train_loop(model, mixed_corpus)
+       for epoch in range(50):
+         for batch in DataLoader(mixed_corpus):
+           ├─ h = model.encode(z_batch)           → (B, 1536) sparse activations
+           ├─ z_hat = model.decode(h)              → (B, 768) reconstruction
+           ├─ loss_mse  = MSE(z_hat, z_batch)
+           ├─ loss_l1   = lambda_l1 * h.abs().mean()    ← sparsity penalty
+           ├─ (loss_mse + loss_l1).backward()
+           └─ optimizer.step()
+       └─ torch.save(model.state_dict(), cache/sae_checkpoint.pt)
+```
+
+**What the SAE learns:** Decoder columns `W_d[:, j] ∈ ℝ^{768}` are 1536 overcomplete feature directions. Sparse activations force the model to use only a few features per embedding, so each feature captures a distinct pattern.
+
+---
+
+## Phase 3a — `sae/sae_analysis.py`
+
+**Purpose:** Use the trained SAE to identify which features correspond to "tweet style" vs "formal style", then construct `v_style`.
+
+```
+sae_analysis.py :: main()
+  │
+  ├─ load sae_checkpoint.pt → SparseAutoencoder
+  ├─ load z_tweet_train.pt, z_formal.pt
+  │
+  ├─ compute_mean_activations(z_tweet, sae)
+  │    └─ sae.encode(z_tweet)         → (N_tweet, 1536) activations
+  │    └─ mean over N_tweet           → (1536,) mean_tweet_acts
+  │
+  ├─ compute_mean_activations(z_formal, sae)
+  │    └─ sae.encode(z_formal)        → (N_formal, 1536)
+  │    └─ mean over N_formal          → (1536,) mean_formal_acts
+  │
+  ├─ style_scores = mean_tweet_acts - mean_formal_acts   → (1536,)
+  │    Each score[j] = "how much more active is feature j on tweets than formal"
+  │
+  ├─ top_k_indices = argsort(style_scores, descending=True)[:32]
+  │
+  ├─ v_style = normalize(W_d[:, top_k_indices] @ style_scores[top_k_indices])
+  │    └─ W_d[:, j]: the j-th decoder column = "what does feature j look like in embed space"
+  │    └─ weighted sum of top-32 decoder columns → (768,) tweet-style direction
+  │
+  ├─ v_shift = normalize(mean(z_tweet) - mean(z_formal))  → (768,) naive baseline
+  │
+  └─ torch.save(v_style, cache/v_style.pt)
+     torch.save(v_shift, cache/v_shift.pt)
+```
+
+**What `v_style` is:** A direction in the final 768-dim CLS embedding space that most separates tweet-like from formal-like content, as learned by the SAE's sparse dictionary. This is the CBDC paper's "bias direction candidate" — good but not yet purified.
+
+---
+
+## Phase 3b — `cbdc/refine.py`  ← CORE
+
+**Purpose:** Refine `v_style` into `delta_star` using bipolar PGD. This is the CBDC algorithm.
+
+```
+refine.py :: main()
+  │
+  ├─ load z_tweet_train.pt  → z_tweet (N, 768), input_ids (N, L), attention_mask (N, L)
+  ├─ load z_formal.pt       → z_formal (M, 768)
+  ├─ load v_style.pt        → v_style (768,)
+  ├─ FinBERTEncoder(model_name, device)
+  │
+  └─ collect_delta_star(z_tweet, input_ids, attention_mask, v_style, z_formal, cfg, encoder)
+       │
+       ├─ v_semantic = normalize(z_formal.mean(0))    → (768,)  formal centroid = semantic axis
+       │
+       └─ for run in range(n_runs=16):
+            │
+            ├─ indices = randperm(N)[:n_anchors=500]
+            ├─ z_batch    = z_tweet[indices]           (500, 768)
+            ├─ ids_batch  = input_ids[indices]         (500, L)
+            ├─ mask_batch = attention_mask[indices]    (500, L)
+            │
+            └─ for restart in range(n_restarts=3):
+                 │
+                 └─ _pgd_bipolar(z_batch, ids_batch, mask_batch, v_style, v_semantic, cfg, encoder)
+                      │                                   ↑ SEE DETAIL BELOW
+                      └─ returns z_pos (500, 768), z_neg (500, 768)
+                      └─ V_B = normalize(mean(z_pos - z_neg, dim=0))  → (768,)
+                 │
+                 └─ V_B_run = normalize(mean(restart_directions))     → (768,)
+            │
+            └─ all_directions.append(V_B_run)
+       │
+       └─ delta_star = normalize(mean(all_directions))   → (768,)
+          torch.save(delta_star, cache/delta_star.pt)
+```
+
+### `_pgd_bipolar` — detailed call stack
+
+This is the innermost loop. For one anchor batch it runs TWO PGD optimizations (positive pole + negative pole) and returns the final embeddings at each pole.
+
+```
+_pgd_bipolar(z, input_ids, attention_mask, v_style, v_semantic, cfg, encoder, device)
+  │
+  ├─ [SETUP — no grad]
+  │    encoder.get_intermediate_features(input_ids, attention_mask)
+  │    ┌──────────────────────────────────────────────────────────────┐
+  │    │  _get_embeddings(input_ids)                                  │
+  │    │    └─ backbone.embeddings(input_ids) → (B, L, 768) embeds   │  FROZEN BODY
+  │    │  extended_mask = backbone.get_extended_attention_mask(...)   │  (no grad)
+  │    │  for layer in backbone.encoder.layer[:11]:                   │
+  │    │    hidden = layer(hidden, extended_mask)[0]                  │
+  │    └─ returns h_layer10: (B, L, 768)  ← intermediate repr        │
+  │                                                                    ┘
+  │    encoder.encode_with_delta_from_hidden(h_layer10, mask, zeros)
+  │    ┌──────────────────────────────────────────────────────────────┐
+  │    │  delta_full = zeros injected at CLS only (mask trick)        │  1-LAYER TAIL
+  │    │  perturbed = h_layer10 + delta_full                          │  (no grad)
+  │    │  for layer in backbone.encoder.layer[11:]:                   │
+  │    │    perturbed = layer(perturbed, extended_mask)[0]            │
+  │    │  cls = perturbed[:, 0, :]                                    │
+  │    └─ returns z_orig: (B, 768) normalized CLS ← L_s reference    │
+  │                                                                    ┘
+  │
+  └─ _run_pole(push_toward_style=True)   ← positive pole δ+
+  └─ _run_pole(push_toward_style=False)  ← negative pole δ−
+       │
+       _run_pole(push_toward_style):
+       │
+       ├─ delta = zeros(B, 768).requires_grad_(True)   ← the variable being optimized
+       ├─ optimizer = Adam([delta], lr=0.01)
+       │
+       └─ for step in range(n_steps=50):
+            │
+            ├─ encoder.encode_with_delta_from_hidden(h_layer10, mask, delta)
+            │  ┌──────────────────────────────────────────────────────────────┐
+            │  │  delta_full = delta broadcast to (B, L, 768), zeroed        │
+            │  │               outside CLS position                           │
+            │  │  perturbed = h_layer10 + delta_full                          │
+            │  │               ↑ h_layer10 is DETACHED — no grad here        │
+            │  │               ↑ delta_full carries grad from delta           │
+            │  │  for layer in backbone.encoder.layer[11:]:  ← 1 layer only  │  GRAD GRAPH
+            │  │    perturbed = layer(perturbed, extended_mask)[0]            │  (delta only)
+            │  │  cls = perturbed[:, 0, :]                                    │
+            │  └─ returns z_pert: (B, 768) normalized CLS                    │
+            │                                                                  ┘
+            │
+            ├─ L_B = -cosine(z_pert, v_style).mean()        if push_toward_style
+            │        +cosine(z_pert, v_style).mean()         otherwise
+            │
+            ├─ losses.l_semantic_preservation(z_pert, z_orig, v_semantic)
+            │    ├─ delta_z = z_pert - z_orig.detach()       (B, 768)
+            │    ├─ proj = (delta_z * v_semantic).sum(dim=-1) (B,)
+            │    └─ returns (proj**2).mean()    ← penalize drift along semantic axis
+            │
+            ├─ loss = L_B + lambda_s * L_s
+            ├─ loss.backward()      ← grad flows: loss → layer11 → delta_full → delta
+            ├─ optimizer.step()     ← update delta
+            └─ delta.data.clamp_(-epsilon, epsilon)   ← L∞ projection
+       │
+       └─ [FINAL FORWARD — no grad]
+            encoder.encode_with_delta_from_hidden(h_layer10, mask, delta.detach())
+            └─ returns z_final: (B, 768)  ← embedding at optimized pole
+```
+
+**Gradient flow summary:**
+
+```
+delta (B, 768)
+  ↓  unsqueeze + expand + mask  →  delta_full (B, L, 768), nonzero at CLS only
+  ↓  add to h_layer10 (detached)
+  ↓  BertLayer 11 forward (self-attention + feed-forward)
+  ↓  CLS extraction → normalize
+  ↓  cosine(z_pert, v_style) → L_B
+  ↓  + lambda_s * l_semantic_preservation → L_total
+  ↓  backward
+  ↑  gradient reaches delta only — no gradient accumulates in backbone weights
+     (backbone weights are frozen: requires_grad=False)
 ```
 
 ---
 
-## 7-Phase Pipeline
+## Phase 4 — `pipeline/clean.py`
+
+**Purpose:** Project out the style direction from all cached tweet embeddings.
 
 ```
-[Tweet corpus]   [Formal corpus]
-     │                 │
-     └────── Phase 1 ──┘
-         data/embed.py
-    FinBERT CLS embeddings
-    z_tweet_{train,val,test}.pt
-    z_formal.pt
-         │
-     Phase 2
-     sae/sae.py
-    Sparse Autoencoder (768→1536→768)
-    trained on mixed tweet+formal
-    sae_model.pt
-         │
-     Phase 3a
-     sae/sae_analysis.py
-    style_scores = tweet_acts − formal_acts
-    v_style = top-K SAE decoder columns
-    v_style.pt, v_shift.pt
-         │
-     Phase 3b
-     cbdc/refine.py  ← CBDC bipolar PGD
-    For each anchor batch:
-      δ+ → push toward v_style  (tweet pole)
-      δ− → push away from v_style (formal pole)
-      V_B = normalize(mean(z_pos − z_neg))
-    delta_star = normalize(mean(V_B over runs))
-    delta_star.pt
-         │
-     Phase 4
-     pipeline/clean.py
-    z_clean = normalize(z − (z·d)·d)
-    z_tweet_{split}_clean_{direction}.pt
-         │
-     Phase 5
-     pipeline/classify.py
-    Linear(768, 3) probe trained per condition
-    B1/B2/B2.5/B3/C evaluated, results.pt
-         │
-     Phase 6
-     pipeline/evaluate.py
-    Direction interpretability + linearity + report
-    results/eval_report_new.txt
+clean.py :: main()
+  │
+  ├─ for direction in [delta_star, v_style, v_shift, label_guided]:
+  │    load direction vector (768,)
+  │
+  └─ apply_cleaning(direction, direction_name)
+       └─ for split in [train, val, test]:
+            load z_tweet_{split}.pt  → z (N, 768)
+            │
+            project_out(z, direction)
+              ├─ d = normalize(direction)                      (768,)
+              ├─ proj_scalar = (z @ d).unsqueeze(-1)          (N, 1)   ← scalar projection
+              ├─ proj_vec    = proj_scalar * d.unsqueeze(0)   (N, 768) ← vector along d
+              ├─ z_clean     = z - proj_vec                   (N, 768) ← orthogonal component
+              └─ return normalize(z_clean)                    (N, 768)
+            │
+            torch.save({embeddings: z_clean, labels}, z_tweet_{split}_clean_{direction}.pt)
 ```
 
 ---
 
-## How SAE and CBDC Work Together
+## Phase 5 — `pipeline/classify.py`
 
-### Step 1 — SAE discovers v_style (Phase 2–3a)
-
-The SAE is trained on a mixture of tweet and formal embeddings. Its decoder matrix `W_d ∈ ℝ^{768×1536}` learns an overcomplete feature dictionary. After training, for each feature `j`:
+**Purpose:** Train a linear probe for each experimental condition and record F1.
 
 ```
-style_score[j] = mean_activation(tweets)[j] − mean_activation(formal)[j]
+classify.py :: main()
+  │
+  ├─ for condition in [B1_raw, B2_sae, B2.5_shift, B3_cbdc, C_oracle]:
+  │    load z_tweet_train_clean_{direction}.pt  → X_train (N, 768), y_train
+  │    load z_tweet_val_clean_{direction}.pt    → X_val,   y_val
+  │    load z_tweet_test_clean_{direction}.pt   → X_test,  y_test
+  │
+  │    LinearProbe.__init__(input_dim=768, n_classes=3)
+  │      └─ Linear(768, 3)   ← single layer, no hidden
+  │
+  │    train_probe(probe, X_train, y_train, X_val, y_val)
+  │      for epoch in range(max_epochs):
+  │        ├─ logits = probe(X_batch)             (B, 3)
+  │        ├─ loss   = CrossEntropyLoss(logits, y)
+  │        ├─ loss.backward(); optimizer.step()
+  │        └─ early_stop on val macro-F1
+  │
+  └─  evaluate(probe, X_test, y_test) → macro F1, classification report
+      torch.save(all_results, cache/results.pt)
 ```
-
-The top-K highest-scoring features are the SAE's best candidates for "tweet style". The style direction is then:
-
-```
-v_style = normalize(W_d[:, top_K] @ style_scores[top_K])   # (768,)
-```
-
-This gives a *linear* summary of the SAE's learned style features — it points in the embedding direction most associated with tweet-like content.
-
-**Why SAE over plain mean-shift?**
-Plain mean-shift (`v_shift = mean(z_tweet) − mean(z_formal)`) mixes style with sentiment signal. The SAE's sparse activations isolate features that are consistently tweet-like *regardless* of sentiment class, giving a cleaner style axis.
-
-### Step 2 — CBDC bipolar PGD refines v_style into delta_star (Phase 3b)
-
-The SAE gives a good but imperfect style direction. CBDC (paper §4.3–4.4) refines it using adversarial search:
-
-**Bipolar PGD** — for each anchor batch from `z_tweet_train`:
-
-| | Positive pole (tweet) | Negative pole (formal) |
-|---|---|---|
-| **Bias loss L_B** | `-cosine(z+δ⁺, v_style)` | `+cosine(z+δ⁻, v_style)` |
-| **Semantic loss L_s** | `‖v_semantic · (z_pert⁺ − z)‖²` | `‖v_semantic · (z_pert⁻ − z)‖²` |
-| **Objective** | minimize `L_B + λ_s · L_s` | minimize `L_B + λ_s · L_s` |
-
-Where `v_semantic = normalize(mean(z_formal))` is the formal centroid, serving as the semantic axis to preserve (paper eq. 9).
-
-The **clean direction** per batch (paper eq. 6):
-```
-V_B = normalize(mean(z_pos − z_neg))
-```
-
-Taking the difference cancels noisy concepts shared by both poles, leaving only the style axis. This is CBDC's key insight over monopolar perturbation.
-
-Final aggregation over `n_runs` batches × `n_restarts` random initializations:
-```
-delta_star = normalize(mean(V_B over all runs))
-```
-
-### Step 3 — Orthogonal projection removes style (Phase 4)
-
-```python
-z_clean = normalize(z − (z · delta_star) · delta_star)
-```
-
-This is paper eq. 2. The style component along `delta_star` is subtracted out, and the result is re-normalized. A linear probe trained on `z_clean` should classify sentiment based on semantics rather than style.
 
 ---
 
-## Evaluation Conditions
+## Phase 6 — `pipeline/evaluate.py`
 
-| Condition | Embedding | Direction removed |
-|-----------|-----------|------------------|
-| B1 (raw) | Raw FinBERT CLS | — |
-| B2 (SAE) | Projected | `v_style` (SAE-derived) |
-| B2.5 (mean-shift) | Projected | `v_shift` (plain mean-shift) |
-| **B3 (SAE+CBDC)** | Projected | `delta_star` (refined) ← main method |
-| C (label-guided) | Projected | `v_label_guided` (oracle, uses labels) |
+**Purpose:** Interpretability checks + final report.
 
-All evaluated with macro F1 on tweet sentiment (negative/neutral/positive).
+```
+evaluate.py :: main()
+  │
+  ├─ load cache/results.pt
+  ├─ print F1 table across conditions
+  │
+  ├─ direction_interpretability()
+  │    for each class c in {negative, neutral, positive}:
+  │      mean_proj[c] = mean(z_tweet[labels==c] @ direction)
+  │    ← should be low variance across classes (direction is style, not sentiment)
+  │
+  ├─ linearity_check()
+  │    for alpha in linspace(-1, 1):
+  │      z_interp = normalize(z_formal_centroid + alpha * direction)
+  │      cosine(z_interp, z_tweet_centroid)  ← should be monotonic if direction is linear
+  │
+  ├─ zero_shot_preservation()
+  │    project_out(z_formal, direction)
+  │    cosine(z_formal_clean, z_formal).mean()  ← should stay high (~1.0)
+  │
+  └─ write results/eval_report_new.txt
+```
 
 ---
 
-## Gradient Flow — Technical Detail
+## How SAE and CBDC Interact — Data Flow
 
-This section directly addresses the structural difference between the original CLIP implementation and this NLP adaptation.
-
-### Original CLIP implementation (`simple_pgd.py`)
-
-In the CLIP version, `z = Ψ(x)` is computed *online* — perturbation `δ` is applied to the input (or an intermediate representation), and the gradient `∂L/∂δ` flows **back through the projection layer and the last N transformer resblocks** of the vision encoder.
-
-Computational graph:
-```
-δ → [last N transformer blocks] → projection layer → z_pert → cosine(z_pert, text_emb) → L
-```
-
-The gradient signal carries second-order information about how the encoder maps inputs to the embedding space.
-
-### Our NLP adaptation (this codebase)
-
-We operate on **pre-cached final CLS embeddings**. `z` is the FinBERT CLS token embedding *after all 12 transformer layers have already run*. The cache files (`z_tweet_train.pt`, etc.) are fixed tensors — the FinBERT encoder is not re-invoked during PGD.
-
-The computational graph for `∂L/∂δ` is:
+The two components operate in the **same 768-dim final CLS space** but at different pipeline stages:
 
 ```
-δ → z + δ → normalize(z + δ) → cosine(z_pert, v_style) → L
-              ↑
-        L2-normalization
-     (only operation in graph)
+                            768-dim final CLS embedding space
+                            ─────────────────────────────────
+
+Phase 2–3a  (SAE)          Phase 3b  (CBDC PGD)             Phase 4  (clean.py)
+─────────────────          ────────────────────             ──────────────────
+Trains dictionary          Uses v_style as PGD target       Projects delta_star
+  W_d: 1536 features         └─ L_B = -cosine(z_pert,         out of embeddings
+                                               v_style)
+Scores features by                                           z_clean = z - (z·d)d
+tweet vs formal            Finds delta_star such that:
+activation delta             ∙ aligns with v_style     ──►  delta_star ∈ 768-dim
+                             ∙ doesn't drift along            CLS space
+v_style = weighted             v_semantic               ──►  same space as z_clean
+  sum of top-32
+  decoder columns  ───────►  INPUT TO CBDC              ──►  USED HERE
+        │                          │
+        └──────── v_style ─────────┘
+                  (768,)
+                  "what tweet style looks like in CLS space"
 ```
 
-**There are zero transformer layers in the gradient graph.** The gradient `∂L/∂δ` flows only through the L2-normalization:
+**Key relationship:** `v_style` (SAE output) serves as the attraction target for the positive pole of the bipolar PGD. Without the SAE, CBDC would have no starting definition of "tweet style" — it would need contrastive text prompts like the original CLIP version. The SAE replaces those prompts.
 
-```
-∂L/∂δ = ∂L/∂z_pert · ∂z_pert/∂(z+δ) · ∂(z+δ)/∂δ
-       = ∂L/∂z_pert · J_normalize · I
-```
-
-Where `J_normalize = (I − z_pert z_pert^T) / ‖z+δ‖` is the Jacobian of L2-normalization.
-
-### Why is this valid?
-
-Paper §4.2 explicitly states: *"latent-space PGD operates on z = Ψ(x) directly"* — i.e., the perturbation is in the embedding space, not the input space. Our implementation is consistent with this formulation.
-
-The trade-off:
-- **CLIP**: richer gradient signal (through encoder layers) → potentially better curvature information for δ optimization
-- **Ours**: δ is optimized purely in the linear embedding space → simpler optimization landscape, but also simpler geometry. Since the final objective (linear probe on embeddings) also operates in this same linear space, this is a reasonable compromise.
-
-### Summary table: CLIP vs ours
-
-| | CLIP (original) | Ours (NLP adaptation) |
-|---|---|---|
-| **z is** | Pre-projection intermediate | Final cached CLS embedding |
-| **Gradient flows through** | Projection layer + last N transformer blocks | L2-normalization only |
-| **Transformer layers in graph** | N (last few) | 0 |
-| **L_B (bias loss)** | Cross-entropy over text prompt pairs | ±cosine(z+δ, v_style) |
-| **v_C (semantic axis)** | Neutral concept from text prompts | Formal centroid |
-| **Direction per step** | v_style replaces "he"/"she" prompts | v_style from SAE top-K features |
-| **Output** | Full subspace S_B | Single delta_star vector |
+`delta_star` (CBDC output) is a refined version of `v_style` that is:
+- More precisely aligned to the tweet/formal axis (bipolar search removes noise)
+- More orthogonal to `v_semantic` (semantic preservation loss enforces this)
+- More stable across samples (averaged over 16 runs × 3 restarts)
 
 ---
 
-## Compromises vs Original CLIP CBDC
-
-| CLIP version | Our NLP adaptation | Justification |
-|---|---|---|
-| Online encoder re-pass per PGD step | Pre-cached embeddings, no re-pass | §4.2: latent-space PGD valid; FinBERT re-encoding at every step would be prohibitively slow |
-| Contrastive text prompt pairs (e.g. "he"/"she") as L_B target | v_style from SAE decoder as L_B target | No image encoder in NLP; SAE provides the closest analog to CLIP's text prompts |
-| Neutral text concept v_C | Formal corpus centroid v_semantic | Formal financial prose is the domain-appropriate "neutral" register |
-| Full orthogonal subspace S_B | Single delta_star vector | Sufficient for linear-probe evaluation; single projection is the standard debiasing operation in NLP literature |
-| Random restarts = `num_samples` in multi-sample loop | `n_restarts` parameter | Direct correspondence; same purpose |
-
----
-
-## Configuration
-
-Key hyperparameters (`config.py`):
-
-| Parameter | Default | Meaning |
-|---|---|---|
-| `epsilon` | 0.10 | PGD perturbation budget (L∞) |
-| `n_steps` | 50 | PGD optimization steps per pole |
-| `step_lr` | 0.01 | Adam lr for δ |
-| `lambda_s` | 0.2 | Semantic preservation weight |
-| `n_anchors` | 500 | Anchor batch size per run |
-| `n_directions` / `n_runs` | 16 | Independent runs to average |
-| `n_restarts` | 3 | Random restarts per run |
-| SAE hidden_dim | 1536 | 2× overcomplete dictionary |
-| SAE top_k | 32 | Top-K style features for v_style |
-
----
-
-## File Structure
+## Cache Files — What Each Phase Reads and Writes
 
 ```
-project/
-├── config.py              # PGDConfig, SAEConfig, MODEL_REGISTRY
-├── encoder.py             # FinBERTEncoder (frozen), encode_with_delta()
-├── losses.py              # l_semantic_preservation, l_bias_*
-├── dataset.py             # load_tsad(), load_formal_sentences()
-├── run_all.py             # Full pipeline orchestrator (7 phases)
-├── data/
-│   └── embed.py           # Phase 1: encode & cache embeddings
-├── sae/
-│   ├── sae.py             # Phase 2: train SparseAutoencoder
-│   └── sae_analysis.py    # Phase 3a: extract v_style from SAE
-├── cbdc/
-│   └── refine.py          # Phase 3b: bipolar PGD → delta_star
-├── pipeline/
-│   ├── clean.py           # Phase 4: orthogonal projection
-│   ├── classify.py        # Phase 5: linear probe per condition
-│   └── evaluate.py        # Phase 6: full eval report
-└── cache/                 # Auto-generated intermediate files
-    ├── z_tweet_{split}.pt
-    ├── z_formal.pt
-    ├── sae_model.pt
-    ├── v_style.pt
-    ├── v_shift.pt
-    ├── delta_star.pt
-    └── results.pt
+Phase 1 writes:   cache/z_tweet_train.pt   {embeddings, labels, input_ids, attention_mask}
+                  cache/z_tweet_val.pt      {same}
+                  cache/z_tweet_test.pt     {same}
+                  cache/z_formal.pt         {embeddings}
+
+Phase 2 reads:    cache/z_tweet_train.pt, cache/z_formal.pt
+Phase 2 writes:   cache/sae_checkpoint.pt
+
+Phase 3a reads:   cache/sae_checkpoint.pt, z_tweet_train.pt, z_formal.pt
+Phase 3a writes:  cache/v_style.pt  (768,)
+                  cache/v_shift.pt  (768,)
+
+Phase 3b reads:   cache/z_tweet_train.pt  (embeddings + input_ids + attention_mask)
+                  cache/z_formal.pt       (embeddings only)
+                  cache/v_style.pt
+Phase 3b writes:  cache/delta_star.pt  (768,)
+
+Phase 4 reads:    cache/z_tweet_{train,val,test}.pt
+                  cache/delta_star.pt  (+ v_style, v_shift, computes label_guided)
+Phase 4 writes:   cache/z_tweet_{split}_clean_{direction}.pt  — 4 × 3 = 12 files
+
+Phase 5 reads:    all z_tweet_{split}_clean_{direction}.pt files
+Phase 5 writes:   cache/results.pt
+
+Phase 6 reads:    cache/results.pt, z_tweet_*.pt, z_formal.pt, direction vectors
+Phase 6 writes:   results/eval_report_new.txt
 ```

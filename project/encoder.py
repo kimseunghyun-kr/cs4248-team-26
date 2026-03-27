@@ -107,6 +107,67 @@ class FinBERTEncoder(nn.Module):
 
         return self._forward_from_embeds(perturbed, attention_mask)
 
+    def get_intermediate_features(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        n_layers: int = None,
+    ) -> torch.Tensor:
+        """
+        Run embedding layer + first n_layers transformer layers, return hidden states.
+
+        NLP analog of CLIP RN50's get_feature(): the frozen encoder body that produces
+        the intermediate representation z before the last-layer tail.
+
+        n_layers defaults to num_hidden_layers - 1 (all but the last layer).
+        Call under torch.no_grad() — this is the frozen body; no grad needed here.
+
+        Returns: (B, L, H) hidden states at the n_layers-th layer boundary.
+        """
+        if n_layers is None:
+            n_layers = self.backbone.config.num_hidden_layers - 1
+        embeds = self._get_embeddings(input_ids)
+        extended_mask = self.backbone.get_extended_attention_mask(
+            attention_mask, attention_mask.shape
+        )
+        hidden = embeds
+        for layer_module in self.backbone.encoder.layer[:n_layers]:
+            hidden = layer_module(hidden, extended_mask)[0]
+        return hidden  # (B, L, H)
+
+    def encode_with_delta_from_hidden(
+        self,
+        hidden_states: torch.Tensor,   # (B, L, H)  detached intermediate repr
+        attention_mask: torch.Tensor,  # (B, L)
+        delta: torch.Tensor,           # (B, H)  perturbation for CLS token only
+        start_layer: int = None,
+    ) -> torch.Tensor:
+        """
+        NLP analog of CLIP RN50's target_model.forward(z_adv): inject δ at the CLS
+        position of an intermediate hidden state, then run the last transformer layer(s).
+
+        hidden_states should be detached (produced by get_intermediate_features under
+        no_grad). delta carries the gradient: loss → layer[start_layer:] → delta.
+
+        start_layer defaults to num_hidden_layers - 1 (only the last layer runs).
+
+        Returns: L2-normalized CLS embedding (B, H).
+        """
+        if start_layer is None:
+            start_layer = self.backbone.config.num_hidden_layers - 1
+        B, L, H = hidden_states.shape
+        mask = torch.zeros(B, L, H, device=delta.device)
+        mask[:, 0, :] = 1.0
+        delta_full = delta.unsqueeze(1).expand(B, L, H) * mask   # (B, L, H)
+        perturbed = hidden_states + delta_full  # grad flows through delta_full → delta
+        extended_mask = self.backbone.get_extended_attention_mask(
+            attention_mask, attention_mask.shape
+        )
+        for layer_module in self.backbone.encoder.layer[start_layer:]:
+            perturbed = layer_module(perturbed, extended_mask)[0]
+        cls = perturbed[:, 0, :]
+        return F.normalize(cls, dim=-1)
+
     @torch.no_grad()
     def encode_ids(
         self,

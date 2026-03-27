@@ -26,12 +26,15 @@ Bipolar PGD  (paper eq. 10 → Section 4.4):
   delta_star = normalize(mean(V_B over all runs))
 
 Structural upgrade vs. previous pre-cached version:
-  * δ is now injected at the CLS token embedding level via
-    encoder.encode_with_delta(input_ids, attention_mask, δ).
-    Gradients flow through all 12 BERT transformer layers, matching the
-    original CLIP formulation where PGD perturbs through the encoder.
-  * Each anchor batch uses different input_ids → different attention patterns
-    → genuinely different loss curvature per run → diversity in V_B.
+  * δ is injected at the CLS position of the layer-10 intermediate hidden
+    state via encoder.encode_with_delta_from_hidden(h_layer10, mask, δ).
+    Gradients flow through only BERT layer 11 (the 1-layer tail), matching
+    the original CLIP RN50 route where PGD perturbs the representation
+    just before attnpool/c_proj.
+  * Intermediate hidden state h_layer10 is pre-computed once per run under
+    torch.no_grad() (frozen body), then reused across all PGD steps.
+  * Each anchor batch uses different input_ids → different h_layer10 →
+    different loss curvature per run → diversity in V_B.
   * z_orig (cached final embedding) is used only for L_s reference;
     it is not in the gradient graph.
 
@@ -91,10 +94,11 @@ def _pgd_bipolar(
     """
     Bipolar PGD: two opposing perturbations from the same anchor batch.
 
-    Positive δ+: pushes encode_with_delta(x, δ+) toward v_style  (tweet pole)
-    Negative δ−: pushes encode_with_delta(x, δ−) away from v_style (formal pole)
+    Positive δ+: pushes encode_with_delta_from_hidden(h_layer10, δ+) toward v_style
+    Negative δ−: pushes encode_with_delta_from_hidden(h_layer10, δ−) away from v_style
 
-    Gradients flow through encoder.encode_with_delta → full BERT transformer.
+    Gradient path: loss → BERT layer 11 (1-layer tail) → h_layer10_CLS + δ → δ.
+    This mirrors the CLIP RN50 route: z_adv perturbed before attnpool/c_proj.
     Backbone weights are frozen (requires_grad=False); only δ accumulates grads.
 
     Returns:
@@ -108,11 +112,13 @@ def _pgd_bipolar(
     v_style        = F.normalize(v_style.to(device), dim=-1)
     v_semantic     = F.normalize(v_semantic.to(device), dim=-1)
 
-    # z_orig: reference embedding with δ=0 for L_s computation.
-    # Computed once outside the loop — constant wrt δ.
+    # Pre-compute intermediate hidden state (layers 0–10) once — frozen body.
+    # h_layer10 is detached; gradient will only flow through layer 11.
     with torch.no_grad():
-        z_orig = encoder.encode_with_delta(
-            input_ids, attention_mask,
+        h_layer10 = encoder.get_intermediate_features(input_ids, attention_mask)
+        # z_orig: reference embedding with δ=0 for L_s computation.
+        z_orig = encoder.encode_with_delta_from_hidden(
+            h_layer10, attention_mask,
             torch.zeros(B, H, device=device)
         )  # (B, H)
 
@@ -129,8 +135,10 @@ def _pgd_bipolar(
         for _ in range(cfg.n_steps):
             optimizer.zero_grad()
 
-            # Forward through full BERT: gradient flows to delta via CLS embedding
-            z_pert = encoder.encode_with_delta(input_ids, attention_mask, delta)  # (B, H)
+            # Forward through layer 11 only: gradient flows to delta via CLS of h_layer10
+            z_pert = encoder.encode_with_delta_from_hidden(
+                h_layer10, attention_mask, delta
+            )  # (B, H)
 
             # L_B: cosine alignment with tweet pole (+) or formal pole (-)
             cos = F.cosine_similarity(z_pert, v_style.unsqueeze(0), dim=-1)  # (B,)
@@ -148,8 +156,8 @@ def _pgd_bipolar(
 
         # Final forward pass with optimized delta (no grad)
         with torch.no_grad():
-            z_final = encoder.encode_with_delta(
-                input_ids, attention_mask, delta.detach()
+            z_final = encoder.encode_with_delta_from_hidden(
+                h_layer10, attention_mask, delta.detach()
             )
         return z_final  # (B, H)
 
