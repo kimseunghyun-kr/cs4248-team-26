@@ -34,20 +34,24 @@ CACHE_DIR = os.environ.get("CACHE_DIR", _DEFAULT_CACHE)
 # ---------------------------------------------------------------------------
 def project_out(z: torch.Tensor, direction: torch.Tensor) -> torch.Tensor:
     """
-    Remove the component of z along direction.
+    Remove the style component of z.
 
     Args:
-        z         : (B, H)  L2-normalized embeddings
-        direction : (H,)    unit direction vector
+        z         : (N, H)  L2-normalized embeddings
+        direction : (H,)    unit direction vector  — scalar projection (existing behavior)
+                    (K, H)  orthonormal subspace   — matrix projection: z_clean = z − (z @ U^T) @ U
 
     Returns:
-        z_clean   : (B, H)  L2-normalized, direction component removed
+        z_clean   : (N, H)  L2-normalized, style component removed
     """
-    d = F.normalize(direction.to(z.device), dim=-1)           # (H,)
-    proj_scalar = (z @ d).unsqueeze(-1)                        # (B, 1)
-    proj_vec    = proj_scalar * d.unsqueeze(0)                 # (B, H)
-    z_clean     = z - proj_vec                                 # (B, H)
-    return F.normalize(z_clean, dim=-1)                        # (B, H) re-normalized
+    if direction.dim() == 1:
+        d = F.normalize(direction.to(z.device), dim=-1)           # (H,)
+        proj = (z @ d).unsqueeze(-1) * d.unsqueeze(0)             # (N, H)
+    else:
+        U = F.normalize(direction.to(z.device), dim=-1)           # (K, H) rows orthonormal
+        proj = (z @ U.T) @ U                                      # (N, H)
+    z_clean = z - proj
+    return F.normalize(z_clean, dim=-1)
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +96,8 @@ def compute_label_guided_direction(
 # ---------------------------------------------------------------------------
 def apply_cleaning(direction: torch.Tensor, direction_name: str) -> None:
     """Project out 'direction' from all cached tweet splits and save."""
-    direction = F.normalize(direction, dim=-1)
+    if direction.dim() == 1:
+        direction = F.normalize(direction, dim=-1)
     print(f"\nApplying '{direction_name}' projection ...")
 
     for split in ["train", "val", "test"]:
@@ -110,7 +115,11 @@ def apply_cleaning(direction: torch.Tensor, direction_name: str) -> None:
         z_clean = project_out(z, direction)
 
         # Report how much was removed
-        proj_magnitude = (z @ direction.to(z.device)).abs().mean().item()
+        if direction.dim() == 1:
+            proj_magnitude = (z @ direction.to(z.device)).abs().mean().item()
+        else:
+            U = F.normalize(direction.to(z.device), dim=-1)
+            proj_magnitude = (z @ U.T).abs().mean().item()
         print(f"  {split}: removed projection magnitude={proj_magnitude:.4f} "
               f"| shape={tuple(z_clean.shape)}")
 
@@ -128,14 +137,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--direction",
-        choices=["delta_star", "v_style", "v_shift", "label_guided", "all"],
+        choices=["delta_subspace", "v_style", "v_shift", "label_guided", "all"],
         default="all",
         help="Which direction(s) to project out. 'all' runs all four.",
     )
     args = parser.parse_args()
 
     directions_to_run = (
-        ["delta_star", "v_style", "v_shift", "label_guided"]
+        ["delta_subspace", "v_style", "v_shift", "label_guided"]
         if args.direction == "all"
         else [args.direction]
     )

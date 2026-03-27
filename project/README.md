@@ -137,23 +137,25 @@ sae_analysis.py :: main()
 
 ## Phase 3b — `cbdc/refine.py`  ← CORE
 
-**Purpose:** Refine `v_style` into `delta_star` using bipolar PGD. This is the CBDC algorithm.
+**Purpose:** Construct a style subspace `delta_subspace` via bipolar PGD + SVD. This is the CBDC algorithm (Section 4.3–4.4).
 
 ```
 refine.py :: main()
   │
-  ├─ load z_tweet_train.pt      → z_tweet (N, 768), input_ids (N, L), attention_mask (N, L)
-  ├─ load z_formal.pt           → z_formal (M, 768)
+  ├─ load z_tweet_train.pt      → z_tweet (N, 768), input_ids (N, L),
+  │                               attention_mask (N, L), labels (N,)
   ├─ load v_style.pt            → v_style (768,)          ← diagnostics only
   ├─ load style_anchors.pt      → style_anchors (32, 768) ← PGD positive poles
   ├─ load anti_style_anchors.pt → anti_anchors  (32, 768) ← PGD negative poles
   ├─ slice to --n_style_anchors (default 8): style_anchors[:8], anti_anchors[:8]
   ├─ FinBERTEncoder(model_name, device)
   │
-  └─ collect_delta_star(z_tweet, input_ids, attention_mask,
-                        style_anchors, anti_anchors, v_style, z_formal, cfg, encoder)
+  └─ collect_delta_star(z_tweet, input_ids, attention_mask, labels_tweet,
+                        style_anchors, anti_anchors, v_style, cfg, encoder,
+                        n_components=3)
        │
-       ├─ v_semantic = normalize(z_formal.mean(0))    → (768,)  formal centroid = L_s axis
+       ├─ v_semantic = normalize(mean(z_tweet[labels==2]) − mean(z_tweet[labels==0]))
+       │              → (768,)  sentiment axis (pos−neg centroid) = L_s preservation axis
        │
        └─ for run in range(n_runs=16):
             │
@@ -167,15 +169,19 @@ refine.py :: main()
                  └─ _pgd_bipolar(z_batch, ids_batch, mask_batch,
                                  style_anchors, anti_anchors, v_semantic, cfg, encoder)
                       │                                   ↑ SEE DETAIL BELOW
-                      └─ returns z_pos (500, 768), z_neg (500, 768)
-                      └─ V_B = normalize(mean(z_pos - z_neg, dim=0))  → (768,)
+                      └─ returns z_pos (500, 768), z_neg (500, 768), z_orig (500, 768)
+                      └─ v_plus  = normalize(mean(z_pos  - z_orig, dim=0))  → (768,)
+                         v_minus = normalize(mean(z_orig - z_neg,  dim=0))  → (768,)
                  │
-                 └─ V_B_run = normalize(mean(restart_directions))     → (768,)
+                 └─ run_plus  = normalize(mean(restart v_plus))   → (768,)
+                    run_minus = normalize(mean(restart v_minus))  → (768,)
+                    all_directions += [run_plus, run_minus]        ← 2 per run
             │
-            └─ all_directions.append(V_B_run)
-       │
-       └─ delta_star = normalize(mean(all_directions))   → (768,)
-          torch.save(delta_star, cache/delta_star.pt)
+            └─ directions = stack(all_directions)              → (2*n_runs, 768)
+               directions_c = directions − directions.mean(0)   ← mean-center
+               _, _, Vh = torch.linalg.svd(directions_c, full_matrices=False)
+               delta_subspace = Vh[:n_components]              → (K, 768)  orthonormal rows
+               torch.save(delta_subspace, cache/delta_subspace.pt)
 ```
 
 ### `_pgd_bipolar` — detailed call stack
@@ -211,7 +217,7 @@ _pgd_bipolar(z, input_ids, attention_mask, style_anchors, anti_anchors, v_semant
        _run_pole(push_toward_style):
        │
        ├─ delta = zeros(B, 768).requires_grad_(True)   ← the variable being optimized
-       ├─ optimizer = Adam([delta], lr=0.01)
+       │   [no optimizer object — sign-SGD is a manual update]
        │
        └─ for step in range(n_steps=50):
             │
@@ -239,12 +245,12 @@ _pgd_bipolar(z, input_ids, attention_mask, style_anchors, anti_anchors, v_semant
             ├─ losses.l_semantic_preservation(z_pert, z_orig, v_semantic)
             │    ├─ delta_z = z_pert - z_orig.detach()       (B, 768)
             │    ├─ proj = (delta_z * v_semantic).sum(dim=-1) (B,)
-            │    └─ returns (proj**2).mean()    ← penalize drift along semantic axis
+            │    └─ returns (proj**2).mean()    ← penalize drift along sentiment axis
             │
             ├─ loss = L_B + lambda_s * L_s
             ├─ loss.backward()      ← grad flows: loss → layer11 → delta_full → delta
-            ├─ optimizer.step()     ← update delta
-            └─ delta.data.clamp_(-epsilon, epsilon)   ← L∞ projection
+            ├─ delta.data -= step_lr * delta.grad.sign()   ← sign-SGD step (L∞ PGD)
+            └─ delta.data.clamp_(-epsilon, epsilon)         ← L∞ projection
        │
        └─ [FINAL FORWARD — no grad]
             encoder.encode_with_delta_from_hidden(h_layer10, mask, delta.detach())
@@ -276,19 +282,21 @@ delta (B, 768)
 ```
 clean.py :: main()
   │
-  ├─ for direction in [delta_star, v_style, v_shift, label_guided]:
-  │    load direction vector (768,)
+  ├─ for direction in [delta_subspace, v_style, v_shift, label_guided]:
+  │    load direction  (K, 768) for delta_subspace, (768,) for others
   │
   └─ apply_cleaning(direction, direction_name)
        └─ for split in [train, val, test]:
             load z_tweet_{split}.pt  → z (N, 768)
             │
             project_out(z, direction)
-              ├─ d = normalize(direction)                      (768,)
-              ├─ proj_scalar = (z @ d).unsqueeze(-1)          (N, 1)   ← scalar projection
-              ├─ proj_vec    = proj_scalar * d.unsqueeze(0)   (N, 768) ← vector along d
-              ├─ z_clean     = z - proj_vec                   (N, 768) ← orthogonal component
-              └─ return normalize(z_clean)                    (N, 768)
+              if direction.dim() == 1:   ← v_style / v_shift / label_guided
+                ├─ d = normalize(direction)                      (768,)
+                ├─ proj = (z @ d).unsqueeze(-1) * d.unsqueeze(0) (N, 768)
+              else:                      ← delta_subspace (K, 768) subspace
+                ├─ U = normalize(direction, dim=-1)              (K, 768) orthonormal rows
+                ├─ proj = (z @ U.T) @ U                          (N, 768)
+              └─ return normalize(z − proj)                      (N, 768)
             │
             torch.save({embeddings: z_clean, labels}, z_tweet_{split}_clean_{direction}.pt)
 ```
@@ -362,15 +370,15 @@ The two components operate in the **same 768-dim final CLS space** but at differ
 
 Phase 2–3a  (SAE)          Phase 3b  (CBDC PGD)             Phase 4  (clean.py)
 ─────────────────          ────────────────────             ──────────────────
-Trains dictionary          Uses style_anchors/anti_anchors  Projects delta_star
+Trains dictionary          Uses style_anchors/anti_anchors  Projects delta_subspace
   W_d: 1536 features         as K paired poles in L_B:        out of embeddings
                                cross_entropy([z·s_i, z·a_i])
-Scores features by                                           z_clean = z - (z·d)d
-tweet vs formal            Finds delta_star such that:
-activation delta             ∙ aligns with v_style     ──►  delta_star ∈ 768-dim
-                               (diagnostic check)             CLS space
-top-K decoder cols           ∙ doesn't drift along    ──►  same space as z_clean
-  → style_anchors              v_semantic
+Scores features by                                           z_clean = z - (z@U.T)@U
+tweet vs formal            Finds delta_subspace (K, 768)    (subspace projection)
+activation delta             via sign-SGD bipolar PGD
+                             + SVD of 2*n_runs directions
+top-K decoder cols           v_semantic = pos−neg centroid  ──► orthonormal subspace
+  → style_anchors              (sentiment axis, preserved)       in 768-dim CLS space
 bot-K decoder cols ───────►  PAIRED ANCHORS TO CBDC   ──►  USED HERE
   → anti_anchors                    │
         │                           │
@@ -381,10 +389,11 @@ v_style (aggregated)  ──────► DIAGNOSTICS ONLY
 
 **Key relationship:** `style_anchors` / `anti_anchors` (SAE output) serve as the K-anchor contrastive targets for the bipolar PGD L_B. They are the NLP analog of CLIP's `mix_pairs` — a set of distinct directions instead of a single fixed vector. Without the SAE, CBDC would have no definition of "tweet style" and would require contrastive text prompts like the original CLIP version.
 
-`delta_star` (CBDC output) is a refined version of `v_style` that is:
-- More precisely aligned to the tweet/formal axis (bipolar search removes noise)
-- More orthogonal to `v_semantic` (semantic preservation loss enforces this)
-- More stable across samples (averaged over 16 runs × 3 restarts)
+`delta_subspace` (CBDC output) is a (K, 768) orthonormal basis that:
+- Spans the principal style variation across 2×n_runs bipolar directions
+- Is more faithful to CBDC Section 4.3 (S_B as a subspace, not a single vector)
+- Has rows orthonormal to each other (SVD guarantees this)
+- Preserves sentiment signal via L_s on the sentiment axis v_semantic
 
 ---
 
@@ -406,15 +415,14 @@ Phase 3a writes:  cache/v_style.pt             (768,)   aggregated direction (di
                   cache/style_anchors.pt       (K, 768) top-K decoder cols (tweet-differential)
                   cache/anti_style_anchors.pt  (K, 768) bot-K decoder cols (formal-differential)
 
-Phase 3b reads:   cache/z_tweet_train.pt       (embeddings + input_ids + attention_mask)
-                  cache/z_formal.pt            (embeddings only)
+Phase 3b reads:   cache/z_tweet_train.pt       (embeddings + input_ids + attention_mask + labels)
                   cache/v_style.pt             (diagnostics only)
                   cache/style_anchors.pt       (positive poles for L_B)
                   cache/anti_style_anchors.pt  (negative poles for L_B)
-Phase 3b writes:  cache/delta_star.pt  (768,)
+Phase 3b writes:  cache/delta_subspace.pt  (K, 768)  orthonormal style subspace
 
 Phase 4 reads:    cache/z_tweet_{train,val,test}.pt
-                  cache/delta_star.pt  (+ v_style, v_shift, computes label_guided)
+                  cache/delta_subspace.pt  (+ v_style, v_shift, computes label_guided)
 Phase 4 writes:   cache/z_tweet_{split}_clean_{direction}.pt  — 4 × 3 = 12 files
 
 Phase 5 reads:    all z_tweet_{split}_clean_{direction}.pt files
@@ -546,18 +554,14 @@ perturbed[:, j, :] = h_layer10[:, j, :]            for j > 0
 ∂perturbed[:, j, :]/∂delta = 0   for j > 0
 ```
 
-**Adam update**
+**Sign-SGD update**
 ```
-g = delta.grad                    (B, 768) — aggregated gradient from all above
-m ← β1·m + (1-β1)·g              momentum (direction smoothing)
-v ← β2·v + (1-β2)·g²             adaptive scale (per-dimension)
-delta ← delta - lr · m̂ / (√v̂ + ε)
-delta.data.clamp_(-epsilon, epsilon)   L∞ projection
+g = delta.grad                               (B, 768) — aggregated gradient from all above
+delta.data -= step_lr * g.sign()             sign-SGD: equal step in every dimension
+delta.data.clamp_(-epsilon, epsilon)         L∞ projection
 ```
 
-Adam's per-dimension scaling means components of `delta` where the gradient is
-consistently small (orthogonal directions) get amplified less than the style-aligned
-dimensions where the gradient is steep. This naturally shapes delta toward the style axis.
+Sign-SGD is the theoretically correct optimizer for L∞-bounded PGD (Madry et al.): every coordinate takes a fixed step of size `step_lr`, and the L∞ clamp enforces the budget constraint regardless of gradient magnitude. The CLIP implementation uses the identical update (`grad_sign = z_adv.grad.sign(); z_adv += grad_sign * att_stp`). Adam's adaptive per-dimension scaling and momentum are not principled when the update is immediately projected back into the L∞ ball.
 
 ---
 
@@ -604,9 +608,9 @@ z_adv1 (S, D_intermediate)   ← intermediate repr BEFORE projection
 | **L_B loss** | Cross-entropy over `adv_feat @ mix_pairs` (K text-pair anchors) | Cross-entropy over `z_pert @ [style_anchors, anti_anchors]` (K SAE-derived pairs) |
 | **L_B gradient direction** | Σ (softmax − one_hot) ⊗ mix_pair cols → weighted combination of K bias text directions | Σ (softmax − one_hot) ⊗ [style_anchors[j], anti_anchors[j]] → weighted combination of K SAE decoder cols |
 | **L_B gradient magnitude** | Adaptive — decreases as prediction becomes confident (softmax → 1) | Same — adaptive saturation via softmax |
-| **L_s definition** | `((adv_feat − ori) @ keep.T)².mean()` where `keep` = semantic class texts | `((z_pert − z_orig) · v_semantic)².mean()` |
+| **L_s definition** | `((adv_feat − ori) @ keep.T)².mean()` where `keep` = semantic class texts | `((z_pert − z_orig) · v_semantic)².mean()` where `v_semantic` = sentiment axis (pos−neg centroid) |
 | **L_s sign in loss** | `loss = att_loss*(1-kw) − keep_loss*kw` → MAXIMIZES drift along keep directions | `loss = L_B + λ_s * L_s` → MINIMIZES drift along v_semantic |
-| **Optimizer** | Sign-SGD (sign of gradient) + L∞ clamp | Adam + L∞ clamp |
+| **Optimizer** | Sign-SGD (sign of gradient) + L∞ clamp | Sign-SGD (sign of gradient) + L∞ clamp |
 | **Restarts** | `num_samples` loop with random perturbations | `n_restarts` loop |
 
 ### On the L_s sign difference

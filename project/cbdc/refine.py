@@ -97,7 +97,7 @@ def _pgd_bipolar(
     encoder: FinBERTEncoder,
     device: str,
     rand_eps: float = 0.0,         # random init radius (0 = zero init)
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Bipolar PGD: two opposing perturbations from the same anchor batch.
 
@@ -107,13 +107,19 @@ def _pgd_bipolar(
     L_B uses K anchor pairs (style_anchors[i], anti_anchors[i]) — analogous to
     CLIP's mix_pairs, giving a contrastive, multi-anchor, saturation-aware gradient.
 
+    Optimizer: sign-SGD with L∞ projection after each step (Madry et al.).
+    This is the theoretically correct optimizer for L∞-bounded PGD — the original
+    CLIP code uses it exclusively. Adam's adaptive scaling is unnecessary when every
+    coordinate is clamped to [-ε, ε] regardless.
+
     Gradient path: loss → BERT layer 11 (1-layer tail) → h_layer10_CLS + δ → δ.
     This mirrors the CLIP RN50 route: z_adv perturbed before attnpool/c_proj.
     Backbone weights are frozen (requires_grad=False); only δ accumulates grads.
 
     Returns:
-        z_pos (B, H)  normalized embeddings at tweet pole
-        z_neg (B, H)  normalized embeddings at formal pole
+        z_pos  (B, H)  normalized embeddings at tweet pole
+        z_neg  (B, H)  normalized embeddings at formal pole
+        z_orig (B, H)  normalized embeddings at δ=0 (needed for v_plus/v_minus in caller)
     """
     B, H = z.shape
     z              = z.to(device).detach()
@@ -127,7 +133,7 @@ def _pgd_bipolar(
     # h_layer10 is detached; gradient will only flow through layer 11.
     with torch.no_grad():
         h_layer10 = encoder.get_intermediate_features(input_ids, attention_mask)
-        # z_orig: reference embedding with δ=0 for L_s computation.
+        # z_orig: reference embedding with δ=0 for L_s computation and v_plus/v_minus.
         z_orig = encoder.encode_with_delta_from_hidden(
             h_layer10, attention_mask,
             torch.zeros(B, H, device=device)
@@ -141,10 +147,10 @@ def _pgd_bipolar(
             init = torch.zeros(B, H, device=device)
 
         delta = init.clone().requires_grad_(True)
-        optimizer = torch.optim.Adam([delta], lr=cfg.step_lr)
 
         for _ in range(cfg.n_steps):
-            optimizer.zero_grad()
+            if delta.grad is not None:
+                delta.grad.zero_()
 
             # Forward through layer 11 only: gradient flows to delta via CLS of h_layer10
             z_pert = encoder.encode_with_delta_from_hidden(
@@ -156,14 +162,15 @@ def _pgd_bipolar(
             #   Negative pole → target class 1 (anti)    pulls z_pert toward anti_anchors
             L_B = l_bias_contrastive(z_pert, style_anchors, anti_anchors, push_toward_style)
 
-            # L_s: preserve projection onto formal semantic axis (paper eq. 9)
+            # L_s: preserve projection onto sentiment semantic axis (paper eq. 9)
             L_s = l_semantic_preservation(z_pert, z_orig, v_semantic)
 
             (L_B + cfg.lambda_s * L_s).backward()
-            optimizer.step()
 
-            # L∞ projection (paper eq. 10 / original clamper)
             with torch.no_grad():
+                # Sign-SGD step: equal treatment of all dimensions (correct for L∞ PGD)
+                delta.data -= cfg.step_lr * delta.grad.sign()
+                # L∞ projection (paper eq. 10 / original clamper)
                 delta.data.clamp_(-cfg.epsilon, cfg.epsilon)
 
         # Final forward pass with optimized delta (no grad)
@@ -175,7 +182,7 @@ def _pgd_bipolar(
 
     z_pos = _run_pole(push_toward_style=True)
     z_neg = _run_pole(push_toward_style=False)
-    return z_pos, z_neg
+    return z_pos, z_neg, z_orig
 
 
 # ---------------------------------------------------------------------------
@@ -185,33 +192,61 @@ def collect_delta_star(
     z_tweet: torch.Tensor,               # (N, H)
     input_ids_tweet: torch.Tensor,       # (N, L)
     attention_mask_tweet: torch.Tensor,  # (N, L)
+    labels_tweet: torch.Tensor,          # (N,)   sentiment labels (0=neg, 1=neu, 2=pos)
     style_anchors: torch.Tensor,         # (K, H)  tweet-style anchor directions
     anti_anchors: torch.Tensor,          # (K, H)  formal-style anchor directions
     v_style: torch.Tensor,               # (H,)    aggregated direction (diagnostics only)
-    z_formal: torch.Tensor,              # (M, H)
     cfg: PGDConfig,
     encoder: FinBERTEncoder,
     n_runs: int,
     n_restarts: int,
     device: str,
+    n_components: int = 3,
 ) -> torch.Tensor:
     """
-    Collects bipolar directions V_B = normalize(mean(z_pos − z_neg)) over
-    n_runs random anchor batches, each with n_restarts random initialisations.
+    Collects bipolar directions over n_runs random anchor batches with n_restarts
+    random initialisations each, then extracts a (K, H) style subspace via SVD.
+
+    Sentiment axis (v_semantic):
+      v_semantic = normalize(mean(z_tweet[pos]) − mean(z_tweet[neg]))
+      This directly targets the sentiment axis for L_s preservation,
+      rather than using the formal centroid as an indirect proxy.
+
+    Per-restart collection (v_plus, v_minus separate):
+      v_plus  = normalize(mean(z_pos − z_orig))   — style push direction
+      v_minus = normalize(mean(z_orig − z_neg))   — formal push direction
+      These are averaged per run, then stacked → (2*n_runs, H).
+
+    Subspace SVD (CBDC paper Section 4.3):
+      Mean-center the direction matrix, run torch.linalg.svd, return top-K
+      right singular vectors as delta_subspace (K, H) — orthonormal rows.
 
     style_anchors / anti_anchors (K, H) replace the single v_style in L_B,
     giving a contrastive multi-anchor loss analogous to CLIP's mix_pairs.
     v_style is retained only for the post-run diagnostic cosine check.
 
-    Returns delta_star: (H,) normalized aggregated direction.
+    Returns delta_subspace: (n_components, H) orthonormal subspace basis.
     """
-    v_semantic = F.normalize(z_formal.mean(0), dim=-1)
-    print(f"  v_semantic = formal centroid  norm={v_semantic.norm():.4f}")
+    # --- Sentiment axis -------------------------------------------------------
+    pos_mask = (labels_tweet == 2)
+    neg_mask = (labels_tweet == 0)
+    z_pos_sent = z_tweet[pos_mask].mean(0).to(device)
+    z_neg_sent = z_tweet[neg_mask].mean(0).to(device)
+    v_semantic = F.normalize(z_pos_sent - z_neg_sent, dim=-1)
+
+    # Sanity: cos(v_semantic, pos_centroid) ≈ 1, cos(v_semantic, neg_centroid) ≈ -1
+    cos_sem_pos = F.cosine_similarity(v_semantic.unsqueeze(0),
+                                      F.normalize(z_pos_sent.unsqueeze(0), dim=-1)).item()
+    cos_sem_neg = F.cosine_similarity(v_semantic.unsqueeze(0),
+                                      F.normalize(z_neg_sent.unsqueeze(0), dim=-1)).item()
+    print(f"  v_semantic = sentiment axis  "
+          f"cos(pos)={cos_sem_pos:.4f}  cos(neg)={cos_sem_neg:.4f}")
+    print(f"  (pos_mask={pos_mask.sum().item()}  neg_mask={neg_mask.sum().item()})")
     print(f"  style_anchors: {tuple(style_anchors.shape)}  "
           f"anti_anchors: {tuple(anti_anchors.shape)}")
 
     batch_size = min(cfg.n_anchors, len(z_tweet))
-    all_directions = []
+    all_directions = []  # will hold (v_plus, v_minus) per run — 2 entries per run
 
     for run in tqdm(range(n_runs), desc="PGD bipolar runs"):
         indices    = torch.randperm(len(z_tweet))[:batch_size]
@@ -219,60 +254,64 @@ def collect_delta_star(
         ids_batch  = input_ids_tweet[indices]
         mask_batch = attention_mask_tweet[indices]
 
-        restart_directions = []
+        restart_pos = []   # v_plus  per restart
+        restart_neg = []   # v_minus per restart
         rand_eps = cfg.epsilon * 0.5 if n_restarts > 1 else 0.0
 
         for restart in range(n_restarts):
             ep = rand_eps if restart > 0 else 0.0
-            z_pos, z_neg = _pgd_bipolar(
+            z_pos, z_neg, z_orig = _pgd_bipolar(
                 z_batch, ids_batch, mask_batch,
                 style_anchors, anti_anchors, v_semantic,
                 cfg, encoder, device,
                 rand_eps=ep,
             )
             with torch.no_grad():
-                # V_B = v+ − v− (paper eq. 6)
-                V_B = F.normalize((z_pos - z_neg).mean(dim=0), dim=-1)
-                restart_directions.append(V_B.cpu())
+                v_plus  = F.normalize((z_pos - z_orig).mean(dim=0), dim=-1)
+                v_minus = F.normalize((z_orig - z_neg).mean(dim=0), dim=-1)
+                restart_pos.append(v_plus.cpu())
+                restart_neg.append(v_minus.cpu())
 
-        # Average across restarts → one stable direction per run
-        V_B_run = F.normalize(
-            torch.stack(restart_directions, dim=0).mean(dim=0), dim=-1
-        )
-        all_directions.append(V_B_run)
+        # Average across restarts → one stable direction per pole per run
+        run_plus  = F.normalize(torch.stack(restart_pos).mean(0), dim=-1)
+        run_minus = F.normalize(torch.stack(restart_neg).mean(0), dim=-1)
+        all_directions.append(run_plus)
+        all_directions.append(run_minus)
 
-    directions = torch.stack(all_directions, dim=0)   # (n_runs, H)
-    delta_star = F.normalize(directions.mean(dim=0), dim=-1)
+    # --- Subspace SVD ---------------------------------------------------------
+    directions   = torch.stack(all_directions, dim=0)          # (2*n_runs, H)
+    directions_c = directions - directions.mean(dim=0)          # mean-center
+
+    _, _, Vh = torch.linalg.svd(directions_c, full_matrices=False)
+    delta_subspace = Vh[:n_components]                          # (K, H)  orthonormal rows
 
     # --- Diagnostics ----------------------------------------------------------
-    # v_style is the aggregated (weighted-sum) direction from sae_analysis.py;
-    # a good delta_star should still align with it even though we no longer
-    # fix the PGD target to this single vector.
-    cos_with_vstyle = F.cosine_similarity(
-        delta_star.unsqueeze(0), v_style.unsqueeze(0)
-    ).item()
-    cos_with_vsem = F.cosine_similarity(
-        delta_star.unsqueeze(0), v_semantic.cpu().unsqueeze(0)
-    ).item()
-    print(f"\n  cosine(delta_star, v_style)    = {cos_with_vstyle:.4f}  (should be > 0.3)")
-    print(f"  cosine(delta_star, v_semantic) = {cos_with_vsem:.4f}   (should be small)")
+    print(f"\n  delta_subspace shape: {tuple(delta_subspace.shape)}")
 
-    # Mean cosine of delta_star to each individual style anchor
-    cos_per_anchor = (style_anchors @ delta_star.unsqueeze(-1)).squeeze(-1)  # (K,)
-    print(f"  cosine(delta_star, style_anchors) — mean={cos_per_anchor.mean():.4f}  "
-          f"max={cos_per_anchor.max():.4f}  min={cos_per_anchor.min():.4f}")
+    # Orthonormality check: delta_subspace @ delta_subspace.T ≈ I_K
+    gram = delta_subspace @ delta_subspace.T
+    eye  = torch.eye(n_components)
+    ortho_err = (gram - eye).abs().max().item()
+    print(f"  Orthonormality error (max |GG^T − I|): {ortho_err:.2e}  (should be ≈ 0)")
 
-    # Pairwise diversity: lower = more diverse runs
-    pairwise = directions @ directions.T   # (n_runs, n_runs)
-    off_diag = pairwise[~torch.eye(n_runs, dtype=torch.bool)].mean().item()
-    print(f"  mean pairwise cosine between runs = {off_diag:.4f}  (lower → more diverse)")
+    for i in range(n_components):
+        comp = delta_subspace[i]
+        c_style = F.cosine_similarity(comp.unsqueeze(0), v_style.unsqueeze(0)).item()
+        c_sem   = F.cosine_similarity(comp.unsqueeze(0), v_semantic.cpu().unsqueeze(0)).item()
+        print(f"  component {i}: cosine(v_style)={c_style:.4f}  cosine(v_semantic)={c_sem:.4f}")
 
-    if cos_with_vstyle > 0.3:
-        print("  ✓ CBDC bipolar refinement preserved alignment with v_style")
+    if delta_subspace[0] @ v_style > 0.3:
+        print("  ✓ CBDC subspace component_0 aligns with v_style")
     else:
         print("  ⚠ Low alignment — try more n_steps or larger epsilon")
 
-    return delta_star
+    # Mean pairwise cosine for diversity check
+    n_dirs = directions.shape[0]
+    pairwise = directions @ directions.T   # (2*n_runs, 2*n_runs)
+    off_diag = pairwise[~torch.eye(n_dirs, dtype=torch.bool)].mean().item()
+    print(f"  mean pairwise cosine between directions = {off_diag:.4f}  (lower → more diverse)")
+
+    return delta_subspace
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +331,9 @@ def main():
     parser.add_argument("--epsilon",         type=float, default=0.10)
     parser.add_argument("--lambda_s",        type=float, default=0.2)
     parser.add_argument("--step_lr",         type=float, default=0.01)
+    parser.add_argument("--n_components",    type=int,   default=3,
+                        help="Number of SVD principal components for the style subspace. "
+                             "Output delta_subspace.pt has shape (n_components, H). Default: 3.")
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -299,12 +341,11 @@ def main():
 
     # ---- Load cached data ---------------------------------------------------
     tweet_path        = os.path.join(CACHE_DIR, "z_tweet_train.pt")
-    formal_path       = os.path.join(CACHE_DIR, "z_formal.pt")
     vstyle_path       = os.path.join(CACHE_DIR, "v_style.pt")
     style_anch_path   = os.path.join(CACHE_DIR, "style_anchors.pt")
     anti_anch_path    = os.path.join(CACHE_DIR, "anti_style_anchors.pt")
 
-    for p in [tweet_path, formal_path, vstyle_path, style_anch_path, anti_anch_path]:
+    for p in [tweet_path, vstyle_path, style_anch_path, anti_anch_path]:
         if not os.path.exists(p):
             raise FileNotFoundError(
                 f"Missing: {p}\nRun embed.py → sae.py → sae_analysis.py first."
@@ -313,16 +354,17 @@ def main():
     tweet_data = torch.load(tweet_path, map_location="cpu")
     z_tweet    = tweet_data["embeddings"]
 
-    # input_ids and attention_mask must have been saved by the updated embed.py
-    if "input_ids" not in tweet_data or "attention_mask" not in tweet_data:
-        raise KeyError(
-            "z_tweet_train.pt is missing 'input_ids' / 'attention_mask'.\n"
-            "Re-run embed.py with the updated version that saves token tensors."
-        )
+    # input_ids, attention_mask and labels must have been saved by the updated embed.py
+    for key in ("input_ids", "attention_mask", "labels"):
+        if key not in tweet_data:
+            raise KeyError(
+                f"z_tweet_train.pt is missing '{key}'.\n"
+                "Re-run embed.py with the updated version that saves token tensors and labels."
+            )
     input_ids_tweet      = tweet_data["input_ids"]       # (N, L)
     attention_mask_tweet = tweet_data["attention_mask"]  # (N, L)
+    labels_tweet         = tweet_data["labels"]           # (N,)  0=neg 1=neu 2=pos
 
-    z_formal = torch.load(formal_path, map_location="cpu")["embeddings"]
     v_style  = torch.load(vstyle_path, map_location="cpu")
 
     # Load anchor matrices from sae_analysis.py; slice to --n_style_anchors
@@ -332,8 +374,7 @@ def main():
     style_anchors = style_anchors_full[:K]   # (K, H)
     anti_anchors  = anti_anchors_full[:K]    # (K, H)
 
-    print(f"z_tweet={tuple(z_tweet.shape)} | z_formal={tuple(z_formal.shape)} | "
-          f"v_style={tuple(v_style.shape)}")
+    print(f"z_tweet={tuple(z_tweet.shape)} | v_style={tuple(v_style.shape)}")
     print(f"input_ids={tuple(input_ids_tweet.shape)} | "
           f"attention_mask={tuple(attention_mask_tweet.shape)}")
     print(f"style_anchors={tuple(style_anchors.shape)} (using {K} of "
@@ -359,24 +400,25 @@ def main():
           f"n_anchors={args.n_anchors} | n_steps={args.n_steps} | "
           f"K={K} anchors | ε={args.epsilon} | λ_s={args.lambda_s}")
 
-    delta_star = collect_delta_star(
+    delta_subspace = collect_delta_star(
         z_tweet              = z_tweet,
         input_ids_tweet      = input_ids_tweet,
         attention_mask_tweet = attention_mask_tweet,
+        labels_tweet         = labels_tweet,
         style_anchors        = style_anchors,
         anti_anchors         = anti_anchors,
         v_style              = v_style,
-        z_formal             = z_formal,
         cfg                  = cfg,
         encoder              = encoder,
         n_runs               = args.n_runs,
         n_restarts           = args.n_restarts,
         device               = device,
+        n_components         = args.n_components,
     )
 
-    out_path = os.path.join(CACHE_DIR, "delta_star.pt")
-    torch.save(delta_star, out_path)
-    print(f"\ndelta_star saved → {out_path}")
+    out_path = os.path.join(CACHE_DIR, "delta_subspace.pt")
+    torch.save(delta_subspace, out_path)
+    print(f"\ndelta_subspace shape={tuple(delta_subspace.shape)} saved → {out_path}")
     print("CBDC bipolar refinement complete.")
 
 

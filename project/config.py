@@ -24,11 +24,12 @@ def model_slug(key: str) -> str:
 @dataclass
 class PGDConfig:
     epsilon: float = 0.10        # perturbation ball radius (increased from 0.08)
-    n_steps: int = 50            # Adam steps (increased from 15; needs ~50 to converge)
-    step_lr: float = 0.01        # Adam lr for delta optimizer
+    n_steps: int = 50            # sign-SGD steps per PGD run
+    step_lr: float = 0.01        # fixed step size per sign-SGD iteration (L∞ PGD)
     lambda_s: float = 0.2        # semantic preservation weight (loosened from 0.4)
     n_directions: int = 16       # directions collected (increased from 8)
     n_anchors: int = 500         # anchor samples for refinement (increased from 100)
+    n_components: int = 3        # rank of delta_subspace (K in (K, H) output)
     device: str = "cpu"          # overridden at runtime
 
 
