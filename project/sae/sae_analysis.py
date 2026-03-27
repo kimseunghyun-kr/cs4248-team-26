@@ -58,11 +58,18 @@ def extract_style_direction(
     z_formal: torch.Tensor,
     top_k: int,
     device: str = "cpu",
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Returns:
-      v_style   (768,) — weighted decoder direction for tweet style
-      style_scores (hidden_dim,) — raw per-feature style scores
+      v_style        (768,)   — weighted decoder direction for tweet style (aggregated)
+      style_scores   (hidden_dim,) — raw per-feature style scores
+      style_anchors  (K, 768) — individual top-K decoder columns (tweet-differential)
+      anti_anchors   (K, 768) — individual bottom-K decoder columns (formal-differential)
+
+    style_anchors / anti_anchors are the NLP analog of CLIP's mix_pairs:
+    instead of a single fixed v_style, the PGD loss uses K paired anchors so
+    the gradient is contrastive and multi-directional (mirrors the structure of
+    perturb_bafa_txt_multi_ablation_lb_ls in the original CLIP code).
     """
     print("Computing mean activations on tweet corpus ...")
     tweet_mean_acts  = compute_mean_activations(model, z_tweet,  device=device)
@@ -75,18 +82,26 @@ def extract_style_direction(
     top_k_indices = torch.argsort(style_scores, descending=True)[:top_k]
     top_k_scores  = style_scores[top_k_indices]         # (K,)
 
+    # bottom-K features most differentially active on formal vs tweets (anti-style)
+    bottom_k_indices = torch.argsort(style_scores, descending=False)[:top_k]
+
     print(f"  Top-{top_k} style features | max_score={top_k_scores[0]:.4f} | "
           f"min_score={top_k_scores[-1]:.4f}")
 
     # Decoder columns for top-K features: (input_dim, K) — pull to CPU for indexing
     decoder_weights = model.decoder.weight.data.cpu()    # (input_dim, hidden_dim)
     top_k_decoder   = decoder_weights[:, top_k_indices]  # (input_dim, K)
+    bot_k_decoder   = decoder_weights[:, bottom_k_indices]  # (input_dim, K)
 
-    # Weighted sum of decoder columns → style direction (both on CPU)
+    # Weighted sum of decoder columns → style direction (aggregated, for diagnostics)
     v_style = top_k_decoder @ top_k_scores               # (input_dim,)
     v_style = F.normalize(v_style, dim=-1)
 
-    return v_style, style_scores
+    # Individual L2-normalized decoder columns as paired anchor matrices
+    style_anchors = F.normalize(top_k_decoder.T, dim=-1)  # (K, input_dim)
+    anti_anchors  = F.normalize(bot_k_decoder.T, dim=-1)  # (K, input_dim)
+
+    return v_style, style_scores, style_anchors, anti_anchors
 
 
 def main():
@@ -121,11 +136,13 @@ def main():
     print(f"SAE loaded: input={model.decoder.weight.shape[0]} "
           f"hidden={model.decoder.weight.shape[1]}")
 
-    # ---- Extract v_style ----------------------------------------------------
-    v_style, style_scores = extract_style_direction(
+    # ---- Extract v_style + anchor matrices ----------------------------------
+    v_style, style_scores, style_anchors, anti_anchors = extract_style_direction(
         model, z_tweet, z_formal, top_k=args.top_k, device=device
     )
     print(f"\nv_style shape: {tuple(v_style.shape)}")
+    print(f"style_anchors shape: {tuple(style_anchors.shape)}  "
+          f"anti_anchors shape: {tuple(anti_anchors.shape)}")
 
     # ---- Compute mean-shift baseline ----------------------------------------
     v_shift = F.normalize(z_tweet.mean(0) - z_formal.mean(0), dim=-1)
@@ -151,14 +168,18 @@ def main():
         print(f"  rank {rank+1:2d} | feature {idx.item():4d} | score {style_scores[idx].item():.4f}")
 
     # ---- Save ---------------------------------------------------------------
-    torch.save(v_style,  os.path.join(CACHE_DIR, "v_style.pt"))
-    torch.save(v_shift,  os.path.join(CACHE_DIR, "v_shift.pt"))
-    torch.save(style_scores, os.path.join(CACHE_DIR, "style_scores.pt"))
+    torch.save(v_style,        os.path.join(CACHE_DIR, "v_style.pt"))
+    torch.save(v_shift,        os.path.join(CACHE_DIR, "v_shift.pt"))
+    torch.save(style_scores,   os.path.join(CACHE_DIR, "style_scores.pt"))
+    torch.save(style_anchors,  os.path.join(CACHE_DIR, "style_anchors.pt"))
+    torch.save(anti_anchors,   os.path.join(CACHE_DIR, "anti_style_anchors.pt"))
 
     print(f"\nSaved:")
-    print(f"  v_style.pt      → {os.path.join(CACHE_DIR, 'v_style.pt')}")
-    print(f"  v_shift.pt      → {os.path.join(CACHE_DIR, 'v_shift.pt')}")
-    print(f"  style_scores.pt → {os.path.join(CACHE_DIR, 'style_scores.pt')}")
+    print(f"  v_style.pt             → {os.path.join(CACHE_DIR, 'v_style.pt')}")
+    print(f"  v_shift.pt             → {os.path.join(CACHE_DIR, 'v_shift.pt')}")
+    print(f"  style_scores.pt        → {os.path.join(CACHE_DIR, 'style_scores.pt')}")
+    print(f"  style_anchors.pt       → {os.path.join(CACHE_DIR, 'style_anchors.pt')}  shape={tuple(style_anchors.shape)}")
+    print(f"  anti_style_anchors.pt  → {os.path.join(CACHE_DIR, 'anti_style_anchors.pt')}  shape={tuple(anti_anchors.shape)}")
     print("SAE analysis complete.")
 
 

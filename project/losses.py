@@ -52,6 +52,55 @@ def l_bias_bipolar(
 
 
 # ---------------------------------------------------------------------------
+# L_B contrastive (CLIP-style multi-anchor cross-entropy)
+# ---------------------------------------------------------------------------
+def l_bias_contrastive(
+    z_pert: torch.Tensor,          # (B, H)  normalized perturbed embedding
+    style_anchors: torch.Tensor,   # (K, H)  normalized tweet-style anchor directions
+    anti_anchors: torch.Tensor,    # (K, H)  normalized formal-style anchor directions
+    push_toward_style: bool,
+    temperature: float = 100.0,
+) -> torch.Tensor:
+    """
+    CLIP-style pairwise cross-entropy L_B with a multi-anchor style set.
+
+    NLP analog of perturb_bafa_txt_multi_ablation_lb_ls (simple_pgd.py):
+      logits_i = [z · style_i,  z · anti_i]  for i = 0..K-1
+      L_B = cross_entropy(temperature * logits, target_class)
+
+    Positive pole (push_toward_style=True):
+      target = 0  →  maximize z · style_i  (confidence in style class decays naturally)
+    Negative pole (push_toward_style=False):
+      target = 1  →  maximize z · anti_i   (push toward formal/anti-style)
+
+    Advantages over cosine L_B:
+      * Gradient decays to zero when prediction is confident (no saturation waste)
+      * Contrastive: simultaneously pulls toward style AND pushes away from anti-style
+      * Multi-anchor: K directions, not a single fixed v_style
+
+    Shape: logits (B*K, 2), labels (B*K,) → scalar loss.
+    """
+    B = z_pert.shape[0]
+    K = style_anchors.shape[0]
+    device = z_pert.device
+
+    style_anchors = F.normalize(style_anchors.to(device), dim=-1)  # (K, H)
+    anti_anchors  = F.normalize(anti_anchors.to(device),  dim=-1)  # (K, H)
+
+    # (B, K) pairwise dot products
+    sim_style = z_pert @ style_anchors.T   # (B, K)
+    sim_anti  = z_pert @ anti_anchors.T    # (B, K)
+
+    # Stack to (B, K, 2) → (B*K, 2), scale for softmax sharpness
+    logits = torch.stack([sim_style, sim_anti], dim=-1).view(B * K, 2) * temperature
+
+    target_class = 0 if push_toward_style else 1
+    labels = torch.full((B * K,), target_class, dtype=torch.long, device=device)
+
+    return F.cross_entropy(logits, labels)
+
+
+# ---------------------------------------------------------------------------
 # L_s  semantic preservation
 # ---------------------------------------------------------------------------
 def l_semantic_preservation(
