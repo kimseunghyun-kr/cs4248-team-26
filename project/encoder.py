@@ -204,19 +204,23 @@ class FinBERTEncoder(nn.Module):
         delta_full = delta.unsqueeze(1).expand(B, L, H) * mask   # (B, L, H)
         perturbed = hidden_states + delta_full  
         
+        # 3. Robust layer loop
         for i, layer_module in enumerate(self.backbone.encoder.layer[start_layer:]):
             try:
-                perturbed = layer_module(perturbed, sdpa_mask)[0]
+                # Pass as kwargs to prevent positional API mismatch
+                out = layer_module(hidden_states=perturbed, attention_mask=sdpa_mask)
+                
+                # FIX: Handle both tuple and raw tensor returns safely
+                perturbed = out[0] if isinstance(out, tuple) else out
+                
             except Exception as e:
                 actual_layer_idx = start_layer + i
                 print(f"\n[FATAL ERROR] encode_with_delta_from_hidden crashed at layer {actual_layer_idx}!")
-                print(f"  -> Perturbed     : shape={perturbed.shape}, dtype={perturbed.dtype}")
-                print(f"  -> SDPA Mask     : shape={sdpa_mask.shape}, dtype={sdpa_mask.dtype}")
                 raise e
             
         cls = perturbed[:, 0, :]
         return F.normalize(cls, dim=-1)
-
+    
     @torch.no_grad()
     def encode_ids(
         self,
