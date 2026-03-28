@@ -20,7 +20,7 @@ class FinBERTEncoder(nn.Module):
 
         print(f"Loading tokenizer and model from '{model_name}' ...")
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.backbone = AutoModel.from_pretrained(model_name)
+        self.backbone = AutoModel.from_pretrained(model_name, attn_implementation="eager")
         self.backbone.to(device)
         self.hidden_size = self.backbone.config.hidden_size
 
