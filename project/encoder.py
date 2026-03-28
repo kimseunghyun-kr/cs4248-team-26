@@ -126,9 +126,13 @@ class FinBERTEncoder(nn.Module):
         """
         if n_layers is None:
             n_layers = self.backbone.config.num_hidden_layers - 1
+
+        # Convert 2D integer mask (B, L) to 4D boolean mask (B, 1, 1, L) for SDPA
+        sdpa_mask = attention_mask[:, None, None, :].bool()
+
         hidden = self._get_embeddings(input_ids)
         for layer_module in self.backbone.encoder.layer[:n_layers]:
-            hidden = layer_module(hidden, attention_mask)[0]
+            hidden = layer_module(hidden, sdpa_mask)[0]
         return hidden  # (B, L, H)
 
     def encode_with_delta_from_hidden(
@@ -151,13 +155,17 @@ class FinBERTEncoder(nn.Module):
         """
         if start_layer is None:
             start_layer = self.backbone.config.num_hidden_layers - 1
+
+        # Convert 2D integer mask (B, L) to 4D boolean mask (B, 1, 1, L) for SDPA
+        sdpa_mask = attention_mask[:, None, None, :].bool()
+
         B, L, H = hidden_states.shape
         mask = torch.zeros(B, L, H, device=delta.device)
         mask[:, 0, :] = 1.0
         delta_full = delta.unsqueeze(1).expand(B, L, H) * mask   # (B, L, H)
         perturbed = hidden_states + delta_full  # grad flows through delta_full → delta
         for layer_module in self.backbone.encoder.layer[start_layer:]:
-            perturbed = layer_module(perturbed, attention_mask)[0]
+            perturbed = layer_module(perturbed, sdpa_mask)[0]
         cls = perturbed[:, 0, :]
         return F.normalize(cls, dim=-1)
 
