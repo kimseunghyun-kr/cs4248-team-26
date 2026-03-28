@@ -20,7 +20,7 @@ class FinBERTEncoder(nn.Module):
 
         print(f"Loading tokenizer and model from '{model_name}' ...")
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.backbone = AutoModel.from_pretrained(model_name, attn_implementation="eager")
+        self.backbone = AutoModel.from_pretrained(model_name)
         self.backbone.to(device)
         self.hidden_size = self.backbone.config.hidden_size
 
@@ -126,14 +126,10 @@ class FinBERTEncoder(nn.Module):
         """
         if n_layers is None:
             n_layers = self.backbone.config.num_hidden_layers - 1
-        embeds = self._get_embeddings(input_ids)
-        out = self.backbone(
-            inputs_embeds=embeds,
-            attention_mask=attention_mask,
-            output_hidden_states=True,
-        )
-        # hidden_states[0] = embedding output, [k] = after transformer layer k-1
-        return out.hidden_states[n_layers]  # (B, L, H)
+        hidden = self._get_embeddings(input_ids)
+        for layer_module in self.backbone.encoder.layer[:n_layers]:
+            hidden = layer_module(hidden, attention_mask)[0]
+        return hidden  # (B, L, H)
 
     def encode_with_delta_from_hidden(
         self,
@@ -160,23 +156,9 @@ class FinBERTEncoder(nn.Module):
         mask[:, 0, :] = 1.0
         delta_full = delta.unsqueeze(1).expand(B, L, H) * mask   # (B, L, H)
         perturbed = hidden_states + delta_full  # grad flows through delta_full → delta
-
-        # Inject perturbed at layer[start_layer] via a pre-hook so that
-        # gradients flow through delta without calling layer modules directly
-        # (direct calls break on newer transformers attention interfaces).
-        def _inject(_module, args):
-            return (perturbed,) + args[1:]
-
-        hook = self.backbone.encoder.layer[start_layer].register_forward_pre_hook(_inject)
-        try:
-            out = self.backbone(
-                inputs_embeds=hidden_states.detach(),
-                attention_mask=attention_mask,
-            )
-        finally:
-            hook.remove()
-
-        cls = out.last_hidden_state[:, 0, :]
+        for layer_module in self.backbone.encoder.layer[start_layer:]:
+            perturbed = layer_module(perturbed, attention_mask)[0]
+        cls = perturbed[:, 0, :]
         return F.normalize(cls, dim=-1)
 
     @torch.no_grad()
