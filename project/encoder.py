@@ -108,6 +108,29 @@ class FinBERTEncoder(nn.Module):
         return self._forward_from_embeds(perturbed, attention_mask)
 
 # ------------------------------------------------------------------
+    # SDPA Mask Helper
+    # ------------------------------------------------------------------
+    def _prepare_sdpa_mask(self, attention_mask: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
+        """
+        Creates a contiguous 4D additive float mask (B, 1, L, L) to completely bypass
+        PyTorch SDPA C++ broadcasting and zero-stride memory layout bugs.
+        """
+        if attention_mask.dim() != 2:
+            raise ValueError(f"[Mask Error] Expected 2D attention_mask (B, L), got {attention_mask.shape}")
+            
+        B, L = attention_mask.shape
+        # Allocate real memory for the 4D mask (0.0 means attend)
+        mask = torch.zeros(B, 1, L, L, dtype=dtype, device=attention_mask.device)
+        # Fill padding tokens with a large negative value (-inf equivalent)
+        mask = mask.masked_fill(attention_mask[:, None, None, :] == 0, torch.finfo(dtype).min)
+        
+        # Defensive check to ensure memory is contiguous before passing to C++
+        if not mask.is_contiguous():
+            mask = mask.contiguous()
+            
+        return mask
+
+# ------------------------------------------------------------------
     # Feature Extraction
     # ------------------------------------------------------------------
     def get_intermediate_features(
