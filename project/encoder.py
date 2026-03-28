@@ -107,6 +107,32 @@ class FinBERTEncoder(nn.Module):
 
         return self._forward_from_embeds(perturbed, attention_mask)
 
+# ------------------------------------------------------------------
+    # SDPA Mask Helper
+    # ------------------------------------------------------------------
+    def _prepare_sdpa_mask(self, attention_mask: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
+        """
+        Creates a contiguous 4D additive float mask (B, 1, L, L) to completely bypass
+        PyTorch SDPA C++ broadcasting and zero-stride memory layout bugs.
+        """
+        if attention_mask.dim() != 2:
+            raise ValueError(f"[Mask Error] Expected 2D attention_mask (B, L), got {attention_mask.shape}")
+            
+        B, L = attention_mask.shape
+        # Allocate real memory for the 4D mask (0.0 means attend)
+        mask = torch.zeros(B, 1, L, L, dtype=dtype, device=attention_mask.device)
+        # Fill padding tokens with a large negative value (-inf equivalent)
+        mask = mask.masked_fill(attention_mask[:, None, None, :] == 0, torch.finfo(dtype).min)
+        
+        # Defensive check to ensure memory is contiguous before passing to C++
+        if not mask.is_contiguous():
+            mask = mask.contiguous()
+            
+        return mask
+
+    # ------------------------------------------------------------------
+    # Feature Extraction
+    # ------------------------------------------------------------------
     def get_intermediate_features(
         self,
         input_ids: torch.Tensor,
@@ -115,24 +141,26 @@ class FinBERTEncoder(nn.Module):
     ) -> torch.Tensor:
         """
         Run embedding layer + first n_layers transformer layers, return hidden states.
-
-        NLP analog of CLIP RN50's get_feature(): the frozen encoder body that produces
-        the intermediate representation z before the last-layer tail.
-
-        n_layers defaults to num_hidden_layers - 1 (all but the last layer).
-        Call under torch.no_grad() — this is the frozen body; no grad needed here.
-
-        Returns: (B, L, H) hidden states at the n_layers-th layer boundary.
         """
         if n_layers is None:
             n_layers = self.backbone.config.num_hidden_layers - 1
 
-        B, L = attention_mask.shape
-        sdpa_mask = attention_mask[:, None, None, :].expand(B, 1, L, L).bool()
-
         hidden = self._get_embeddings(input_ids)
-        for layer_module in self.backbone.encoder.layer[:n_layers]:
-            hidden = layer_module(hidden, sdpa_mask)[0]
+        
+        # Use our foolproof contiguous float mask
+        sdpa_mask = self._prepare_sdpa_mask(attention_mask, hidden.dtype)
+
+        for i, layer_module in enumerate(self.backbone.encoder.layer[:n_layers]):
+            try:
+                hidden = layer_module(hidden, sdpa_mask)[0]
+            except Exception as e:
+                # DUMP DIAGNOSTICS IF SDPA KERNEL CRASHES
+                print(f"\n[FATAL ERROR] get_intermediate_features crashed at layer {i}!")
+                print(f"  -> Hidden States : shape={hidden.shape}, dtype={hidden.dtype}, contiguous={hidden.is_contiguous()}, strides={hidden.stride()}")
+                print(f"  -> SDPA Mask     : shape={sdpa_mask.shape}, dtype={sdpa_mask.dtype}, contiguous={sdpa_mask.is_contiguous()}, strides={sdpa_mask.stride()}")
+                print(f"  -> Exception     : {e}\n")
+                raise e # Re-raise to stop execution
+            
         return hidden  # (B, L, H)
 
     def encode_with_delta_from_hidden(
@@ -143,29 +171,32 @@ class FinBERTEncoder(nn.Module):
         start_layer: int = None,
     ) -> torch.Tensor:
         """
-        NLP analog of CLIP RN50's target_model.forward(z_adv): inject δ at the CLS
-        position of an intermediate hidden state, then run the last transformer layer(s).
-
-        hidden_states should be detached (produced by get_intermediate_features under
-        no_grad). delta carries the gradient: loss → layer[start_layer:] → delta.
-
-        start_layer defaults to num_hidden_layers - 1 (only the last layer runs).
-
-        Returns: L2-normalized CLS embedding (B, H).
+        NLP analog of CLIP RN50's target_model.forward(z_adv).
         """
         if start_layer is None:
             start_layer = self.backbone.config.num_hidden_layers - 1
 
-        B, L = attention_mask.shape
-        sdpa_mask = attention_mask[:, None, None, :].expand(B, 1, L, L).bool()
+        # Use our foolproof contiguous float mask
+        sdpa_mask = self._prepare_sdpa_mask(attention_mask, hidden_states.dtype)
 
         B, L, H = hidden_states.shape
         mask = torch.zeros(B, L, H, device=delta.device)
         mask[:, 0, :] = 1.0
         delta_full = delta.unsqueeze(1).expand(B, L, H) * mask   # (B, L, H)
-        perturbed = hidden_states + delta_full  # grad flows through delta_full → delta
-        for layer_module in self.backbone.encoder.layer[start_layer:]:
-            perturbed = layer_module(perturbed, sdpa_mask)[0]
+        perturbed = hidden_states + delta_full  
+        
+        for i, layer_module in enumerate(self.backbone.encoder.layer[start_layer:]):
+            try:
+                perturbed = layer_module(perturbed, sdpa_mask)[0]
+            except Exception as e:
+                # DUMP DIAGNOSTICS IF SDPA KERNEL CRASHES
+                actual_layer_idx = start_layer + i
+                print(f"\n[FATAL ERROR] encode_with_delta_from_hidden crashed at layer {actual_layer_idx}!")
+                print(f"  -> Perturbed     : shape={perturbed.shape}, dtype={perturbed.dtype}, contiguous={perturbed.is_contiguous()}, strides={perturbed.stride()}")
+                print(f"  -> SDPA Mask     : shape={sdpa_mask.shape}, dtype={sdpa_mask.dtype}, contiguous={sdpa_mask.is_contiguous()}, strides={sdpa_mask.stride()}")
+                print(f"  -> Exception     : {e}\n")
+                raise e
+            
         cls = perturbed[:, 0, :]
         return F.normalize(cls, dim=-1)
 
