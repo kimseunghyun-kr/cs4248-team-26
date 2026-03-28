@@ -127,8 +127,8 @@ class FinBERTEncoder(nn.Module):
         if n_layers is None:
             n_layers = self.backbone.config.num_hidden_layers - 1
 
-        # Convert 2D integer mask (B, L) to 4D boolean mask (B, 1, 1, L) for SDPA
-        sdpa_mask = attention_mask[:, None, None, :].bool()
+        B, L = attention_mask.shape
+        sdpa_mask = attention_mask[:, None, None, :].expand(B, 1, L, L).bool()
 
         hidden = self._get_embeddings(input_ids)
         for layer_module in self.backbone.encoder.layer[:n_layers]:
@@ -156,8 +156,8 @@ class FinBERTEncoder(nn.Module):
         if start_layer is None:
             start_layer = self.backbone.config.num_hidden_layers - 1
 
-        # Convert 2D integer mask (B, L) to 4D boolean mask (B, 1, 1, L) for SDPA
-        sdpa_mask = attention_mask[:, None, None, :].bool()
+        B, L = attention_mask.shape
+        sdpa_mask = attention_mask[:, None, None, :].expand(B, 1, L, L).bool()
 
         B, L, H = hidden_states.shape
         mask = torch.zeros(B, L, H, device=delta.device)
