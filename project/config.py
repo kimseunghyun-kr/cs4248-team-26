@@ -1,5 +1,4 @@
-from dataclasses import dataclass, field
-from typing import List
+from dataclasses import dataclass
 
 # ---------------------------------------------------------------------------
 # Model registry for ablation studies
@@ -22,53 +21,26 @@ def model_slug(key: str) -> str:
 
 
 @dataclass
-class PGDConfig:
-    epsilon: float = 0.10        # perturbation ball radius (increased from 0.08)
-    n_steps: int = 50            # sign-SGD steps per PGD run
-    step_lr: float = 0.01        # fixed step size per sign-SGD iteration (L∞ PGD)
-    lambda_s: float = 0.2        # semantic preservation weight (loosened from 0.4)
-    n_directions: int = 16       # directions collected (increased from 8)
-    n_anchors: int = 500         # anchor samples for refinement (increased from 100)
-    n_components: int = 3        # rank of delta_subspace (K in (K, H) output)
-    device: str = "cpu"          # overridden at runtime
+class CBDCConfig:
+    """Configuration for the combined debias_vl + CBDC text_iccv pipeline.
 
+    PGD inner-loop defaults match the original CBDC RN50 hyperparameters.
+    """
+    # PGD inner loop (matches RN50 / CelebA defaults)
+    epsilon: float = 1.0           # L-inf perturbation bound (att_bnd)
+    n_pgd_steps: int = 20          # sign-SGD iterations per restart (att_itr)
+    step_lr: float = 0.0037        # sign-SGD step size (att_stp)
+    keep_weight: float = 0.92      # L_s weight inside PGD (keep_weight)
+    num_samples: int = 10          # PGD restarts per epoch (num_sam)
+    random_eps: float = 0.22       # random init radius (rand)
 
-@dataclass
-class SAEConfig:
-    hidden_dim: int = 1536       # 2× overcomplete dictionary (768 × 2)
-    lambda_l1: float = 1e-3      # sparsity penalty (tune: 1e-4 if too sparse, 5e-3 if too dense)
-    lr: float = 1e-4
-    epochs: int = 50
-    batch_size: int = 256
-    top_k: int = 32              # top-K style features used to build v_style
-    checkpoint_path: str = "cache/sae_checkpoint.pt"
-    v_style_path: str = "cache/v_style.pt"
+    # text_iccv training loop
+    n_epochs: int = 100            # encoder training epochs (txt_iters)
+    lr: float = 1e-5               # AdamW lr for layer 11
+    up_scale: float = 100.0        # loss multiplier (up_)
 
+    # debias_vl map
+    n_bias_dirs: int = 4           # top-K SVD components from I - P_debias
+    lambda_reg: float = 1000.0     # regularization: G = lambda * M + I
 
-@dataclass
-class TrainConfig:
-    model_name: str = "ProsusAI/finbert"
-    fallback_model_name: str = "distilbert-base-uncased"
-    hidden_size: int = 768       # FinBERT hidden dim; distilbert is also 768
-    n_concept_axes: int = 6
-    n_directions_per_axis: int = 8
-
-    mlp_hidden: int = 256
-    mlp_dropout: float = 0.1
-
-    epochs: int = 10
-    batch_size: int = 32
-    lr: float = 2e-4
-    weight_decay: float = 0.01
-    warmup_ratio: float = 0.10
-
-    seed: int = 42
-    device: str = "cpu"          # overridden at runtime
-
-    direction_bank_path: str = "direction_bank.pt"
-    checkpoint_dir: str = "checkpoints"
-    results_dir: str = "results"
-
-    # Dataset
-    dataset_name: str = "tweet_eval"
-    dataset_config: str = "sentiment"
+    device: str = "cpu"

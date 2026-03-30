@@ -1,27 +1,19 @@
 """
-Phase 4: Apply orthogonal projection to clean cached embeddings.
+Phase 3: Apply orthogonal projection to clean cached embeddings.
 
-For a given direction d (unit vector), the cleaned embedding is:
-    z_clean = L2_normalize(z - (z · d) * d)
-
-This removes the component of z along d, leaving only the perpendicular component.
-This is the core CBDC operation (paper eq. 2), adapted to pre-cached embeddings.
+Supports three projection types:
+  - Single vector (H,):   z_clean = z - (z · d) * d
+  - Subspace (K, H):      z_clean = z - (z @ U^T) @ U
+  - Full matrix (H, H):   z_clean = z @ P^T   (debias_vl projection)
 
 Run from project/ directory:
-  python pipeline/clean.py --direction delta_star   # CBDC (B3)
-  python pipeline/clean.py --direction v_style      # SAE only (B2)
-  python pipeline/clean.py --direction v_shift      # mean-shift (B2.5)
-  python pipeline/clean.py --direction label_guided # label-guided (C)
-
-Outputs (saved to cache/):
-  z_tweet_{split}_clean_{direction_name}.pt  for split in {train, val, test}
+  python pipeline/clean.py
 """
 
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import argparse
 import torch
 import torch.nn.functional as F
 
@@ -30,151 +22,135 @@ CACHE_DIR = os.environ.get("CACHE_DIR", _DEFAULT_CACHE)
 
 
 # ---------------------------------------------------------------------------
-# Core projection function
+# Core projection
 # ---------------------------------------------------------------------------
 def project_out(z: torch.Tensor, direction: torch.Tensor) -> torch.Tensor:
     """
-    Remove the style component of z.
+    Remove confound component from embeddings.
 
     Args:
-        z         : (N, H)  L2-normalized embeddings
-        direction : (H,)    unit direction vector  — scalar projection (existing behavior)
-                    (K, H)  orthonormal subspace   — matrix projection: z_clean = z − (z @ U^T) @ U
+        z:         (N, H) L2-normalized embeddings
+        direction: (H,)   single direction vector
+                   (K, H) orthonormal subspace rows
+                   (H, H) full debiasing matrix (debias_vl)
 
     Returns:
-        z_clean   : (N, H)  L2-normalized, style component removed
+        z_clean: (N, H) L2-normalized, confound component removed
     """
-    if direction.dim() == 1:
-        d = F.normalize(direction.to(z.device), dim=-1)           # (H,)
-        proj = (z @ d).unsqueeze(-1) * d.unsqueeze(0)             # (N, H)
+    if direction.dim() == 2 and direction.shape[0] == direction.shape[1]:
+        # Full debiasing matrix (H, H) from debias_vl
+        z_clean = z @ direction.to(z.device).T
+    elif direction.dim() == 2:
+        # Subspace (K, H)
+        U = F.normalize(direction.to(z.device), dim=-1)
+        proj = (z @ U.T) @ U
+        z_clean = z - proj
     else:
-        U = F.normalize(direction.to(z.device), dim=-1)           # (K, H) rows orthonormal
-        proj = (z @ U.T) @ U                                      # (N, H)
-    z_clean = z - proj
+        # Single vector (H,)
+        d = F.normalize(direction.to(z.device), dim=-1)
+        proj = (z @ d).unsqueeze(-1) * d.unsqueeze(0)
+        z_clean = z - proj
     return F.normalize(z_clean, dim=-1)
 
 
 # ---------------------------------------------------------------------------
-# Label-guided direction computation (Option C)
+# Label-guided direction computation (oracle comparison)
 # ---------------------------------------------------------------------------
 def compute_label_guided_direction(
-    z_train: torch.Tensor,       # (N, H)
-    labels_train: torch.Tensor,  # (N,) values in {0,1,2}
-    z_formal: torch.Tensor,      # (M, H)
+    z_train: torch.Tensor,
+    labels_train: torch.Tensor,
+    z_formal: torch.Tensor,
 ) -> torch.Tensor:
-    """
-    Compute the label-guided style direction.
-
-    Approach: within-class mean-shift
-      For each sentiment class c:
-          v_c = mean(z_tweet[labels==c]) - mean(z_formal)
-      Average across classes → removes class-correlated variance.
-      Normalize → v_label_style.
-
-    This is more principled than plain mean-shift because it finds the style
-    component consistent within each sentiment class, not confounded by
-    class-level sentiment signal.
-    """
-    formal_centroid = z_formal.mean(0)   # (H,)
+    """Within-class mean-shift: average (class_mean - formal_mean) across classes."""
+    formal_centroid = z_formal.mean(0)
     class_directions = []
-
     for c in [0, 1, 2]:
         mask = labels_train == c
         if mask.sum() == 0:
             continue
-        class_mean = z_train[mask].mean(0)                    # (H,)
-        v_c        = class_mean - formal_centroid              # (H,)
+        v_c = z_train[mask].mean(0) - formal_centroid
         class_directions.append(v_c)
-
-    # Average within-class directions
-    v_label_style = torch.stack(class_directions, dim=0).mean(0)   # (H,)
-    return F.normalize(v_label_style, dim=-1)
+    v_label = torch.stack(class_directions).mean(0)
+    return F.normalize(v_label, dim=-1)
 
 
 # ---------------------------------------------------------------------------
 # Apply cleaning to all splits
 # ---------------------------------------------------------------------------
 def apply_cleaning(direction: torch.Tensor, direction_name: str) -> None:
-    """Project out 'direction' from all cached tweet splits and save."""
-    if direction.dim() == 1:
-        direction = F.normalize(direction, dim=-1)
+    """Project out direction from all cached tweet splits."""
     print(f"\nApplying '{direction_name}' projection ...")
 
     for split in ["train", "val", "test"]:
-        in_path  = os.path.join(CACHE_DIR, f"z_tweet_{split}.pt")
+        in_path = os.path.join(CACHE_DIR, f"z_tweet_{split}.pt")
         out_path = os.path.join(CACHE_DIR, f"z_tweet_{split}_clean_{direction_name}.pt")
 
         if not os.path.exists(in_path):
-            print(f"  ⚠ Missing {in_path}, skipping")
+            print(f"  [skip] Missing {in_path}")
             continue
 
-        data   = torch.load(in_path, map_location="cpu")
-        z      = data["embeddings"]   # (N, H)
+        data = torch.load(in_path, map_location="cpu")
+        z = data["embeddings"]
         labels = data.get("labels")
 
         z_clean = project_out(z, direction)
 
-        # Report how much was removed
-        if direction.dim() == 1:
-            proj_magnitude = (z @ direction.to(z.device)).abs().mean().item()
+        # Report magnitude removed
+        if direction.dim() == 2 and direction.shape[0] == direction.shape[1]:
+            diff = (z - z_clean).norm(dim=-1).mean().item()
+            print(f"  {split}: mean L2 diff={diff:.4f} | shape={tuple(z_clean.shape)}")
+        elif direction.dim() == 2:
+            U = F.normalize(direction, dim=-1)
+            proj_mag = (z @ U.T).abs().mean().item()
+            print(f"  {split}: removed proj magnitude={proj_mag:.4f} | shape={tuple(z_clean.shape)}")
         else:
-            U = F.normalize(direction.to(z.device), dim=-1)
-            proj_magnitude = (z @ U.T).abs().mean().item()
-        print(f"  {split}: removed projection magnitude={proj_magnitude:.4f} "
-              f"| shape={tuple(z_clean.shape)}")
+            d = F.normalize(direction, dim=-1)
+            proj_mag = (z @ d).abs().mean().item()
+            print(f"  {split}: removed proj magnitude={proj_mag:.4f} | shape={tuple(z_clean.shape)}")
 
         out_data = {"embeddings": z_clean}
         if labels is not None:
             out_data["labels"] = labels
         torch.save(out_data, out_path)
-        print(f"  Saved → {out_path}")
+        print(f"  Saved -> {out_path}")
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--direction",
-        choices=["delta_subspace", "v_style", "v_shift", "label_guided", "all"],
-        default="all",
-        help="Which direction(s) to project out. 'all' runs all four.",
-    )
-    args = parser.parse_args()
+    directions_to_run = []
 
-    directions_to_run = (
-        ["delta_subspace", "v_style", "v_shift", "label_guided"]
-        if args.direction == "all"
-        else [args.direction]
-    )
+    # debias_vl projection matrix
+    dvl_path = os.path.join(CACHE_DIR, "debias_vl_P.pt")
+    if os.path.exists(dvl_path):
+        P = torch.load(dvl_path, map_location="cpu")
+        directions_to_run.append((P, "debias_vl"))
 
-    for d_name in directions_to_run:
-        if d_name == "label_guided":
-            # Compute label-guided direction from training data
-            train_path  = os.path.join(CACHE_DIR, "z_tweet_train.pt")
-            formal_path = os.path.join(CACHE_DIR, "z_formal.pt")
+    # CBDC directions (subspace)
+    cbdc_path = os.path.join(CACHE_DIR, "cbdc_directions.pt")
+    if os.path.exists(cbdc_path):
+        dirs = torch.load(cbdc_path, map_location="cpu")
+        directions_to_run.append((dirs, "cbdc_directions"))
 
-            if not os.path.exists(train_path) or not os.path.exists(formal_path):
-                print(f"⚠ Skipping label_guided: missing cache files.")
-                continue
+    # Label-guided (oracle)
+    train_path = os.path.join(CACHE_DIR, "z_tweet_train.pt")
+    formal_path = os.path.join(CACHE_DIR, "z_formal.pt")
+    if os.path.exists(train_path) and os.path.exists(formal_path):
+        train_data = torch.load(train_path, map_location="cpu")
+        z_formal = torch.load(formal_path, map_location="cpu")["embeddings"]
+        direction = compute_label_guided_direction(
+            train_data["embeddings"], train_data["labels"], z_formal
+        )
+        directions_to_run.append((direction, "label_guided"))
+        print("Label-guided direction computed.")
 
-            train_data = torch.load(train_path, map_location="cpu")
-            z_train    = train_data["embeddings"]
-            labels     = train_data["labels"]
-            z_formal   = torch.load(formal_path, map_location="cpu")["embeddings"]
+    if not directions_to_run:
+        print("No directions found. Run cbdc/refine.py first.")
+        return
 
-            direction = compute_label_guided_direction(z_train, labels, z_formal)
-            print(f"Label-guided direction computed.")
-
-        else:
-            d_path = os.path.join(CACHE_DIR, f"{d_name}.pt")
-            if not os.path.exists(d_path):
-                print(f"⚠ Skipping '{d_name}': {d_path} not found.")
-                continue
-            direction = torch.load(d_path, map_location="cpu")
-
-        apply_cleaning(direction, d_name)
+    for direction, name in directions_to_run:
+        apply_cleaning(direction, name)
 
     print("\nCleaning complete.")
 

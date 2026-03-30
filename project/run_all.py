@@ -1,22 +1,18 @@
 """
-End-to-end orchestrator for the SAE + CBDC financial sentiment pipeline.
+End-to-end orchestrator for the CBDC financial sentiment pipeline.
 
-Runs each phase in sequence by calling sub-scripts as subprocesses.
-All phases are independent and can be run individually if a step fails.
+Pipeline:
+  1. data/embed.py       — encode tweets + formal text, cache embeddings
+  2. cbdc/refine.py      — debias_vl map discovery + CBDC text_iccv training
+  3. pipeline/clean.py   — orthogonal projection (all conditions)
+  4. pipeline/classify.py — linear probe training + evaluation
+  5. pipeline/evaluate.py — full evaluation report
 
-Execution order:
-  1. data/embed.py       — encode all corpora, cache to cache/
-  2. sae/sae.py          — train sparse autoencoder
-  3. sae/sae_analysis.py — extract v_style and v_shift
-  4. cbdc/refine.py      — CBDC-PGD: refine v_style → delta_star
-  5. pipeline/clean.py   — project out all directions (all conditions)
-  6. pipeline/classify.py — train linear probes for all conditions
-  7. pipeline/evaluate.py — full evaluation report
-
-Usage (from project/ directory):
-  python run_all.py                          # run all phases
-  python run_all.py --start_phase 4         # resume from phase 4
-  python run_all.py --only_phase 7          # run only evaluation
+Usage:
+  python run_all.py                      # run all phases
+  python run_all.py --start_phase 2      # resume from phase 2
+  python run_all.py --only_phase 4       # run only evaluation
+  python run_all.py --model bert         # use bert-base-uncased
 """
 
 import subprocess
@@ -27,23 +23,19 @@ import time
 
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Import registry here so run_all.py is the single entry point for model selection
 sys.path.insert(0, PROJECT_DIR)
 from config import MODEL_REGISTRY, get_model_name, model_slug
 
 PHASES = [
     (1, "data/embed.py",          "Embedding extraction"),
-    (2, "sae/sae.py",             "SAE training"),
-    (3, "sae/sae_analysis.py",    "Style direction extraction"),
-    (4, "cbdc/refine.py",         "CBDC-PGD refinement"),
-    (5, "pipeline/clean.py",      "Orthogonal projection (all conditions)"),
-    (6, "pipeline/classify.py",   "Linear probe training + eval"),
-    (7, "pipeline/evaluate.py",   "Full evaluation report"),
+    (2, "cbdc/refine.py",         "debias_vl + CBDC text_iccv training"),
+    (3, "pipeline/clean.py",      "Orthogonal projection"),
+    (4, "pipeline/classify.py",   "Linear probe training + eval"),
+    (5, "pipeline/evaluate.py",   "Full evaluation report"),
 ]
 
 
 def run_phase(script_path: str, description: str, extra_env: dict) -> bool:
-    """Run a phase script. Returns True on success, False on failure."""
     abs_path = os.path.join(PROJECT_DIR, script_path)
     print(f"\n{'#'*70}")
     print(f"# PHASE: {description}")
@@ -59,8 +51,8 @@ def run_phase(script_path: str, description: str, extra_env: dict) -> bool:
     elapsed = time.time() - t0
 
     if result.returncode != 0:
-        print(f"\n[ERROR] Phase '{description}' failed with return code {result.returncode}")
-        print(f"        Fix the error above and re-run with --start_phase <N>")
+        print(f"\n[ERROR] Phase '{description}' failed (rc={result.returncode})")
+        print(f"        Fix and re-run with --start_phase <N>")
         return False
 
     print(f"\n[OK] Phase '{description}' completed in {elapsed:.1f}s")
@@ -68,20 +60,16 @@ def run_phase(script_path: str, description: str, extra_env: dict) -> bool:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run full SAE+CBDC sentiment pipeline.")
+    parser = argparse.ArgumentParser(description="Run CBDC financial sentiment pipeline.")
     parser.add_argument("--start_phase", type=int, default=1,
-                        help="Resume from this phase number (1-7). Default=1 (run all).")
-    parser.add_argument("--only_phase",  type=int, default=None,
-                        help="Run only this phase number (overrides start_phase).")
-    parser.add_argument(
-        "--model",
-        default="finbert",
-        choices=list(MODEL_REGISTRY.keys()),
-        help=f"Backbone encoder for ablation. Choices: {list(MODEL_REGISTRY.keys())}. Default: finbert",
-    )
+                        help="Resume from this phase (1-5).")
+    parser.add_argument("--only_phase", type=int, default=None,
+                        help="Run only this phase.")
+    parser.add_argument("--model", default="finbert",
+                        choices=list(MODEL_REGISTRY.keys()),
+                        help=f"Backbone encoder. Choices: {list(MODEL_REGISTRY.keys())}.")
     args = parser.parse_args()
 
-    # Resolve model name and dedicate a cache sub-directory per model
     hf_model_name = get_model_name(args.model)
     slug = model_slug(args.model)
     cache_dir = os.path.join(PROJECT_DIR, "cache", slug)
@@ -91,36 +79,34 @@ def main():
     }
 
     if args.only_phase is not None:
-        phases_to_run = [p for p in PHASES if p[0] == args.only_phase]
-        if not phases_to_run:
+        phases = [p for p in PHASES if p[0] == args.only_phase]
+        if not phases:
             print(f"ERROR: Phase {args.only_phase} not found. Valid: 1-{len(PHASES)}")
             sys.exit(1)
     else:
-        phases_to_run = [p for p in PHASES if p[0] >= args.start_phase]
+        phases = [p for p in PHASES if p[0] >= args.start_phase]
 
     os.makedirs(cache_dir, exist_ok=True)
     os.makedirs(os.path.join(PROJECT_DIR, "results"), exist_ok=True)
 
     print("=" * 70)
-    print("SAE + CBDC Financial Sentiment Pipeline")
+    print("CBDC Financial Sentiment Pipeline")
     print("=" * 70)
     print(f"Model:         {hf_model_name}  (--model {args.model})")
     print(f"Cache dir:     {cache_dir}")
-    print(f"Running phases: {[p[0] for p in phases_to_run]}")
-    print(f"Project dir:   {PROJECT_DIR}")
+    print(f"Running phases: {[p[0] for p in phases]}")
 
     total_start = time.time()
-    for phase_num, script, description in phases_to_run:
-        success = run_phase(script, f"[{phase_num}/{len(PHASES)}] {description}", extra_env)
-        if not success:
-            print(f"\nPipeline stopped at phase {phase_num}.")
-            print(f"To resume: python run_all.py --start_phase {phase_num}")
+    for num, script, desc in phases:
+        if not run_phase(script, f"[{num}/{len(PHASES)}] {desc}", extra_env):
+            print(f"\nPipeline stopped at phase {num}.")
+            print(f"To resume: python run_all.py --start_phase {num}")
             sys.exit(1)
 
     total_elapsed = time.time() - total_start
     print(f"\n{'='*70}")
     print(f"All phases complete in {total_elapsed/60:.1f} minutes.")
-    print(f"Results: {os.path.join(PROJECT_DIR, 'results', 'eval_report_new.txt')}")
+    print(f"Results: {os.path.join(PROJECT_DIR, 'results', 'eval_report.txt')}")
     print(f"{'='*70}")
 
 

@@ -1,69 +1,32 @@
 """
-Phase 3b: CBDC-PGD refinement → delta_star.
+Combined debias_vl map discovery + CBDC text_iccv encoder training.
 
-NLP adaptation of CBDC (CVPR 2026, Section 4.3–4.4) for FinBERT embeddings.
+Phase A — debias_vl discovers confound "map" from word pairs:
+  1. Encode (sentiment × topic) crossed prompts and pure topic prompts
+  2. Compute debiasing projection P = P0 @ G^{-1}
+  3. Extract confound directions via SVD(I - P)
+  4. These directions become bias anchors for PGD
 
-Loss design — aligned with CLIP's perturb_bafa_txt_multi_ablation_lb_ls:
-  CLIP L_B: cross-entropy over pairwise logits [z·a_i, z·b_i] for each
-    pair (a_i, b_i) from (bias_anchors, debias_anchors).  Gradient decays
-    naturally near the target (softmax saturation), is contrastive (pushes
-    away from the opposite class), and is multi-anchor.
+Phase B — CBDC text_iccv refines the map and trains the encoder:
+  For each epoch:
+    1. Bipolar PGD on test_text (neutral concept prompts)
+       using debias_vl-discovered directions as bias anchors
+    2. S = z_adv_pos - z_adv_neg  (clean confound directions)
+    3. Class-specific match_loss + ck_loss → update layer 11
 
-  NLP L_B: same structure using SAE-derived anchor pairs:
-    style_anchors[i]  — top-K SAE decoder columns (tweet-differential)
-    anti_anchors[i]   — bottom-K SAE decoder columns (formal-differential)
-    logits = [z_pert · style_i,  z_pert · anti_i]   for i = 0..K-1
-    L_B = cross_entropy(100 * logits, target_class)
-
-  This replaces the previous single cosine(z_pert, v_style) which had:
-    * Fixed gradient magnitude — no saturation near target
-    * No contrastive push away from formal side
-    * Single anchor — less robust than K-anchor set
-
-Bipolar PGD  (paper eq. 10 → Section 4.4):
-  For each anchor batch from z_tweet_train:
-    Positive pole — push toward tweet style:
-      L_B+ = cross_entropy([z_pert · s_i, z_pert · a_i], target=0)  ← style class
-      L_s+ =  || v_semantic · (z_pert+ − z_orig) ||²
-      δ+ optimized to minimize  L_B+ + λ_s · L_s+
-    Negative pole — push away from tweet style (toward formal):
-      L_B− = cross_entropy([z_pert · s_i, z_pert · a_i], target=1)  ← anti-style class
-      L_s− =  || v_semantic · (z_pert− − z_orig) ||²
-      δ− optimized to minimize  L_B− + λ_s · L_s−
-    Clean direction (paper eq. 6):
-      V_B = normalize(mean(z_pert+ − z_pert−))
-
-  delta_star = normalize(mean(V_B over all runs))
-
-Structural features:
-  * δ is injected at the CLS position of the layer-10 intermediate hidden
-    state via encoder.encode_with_delta_from_hidden(h_layer10, mask, δ).
-    Gradients flow through only BERT layer 11 (the 1-layer tail), matching
-    the original CLIP RN50 route where PGD perturbs the representation
-    just before attnpool/c_proj.
-  * h_layer10 is pre-computed once per run under torch.no_grad() (frozen body),
-    then reused across all PGD steps.
-  * Each anchor batch uses different input_ids → different h_layer10 →
-    different loss curvature per run → diversity in V_B.
-  * v_style (SAE-derived aggregated direction) is used ONLY for diagnostics;
-    the PGD loss uses style_anchors/anti_anchors (K individual decoder columns).
-
-Prerequisites:
-  sae_analysis.py must have been run to produce:
-    cache/style_anchors.pt        — (top_k, H) tweet-differential SAE columns
-    cache/anti_style_anchors.pt   — (top_k, H) formal-differential SAE columns
-    cache/v_style.pt              — (H,) aggregated direction (diagnostics only)
-  embed.py must save input_ids and attention_mask alongside embeddings:
-    z_tweet_train.pt must contain keys: "embeddings", "labels",
-                                        "input_ids", "attention_mask"
+Architecture correspondence (RN50 ↔ FinBERT):
+  CLIP:    frozen ResNet body → perturb → attnpool + c_proj (trainable tail)
+  FinBERT: frozen layers 0–10 → perturb → layer 11 (trainable tail)
+  Both are single-attention-layer tails. This IS the RN50 approach.
 
 Outputs:
-  cache/delta_star.pt  — (H,) refined bipolar style direction
+  cache/debias_vl_P.pt             — (H, H) debiasing projection matrix
+  cache/cbdc_directions.pt         — (K, H) PGD-refined confound directions
+  cache/encoder_cbdc.pt            — fine-tuned layer 11 checkpoint
+  cache/z_tweet_{split}_cbdc.pt    — re-encoded embeddings
 
 Run from project/ directory:
-  python cbdc/refine.py [--n_anchors 500] [--n_steps 50] [--n_runs 16]
-                        [--n_restarts 3] [--epsilon 0.10] [--lambda_s 0.2]
-                        [--n_style_anchors 8]
+  python cbdc/refine.py [--n_epochs 100] [--lr 1e-5]
 """
 
 import sys
@@ -75,351 +38,454 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 
-from config import PGDConfig
+from config import CBDCConfig
 from encoder import FinBERTEncoder
-from losses import l_bias_contrastive, l_semantic_preservation
+from losses import l_bias_contrastive, l_semantic_preservation, l_ck
+from cbdc.prompts import (
+    cls_text, test_text,
+    candidate_prompt, spurious_prompt,
+    S_pairs, B_pairs,
+    encode_all_prompts,
+)
 
 _DEFAULT_CACHE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache")
 CACHE_DIR = os.environ.get("CACHE_DIR", _DEFAULT_CACHE)
 
 
-# ---------------------------------------------------------------------------
-# Bipolar PGD — gradient flows through BERT layer 11 (1-layer tail) only
-# ---------------------------------------------------------------------------
-def _pgd_bipolar(
-    z: torch.Tensor,               # (B, H)  cached final embedding — used for L_s reference only
-    input_ids: torch.Tensor,       # (B, L)  tokenized inputs for this batch
-    attention_mask: torch.Tensor,  # (B, L)
-    style_anchors: torch.Tensor,   # (K, H)  tweet-style anchor directions (positive poles)
-    anti_anchors: torch.Tensor,    # (K, H)  formal-style anchor directions (negative poles)
-    v_semantic: torch.Tensor,      # (H,)    formal centroid (semantic axis to preserve)
-    cfg: PGDConfig,
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase A: debias_vl — discover confound map from word pairs
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _get_A(z_i: torch.Tensor, z_j: torch.Tensor) -> torch.Tensor:
+    """Asymmetric pairwise term (debias_vl.py::get_A)."""
+    z_i = z_i[:, None]   # (H, 1)
+    z_j = z_j[:, None]   # (H, 1)
+    return z_i @ z_i.T + z_j @ z_j.T - z_i @ z_j.T - z_j @ z_i.T
+
+
+def _get_M(embeddings: torch.Tensor, S: list) -> torch.Tensor:
+    """Semantic preservation matrix (debias_vl.py::get_M)."""
+    d = embeddings.shape[1]
+    M = torch.zeros((d, d), device=embeddings.device)
+    for s in S:
+        M += _get_A(embeddings[s[0]], embeddings[s[1]])
+    return M / len(S)
+
+
+def _get_proj_matrix(embeddings: torch.Tensor) -> torch.Tensor:
+    """Orthogonal complement: P0 = I - V(V^T V)^{-1} V^T."""
+    U, S, V = torch.svd(embeddings)
+    basis = V
+    proj_sup = basis @ torch.inverse(basis.T @ basis) @ basis.T
+    return torch.eye(proj_sup.shape[0], device=embeddings.device) - proj_sup
+
+
+def discover_confound_map(
     encoder: FinBERTEncoder,
-    device: str,
-    rand_eps: float = 0.0,         # random init radius (0 = zero init)
+    cfg: CBDCConfig,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Bipolar PGD: two opposing perturbations from the same anchor batch.
-
-    Positive δ+: cross-entropy L_B pushes z_pert toward style_anchors (target=0)
-    Negative δ−: cross-entropy L_B pushes z_pert toward anti_anchors (target=1)
-
-    L_B uses K anchor pairs (style_anchors[i], anti_anchors[i]) — analogous to
-    CLIP's mix_pairs, giving a contrastive, multi-anchor, saturation-aware gradient.
-
-    Optimizer: sign-SGD with L∞ projection after each step (Madry et al.).
-    This is the theoretically correct optimizer for L∞-bounded PGD — the original
-    CLIP code uses it exclusively. Adam's adaptive scaling is unnecessary when every
-    coordinate is clamped to [-ε, ε] regardless.
-
-    Gradient path: loss → BERT layer 11 (1-layer tail) → h_layer10_CLS + δ → δ.
-    This mirrors the CLIP RN50 route: z_adv perturbed before attnpool/c_proj.
-    Backbone weights are frozen (requires_grad=False); only δ accumulates grads.
+    Phase A: Use debias_vl to discover confound directions from word pairs.
 
     Returns:
-        z_pos  (B, H)  normalized embeddings at tweet pole
-        z_neg  (B, H)  normalized embeddings at formal pole
-        z_orig (B, H)  normalized embeddings at δ=0 (needed for v_plus/v_minus in caller)
+        P_debias:        (H, H)  debiasing projection matrix
+        bias_anchors:    (K, H)  confound directions (bias anchors for PGD)
+        anti_anchors:    (K, H)  opposing directions (negated)
     """
-    B, H = z.shape
-    z              = z.to(device).detach()
-    input_ids      = input_ids.to(device)
-    attention_mask = attention_mask.to(device)
-    style_anchors  = F.normalize(style_anchors.to(device), dim=-1)   # (K, H)
-    anti_anchors   = F.normalize(anti_anchors.to(device),  dim=-1)   # (K, H)
-    v_semantic     = F.normalize(v_semantic.to(device), dim=-1)
+    print("\n=== Phase A: debias_vl confound map discovery ===")
 
-    # Pre-compute intermediate hidden state (layers 0–10) once — frozen body.
-    # h_layer10 is detached; gradient will only flow through layer 11.
-    with torch.no_grad():
-        h_layer10 = encoder.get_intermediate_features(input_ids, attention_mask)
-        # z_orig: reference embedding with δ=0 for L_s computation and v_plus/v_minus.
-        z_orig = encoder.encode_with_delta_from_hidden(
-            h_layer10, attention_mask,
-            torch.zeros(B, H, device=device)
-        )  # (B, H)
+    prompts = encode_all_prompts(encoder)
+    spurious_cb  = prompts["spurious_cb"]    # (6, H)
+    candidate_cb = prompts["candidate_cb"]   # (18, H)
 
-    def _run_pole(push_toward_style: bool) -> torch.Tensor:
-        # Random or zero initialization
-        if rand_eps > 0.0:
-            init = (torch.rand(B, H, device=device) * 2.0 - 1.0) * rand_eps
+    print(f"  spurious_cb:  {tuple(spurious_cb.shape)}")
+    print(f"  candidate_cb: {tuple(candidate_cb.shape)}")
+    print(f"  S_pairs: {len(S_pairs)} | B_pairs: {len(B_pairs)}")
+
+    # P0 = orthogonal complement of spurious subspace
+    P0 = _get_proj_matrix(spurious_cb)
+
+    # M = semantic preservation from S pairs
+    M = _get_M(candidate_cb, S_pairs)
+
+    # G = regularized semantic preservation
+    H = candidate_cb.shape[1]
+    G = cfg.lambda_reg * M + torch.eye(H, device=candidate_cb.device)
+
+    # P_debias = P0 @ G^{-1}
+    P_debias = P0 @ torch.inverse(G)
+
+    # Extract confound directions via SVD(I - P_debias)
+    confound_matrix = torch.eye(H, device=P_debias.device) - P_debias
+    _, S_vals, Vh = torch.linalg.svd(confound_matrix, full_matrices=False)
+
+    # Top-K directions
+    K = cfg.n_bias_dirs
+    bias_anchors = F.normalize(Vh[:K], dim=-1)      # (K, H)
+    anti_anchors = F.normalize(-Vh[:K], dim=-1)      # (K, H) opposing
+
+    print(f"  Top-{K} SVD singular values: {S_vals[:K].tolist()}")
+    print(f"  bias_anchors: {tuple(bias_anchors.shape)}")
+
+    # Diagnostic: check anchor quality
+    for i in range(K):
+        cls_cb = prompts["cls_cb"]  # (3, H)
+        cos_cls = (bias_anchors[i] @ cls_cb.T).abs().max().item()
+        print(f"    anchor {i}: max|cos(anchor, cls_em)|={cos_cls:.4f}  "
+              f"(lower = less entangled with sentiment)")
+
+    return P_debias, bias_anchors, anti_anchors
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase B: PGD inner loop — perturbs test_text concept prompts
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _pgd_bipolar(
+    h_test: torch.Tensor,           # (N_test, L, H) intermediate features of test_text
+    attention_mask: torch.Tensor,    # (N_test, L)
+    z_orig: torch.Tensor,           # (N_test, H) embeddings at delta=0
+    bias_anchors: torch.Tensor,     # (K, H)
+    anti_anchors: torch.Tensor,     # (K, H)
+    test_cb: torch.Tensor,          # (N_keep, H) for multi-axis L_s
+    encoder: FinBERTEncoder,
+    cfg: CBDCConfig,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Bipolar PGD on concept prompt representations.
+
+    Matches perturb_bafa_txt_multi_ablation_lb_ls:
+      - Perturbs test_text intermediate features (6 neutral prompts)
+      - L_B: cross-entropy over bias anchor pairs
+      - L_s: multi-axis preservation via test_cb
+      - Sign-SGD + L∞ clamp
+
+    Returns:
+        z_adv_pos_all: (num_samples * N_test, H)  pushed toward bias_anchors
+        z_adv_neg_all: (num_samples * N_test, H)  pushed toward anti_anchors
+    """
+    device = cfg.device
+    N_test = h_test.shape[0]
+    H = encoder.hidden_size
+
+    bias_anchors = F.normalize(bias_anchors.to(device), dim=-1)
+    anti_anchors = F.normalize(anti_anchors.to(device), dim=-1)
+    test_cb = F.normalize(test_cb.to(device), dim=-1)
+
+    adv_pos_all = []
+    adv_neg_all = []
+
+    for restart in range(cfg.num_samples):
+        # Random init for restarts > 0
+        if restart == 0:
+            init_pos = torch.zeros(N_test, H, device=device)
+            init_neg = torch.zeros(N_test, H, device=device)
         else:
-            init = torch.zeros(B, H, device=device)
+            init_pos = (torch.rand(N_test, H, device=device) * 2 - 1) * cfg.random_eps
+            init_neg = (torch.rand(N_test, H, device=device) * 2 - 1) * cfg.random_eps
 
-        delta = init.clone().requires_grad_(True)
-
-        for _ in range(cfg.n_steps):
+        # --- Positive pole: push toward bias_anchors (target=0) ---
+        delta = init_pos.clone().requires_grad_(True)
+        for _ in range(cfg.n_pgd_steps):
             if delta.grad is not None:
                 delta.grad.zero_()
-
-            # Forward through layer 11 only: gradient flows to delta via CLS of h_layer10
-            z_pert = encoder.encode_with_delta_from_hidden(
-                h_layer10, attention_mask, delta
-            )  # (B, H)
-
-            # L_B: CLIP-style multi-anchor cross-entropy
-            #   Positive pole → target class 0 (style)   pulls z_pert toward style_anchors
-            #   Negative pole → target class 1 (anti)    pulls z_pert toward anti_anchors
-            L_B = l_bias_contrastive(z_pert, style_anchors, anti_anchors, push_toward_style)
-
-            # L_s: preserve projection onto sentiment semantic axis (paper eq. 9)
-            L_s = l_semantic_preservation(z_pert, z_orig, v_semantic)
-
-            (L_B + cfg.lambda_s * L_s).backward()
-
+            z_pert = encoder.encode_with_delta_from_hidden(h_test, attention_mask, delta)
+            L_B = l_bias_contrastive(z_pert, bias_anchors, anti_anchors, push_toward_a=True)
+            L_s = l_semantic_preservation(z_pert, z_orig, test_cb)
+            loss = L_B * (1.0 - cfg.keep_weight) - L_s * cfg.keep_weight
+            loss.backward()
             with torch.no_grad():
-                # Sign-SGD step: equal treatment of all dimensions (correct for L∞ PGD)
                 delta.data -= cfg.step_lr * delta.grad.sign()
-                # L∞ projection (paper eq. 10 / original clamper)
                 delta.data.clamp_(-cfg.epsilon, cfg.epsilon)
-
-        # Final forward pass with optimized delta (no grad)
         with torch.no_grad():
-            z_final = encoder.encode_with_delta_from_hidden(
-                h_layer10, attention_mask, delta.detach()
-            )
-        return z_final  # (B, H)
+            z_pos = encoder.encode_with_delta_from_hidden(h_test, attention_mask, delta.detach())
+        adv_pos_all.append(z_pos)
 
-    z_pos = _run_pole(push_toward_style=True)
-    z_neg = _run_pole(push_toward_style=False)
-    return z_pos, z_neg, z_orig
-
-
-# ---------------------------------------------------------------------------
-# Collect delta_star over multiple runs
-# ---------------------------------------------------------------------------
-def collect_delta_star(
-    z_tweet: torch.Tensor,               # (N, H)
-    input_ids_tweet: torch.Tensor,       # (N, L)
-    attention_mask_tweet: torch.Tensor,  # (N, L)
-    labels_tweet: torch.Tensor,          # (N,)   sentiment labels (0=neg, 1=neu, 2=pos)
-    style_anchors: torch.Tensor,         # (K, H)  tweet-style anchor directions
-    anti_anchors: torch.Tensor,          # (K, H)  formal-style anchor directions
-    v_style: torch.Tensor,               # (H,)    aggregated direction (diagnostics only)
-    cfg: PGDConfig,
-    encoder: FinBERTEncoder,
-    n_runs: int,
-    n_restarts: int,
-    device: str,
-    n_components: int = 3,
-) -> torch.Tensor:
-    """
-    Collects bipolar directions over n_runs random anchor batches with n_restarts
-    random initialisations each, then extracts a (K, H) style subspace via SVD.
-
-    Sentiment axis (v_semantic):
-      v_semantic = normalize(mean(z_tweet[pos]) − mean(z_tweet[neg]))
-      This directly targets the sentiment axis for L_s preservation,
-      rather than using the formal centroid as an indirect proxy.
-
-    Per-restart collection (v_plus, v_minus separate):
-      v_plus  = normalize(mean(z_pos − z_orig))   — style push direction
-      v_minus = normalize(mean(z_orig − z_neg))   — formal push direction
-      These are averaged per run, then stacked → (2*n_runs, H).
-
-    Subspace SVD (CBDC paper Section 4.3):
-      Mean-center the direction matrix, run torch.linalg.svd, return top-K
-      right singular vectors as delta_subspace (K, H) — orthonormal rows.
-
-    style_anchors / anti_anchors (K, H) replace the single v_style in L_B,
-    giving a contrastive multi-anchor loss analogous to CLIP's mix_pairs.
-    v_style is retained only for the post-run diagnostic cosine check.
-
-    Returns delta_subspace: (n_components, H) orthonormal subspace basis.
-    """
-    # --- Sentiment axis -------------------------------------------------------
-    pos_mask = (labels_tweet == 2)
-    neg_mask = (labels_tweet == 0)
-    z_pos_sent = z_tweet[pos_mask].mean(0).to(device)
-    z_neg_sent = z_tweet[neg_mask].mean(0).to(device)
-    v_semantic = F.normalize(z_pos_sent - z_neg_sent, dim=-1)
-
-    # Sanity: cos(v_semantic, pos_centroid) ≈ 1, cos(v_semantic, neg_centroid) ≈ -1
-    cos_sem_pos = F.cosine_similarity(v_semantic.unsqueeze(0),
-                                      F.normalize(z_pos_sent.unsqueeze(0), dim=-1)).item()
-    cos_sem_neg = F.cosine_similarity(v_semantic.unsqueeze(0),
-                                      F.normalize(z_neg_sent.unsqueeze(0), dim=-1)).item()
-    print(f"  v_semantic = sentiment axis  "
-          f"cos(pos)={cos_sem_pos:.4f}  cos(neg)={cos_sem_neg:.4f}")
-    print(f"  (pos_mask={pos_mask.sum().item()}  neg_mask={neg_mask.sum().item()})")
-    print(f"  style_anchors: {tuple(style_anchors.shape)}  "
-          f"anti_anchors: {tuple(anti_anchors.shape)}")
-
-    batch_size = min(cfg.n_anchors, len(z_tweet))
-    all_directions = []  # will hold (v_plus, v_minus) per run — 2 entries per run
-
-    for run in tqdm(range(n_runs), desc="PGD bipolar runs"):
-        indices    = torch.randperm(len(z_tweet))[:batch_size]
-        z_batch    = z_tweet[indices]
-        ids_batch  = input_ids_tweet[indices]
-        mask_batch = attention_mask_tweet[indices]
-
-        restart_pos = []   # v_plus  per restart
-        restart_neg = []   # v_minus per restart
-        rand_eps = cfg.epsilon * 0.5 if n_restarts > 1 else 0.0
-
-        for restart in range(n_restarts):
-            ep = rand_eps if restart > 0 else 0.0
-            z_pos, z_neg, z_orig = _pgd_bipolar(
-                z_batch, ids_batch, mask_batch,
-                style_anchors, anti_anchors, v_semantic,
-                cfg, encoder, device,
-                rand_eps=ep,
-            )
+        # --- Negative pole: push toward anti_anchors (target=1) ---
+        delta = init_neg.clone().requires_grad_(True)
+        for _ in range(cfg.n_pgd_steps):
+            if delta.grad is not None:
+                delta.grad.zero_()
+            z_pert = encoder.encode_with_delta_from_hidden(h_test, attention_mask, delta)
+            L_B = l_bias_contrastive(z_pert, bias_anchors, anti_anchors, push_toward_a=False)
+            L_s = l_semantic_preservation(z_pert, z_orig, test_cb)
+            loss = L_B * (1.0 - cfg.keep_weight) - L_s * cfg.keep_weight
+            loss.backward()
             with torch.no_grad():
-                v_plus  = F.normalize((z_pos - z_orig).mean(dim=0), dim=-1)
-                v_minus = F.normalize((z_orig - z_neg).mean(dim=0), dim=-1)
-                restart_pos.append(v_plus.cpu())
-                restart_neg.append(v_minus.cpu())
+                delta.data -= cfg.step_lr * delta.grad.sign()
+                delta.data.clamp_(-cfg.epsilon, cfg.epsilon)
+        with torch.no_grad():
+            z_neg = encoder.encode_with_delta_from_hidden(h_test, attention_mask, delta.detach())
+        adv_neg_all.append(z_neg)
 
-        # Average across restarts → one stable direction per pole per run
-        run_plus  = F.normalize(torch.stack(restart_pos).mean(0), dim=-1)
-        run_minus = F.normalize(torch.stack(restart_neg).mean(0), dim=-1)
-        all_directions.append(run_plus)
-        all_directions.append(run_minus)
-
-    # --- Subspace SVD ---------------------------------------------------------
-    directions   = torch.stack(all_directions, dim=0)          # (2*n_runs, H)
-    directions_c = directions - directions.mean(dim=0)          # mean-center
-
-    _, _, Vh = torch.linalg.svd(directions_c, full_matrices=False)
-    delta_subspace = Vh[:n_components]                          # (K, H)  orthonormal rows
-
-    # --- Diagnostics ----------------------------------------------------------
-    print(f"\n  delta_subspace shape: {tuple(delta_subspace.shape)}")
-
-    # Orthonormality check: delta_subspace @ delta_subspace.T ≈ I_K
-    gram = delta_subspace @ delta_subspace.T
-    eye  = torch.eye(n_components)
-    ortho_err = (gram - eye).abs().max().item()
-    print(f"  Orthonormality error (max |GG^T − I|): {ortho_err:.2e}  (should be ≈ 0)")
-
-    for i in range(n_components):
-        comp = delta_subspace[i]
-        c_style = F.cosine_similarity(comp.unsqueeze(0), v_style.unsqueeze(0)).item()
-        c_sem   = F.cosine_similarity(comp.unsqueeze(0), v_semantic.cpu().unsqueeze(0)).item()
-        print(f"  component {i}: cosine(v_style)={c_style:.4f}  cosine(v_semantic)={c_sem:.4f}")
-
-    if delta_subspace[0] @ v_style > 0.3:
-        print("  ✓ CBDC subspace component_0 aligns with v_style")
-    else:
-        print("  ⚠ Low alignment — try more n_steps or larger epsilon")
-
-    # Mean pairwise cosine for diversity check
-    n_dirs = directions.shape[0]
-    pairwise = directions @ directions.T   # (2*n_runs, 2*n_runs)
-    off_diag = pairwise[~torch.eye(n_dirs, dtype=torch.bool)].mean().item()
-    print(f"  mean pairwise cosine between directions = {off_diag:.4f}  (lower → more diverse)")
-
-    return delta_subspace
+    return torch.cat(adv_pos_all, dim=0), torch.cat(adv_neg_all, dim=0)
 
 
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase B+C: text_iccv training loop
+# ═══════════════════════════════════════════════════════════════════════════
+
+def text_iccv(
+    encoder: FinBERTEncoder,
+    bias_anchors: torch.Tensor,     # (K, H) from debias_vl Phase A
+    anti_anchors: torch.Tensor,     # (K, H)
+    cfg: CBDCConfig,
+) -> tuple[FinBERTEncoder, torch.Tensor]:
+    """
+    CBDC text_iccv loop — iterative PGD + encoder training.
+
+    Each epoch:
+      1. PGD on test_text concept prompts (6 prompts, not random data)
+      2. S = z_adv_pos - z_adv_neg (confound direction per sample)
+      3. Class-specific match_loss + ck_loss → update layer 11 weights
+
+    Returns:
+        encoder:          fine-tuned FinBERTEncoder
+        final_directions: (K, H)  last-epoch PGD-refined directions (for residual projection)
+    """
+    device = cfg.device
+    n_cls = len(cls_text)  # 3
+
+    print(f"\n=== Phase B+C: CBDC text_iccv training ===")
+    print(f"  n_epochs={cfg.n_epochs} | lr={cfg.lr} | "
+          f"PGD: ε={cfg.epsilon} steps={cfg.n_pgd_steps} restarts={cfg.num_samples}")
+
+    # Tokenize concept prompts once
+    cls_enc  = encoder.tokenize(cls_text)
+    test_enc = encoder.tokenize(test_text)
+    cls_ids  = cls_enc["input_ids"].to(device)
+    cls_mask = cls_enc["attention_mask"].to(device)
+    test_ids = test_enc["input_ids"].to(device)
+    test_mask = test_enc["attention_mask"].to(device)
+
+    # test_cb for L_s (encode once, these are frozen neutral concepts)
+    with torch.no_grad():
+        test_cb = encoder.encode_text(test_text).to(device)  # (6, H)
+
+    # Set up trainable layer 11
+    layer_11 = encoder.backbone.encoder.layer[-1]
+    for p in layer_11.parameters():
+        p.requires_grad_(True)
+    optimizer = torch.optim.AdamW(layer_11.parameters(), lr=cfg.lr, weight_decay=1e-4)
+
+    n_trainable = sum(p.numel() for p in layer_11.parameters())
+    print(f"  Trainable params (layer 11): {n_trainable:,}")
+
+    last_S = None
+
+    for epoch in tqdm(range(cfg.n_epochs), desc="text_iccv"):
+        # --- 1. Pre-compute test_text intermediate features (frozen body) ---
+        with torch.no_grad():
+            h_test = encoder.get_intermediate_features(test_ids, test_mask)  # (6, L, H)
+            z_orig = encoder.encode_with_delta_from_hidden(
+                h_test, test_mask, torch.zeros(len(test_text), encoder.hidden_size, device=device)
+            )
+
+        # --- 2. Freeze layer 11 for PGD ---
+        for p in layer_11.parameters():
+            p.requires_grad_(False)
+
+        z_adv_pos, z_adv_neg = _pgd_bipolar(
+            h_test, test_mask, z_orig,
+            bias_anchors, anti_anchors, test_cb,
+            encoder, cfg,
+        )
+
+        # --- 3. Forward adversarial through layer 11 (frozen) to get S ---
+        with torch.no_grad():
+            S = z_adv_pos - z_adv_neg   # (num_samples * N_test, H)
+        last_S = S.detach().cpu()
+
+        # --- 4. Unfreeze layer 11, compute cls_em WITH gradient ---
+        for p in layer_11.parameters():
+            p.requires_grad_(True)
+
+        # Get intermediate features for cls_text
+        with torch.no_grad():
+            h_cls = encoder.get_intermediate_features(cls_ids, cls_mask)
+
+        # Forward through layer 11 with gradient (delta=0)
+        cls_em = encoder.encode_with_delta_from_hidden(
+            h_cls, cls_mask,
+            torch.zeros(n_cls, encoder.hidden_size, device=device),
+        )  # (3, H) — gradient flows through layer 11
+
+        # --- 5. Class-specific match_loss ---
+        N_test = len(test_text)
+        match_loss = torch.tensor(0.0, device=device)
+        for c in range(n_cls):
+            # S[c::N_test] selects the c-th test prompt from each restart
+            # But with multiple restarts, indices are:
+            #   restart_0: [0..5], restart_1: [6..11], ...
+            # We want class-specific: match S directions against their corresponding cls_em
+            # Original uses S[c::n_target_classes], mapping each target prompt to a class
+            # Here test_text has 6 prompts (not class-specific), so we match all S to all cls_em
+            # This follows the CounterAnimal path in the original where n_target > n_class
+            match_loss += (S.to(device) @ cls_em[c:c+1].T).pow(2).mean()
+        match_loss = match_loss * cfg.up_scale / n_cls
+
+        # --- 6. ck_loss ---
+        ck_loss = l_ck(
+            bias_anchors.to(device), anti_anchors.to(device),
+            cls_em, scale=cfg.up_scale,
+        )
+
+        # --- 7. Backward + update ---
+        total_loss = match_loss + ck_loss
+        optimizer.zero_grad()
+        total_loss.backward()
+        optimizer.step()
+
+        if (epoch + 1) % 10 == 0 or epoch == 0:
+            with torch.no_grad():
+                alignment = (S.to(device) @ cls_em.detach().T).pow(2).mean().item()
+            print(f"  Epoch {epoch+1}/{cfg.n_epochs}: "
+                  f"match={match_loss.item():.4f} ck={ck_loss.item():.4f} "
+                  f"total={total_loss.item():.4f} alignment={alignment:.6f}")
+
+    # Freeze after training
+    for p in layer_11.parameters():
+        p.requires_grad_(False)
+    encoder.backbone.eval()
+
+    # Extract final directions from last S via SVD
+    S_centered = last_S - last_S.mean(0)
+    _, _, Vh = torch.linalg.svd(S_centered, full_matrices=False)
+    final_directions = Vh[:cfg.n_bias_dirs]  # (K, H) orthonormal
+
+    print(f"\n  Final directions shape: {tuple(final_directions.shape)}")
+    gram = final_directions @ final_directions.T
+    ortho_err = (gram - torch.eye(cfg.n_bias_dirs)).abs().max().item()
+    print(f"  Orthonormality error: {ortho_err:.2e}")
+
+    return encoder, final_directions
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Re-encode all splits with fine-tuned encoder
+# ═══════════════════════════════════════════════════════════════════════════
+
+@torch.no_grad()
+def reencode_splits(encoder: FinBERTEncoder, device: str, suffix: str = "cbdc"):
+    """Re-encode train/val/test with the fine-tuned encoder."""
+    for split in ["train", "val", "test"]:
+        in_path = os.path.join(CACHE_DIR, f"z_tweet_{split}.pt")
+        if not os.path.exists(in_path):
+            print(f"  [skip] Missing {in_path}")
+            continue
+
+        data = torch.load(in_path, map_location="cpu")
+        ids = data["input_ids"]
+        mask = data["attention_mask"]
+        labels = data.get("labels")
+
+        batch_size = 128
+        all_z = []
+        for i in range(0, len(ids), batch_size):
+            batch_ids = ids[i:i+batch_size].to(device)
+            batch_mask = mask[i:i+batch_size].to(device)
+            z = encoder.encode_ids(batch_ids, batch_mask)
+            all_z.append(z.cpu())
+
+        z_new = torch.cat(all_z, dim=0)
+
+        out_data = {"embeddings": z_new}
+        if labels is not None:
+            out_data["labels"] = labels
+        out_data["input_ids"] = ids
+        out_data["attention_mask"] = mask
+
+        out_path = os.path.join(CACHE_DIR, f"z_tweet_{split}_{suffix}.pt")
+        torch.save(out_data, out_path)
+        print(f"  {split}: {tuple(z_new.shape)} -> {out_path}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Entry point
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════
+
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--n_anchors",       type=int,   default=500)
-    parser.add_argument("--n_steps",         type=int,   default=50)
-    parser.add_argument("--n_runs",          type=int,   default=16)
-    parser.add_argument("--n_restarts",      type=int,   default=3,
-                        help="Random restarts per run (mirrors num_samples in CLIP code).")
-    parser.add_argument("--n_style_anchors", type=int,   default=8,
-                        help="Number of SAE anchor pairs (style + anti-style) used in L_B. "
-                             "Slices the first K rows from style_anchors.pt. "
-                             "CLIP typically uses 4–8 pairs. Default: 8.")
-    parser.add_argument("--epsilon",         type=float, default=0.10)
-    parser.add_argument("--lambda_s",        type=float, default=0.2)
-    parser.add_argument("--step_lr",         type=float, default=0.01)
-    parser.add_argument("--n_components",    type=int,   default=3,
-                        help="Number of SVD principal components for the style subspace. "
-                             "Output delta_subspace.pt has shape (n_components, H). Default: 3.")
+    parser = argparse.ArgumentParser(
+        description="Combined debias_vl + CBDC text_iccv training"
+    )
+    parser.add_argument("--n_epochs",    type=int,   default=100)
+    parser.add_argument("--lr",          type=float, default=1e-5)
+    parser.add_argument("--epsilon",     type=float, default=1.0)
+    parser.add_argument("--n_pgd_steps", type=int,   default=20)
+    parser.add_argument("--step_lr",     type=float, default=0.0037)
+    parser.add_argument("--keep_weight", type=float, default=0.92)
+    parser.add_argument("--num_samples", type=int,   default=10)
+    parser.add_argument("--random_eps",  type=float, default=0.22)
+    parser.add_argument("--n_bias_dirs", type=int,   default=4)
+    parser.add_argument("--lambda_reg",  type=float, default=1000.0)
+    parser.add_argument("--up_scale",    type=float, default=100.0)
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
 
-    # ---- Load cached data ---------------------------------------------------
-    tweet_path        = os.path.join(CACHE_DIR, "z_tweet_train.pt")
-    vstyle_path       = os.path.join(CACHE_DIR, "v_style.pt")
-    style_anch_path   = os.path.join(CACHE_DIR, "style_anchors.pt")
-    anti_anch_path    = os.path.join(CACHE_DIR, "anti_style_anchors.pt")
-
-    for p in [tweet_path, vstyle_path, style_anch_path, anti_anch_path]:
-        if not os.path.exists(p):
-            raise FileNotFoundError(
-                f"Missing: {p}\nRun embed.py → sae.py → sae_analysis.py first."
-            )
-
-    tweet_data = torch.load(tweet_path, map_location="cpu")
-    z_tweet    = tweet_data["embeddings"]
-
-    # input_ids, attention_mask and labels must have been saved by the updated embed.py
-    for key in ("input_ids", "attention_mask", "labels"):
-        if key not in tweet_data:
-            raise KeyError(
-                f"z_tweet_train.pt is missing '{key}'.\n"
-                "Re-run embed.py with the updated version that saves token tensors and labels."
-            )
-    input_ids_tweet      = tweet_data["input_ids"]       # (N, L)
-    attention_mask_tweet = tweet_data["attention_mask"]  # (N, L)
-    labels_tweet         = tweet_data["labels"]           # (N,)  0=neg 1=neu 2=pos
-
-    v_style  = torch.load(vstyle_path, map_location="cpu")
-
-    # Load anchor matrices from sae_analysis.py; slice to --n_style_anchors
-    style_anchors_full = torch.load(style_anch_path, map_location="cpu")  # (top_k, H)
-    anti_anchors_full  = torch.load(anti_anch_path,  map_location="cpu")  # (top_k, H)
-    K = min(args.n_style_anchors, style_anchors_full.shape[0])
-    style_anchors = style_anchors_full[:K]   # (K, H)
-    anti_anchors  = anti_anchors_full[:K]    # (K, H)
-
-    print(f"z_tweet={tuple(z_tweet.shape)} | v_style={tuple(v_style.shape)}")
-    print(f"input_ids={tuple(input_ids_tweet.shape)} | "
-          f"attention_mask={tuple(attention_mask_tweet.shape)}")
-    print(f"style_anchors={tuple(style_anchors.shape)} (using {K} of "
-          f"{style_anchors_full.shape[0]} available)")
+    # ---- Build config -------------------------------------------------------
+    cfg = CBDCConfig(
+        epsilon=args.epsilon,
+        n_pgd_steps=args.n_pgd_steps,
+        step_lr=args.step_lr,
+        keep_weight=args.keep_weight,
+        num_samples=args.num_samples,
+        random_eps=args.random_eps,
+        n_epochs=args.n_epochs,
+        lr=args.lr,
+        up_scale=args.up_scale,
+        n_bias_dirs=args.n_bias_dirs,
+        lambda_reg=args.lambda_reg,
+        device=device,
+    )
 
     # ---- Load encoder -------------------------------------------------------
     model_name = os.environ.get("MODEL_NAME", "ProsusAI/finbert")
     encoder = FinBERTEncoder(model_name=model_name, device=device)
 
-    # ---- Build config -------------------------------------------------------
-    cfg = PGDConfig(
-        epsilon      = args.epsilon,
-        n_steps      = args.n_steps,
-        step_lr      = args.step_lr,
-        lambda_s     = args.lambda_s,
-        n_anchors    = args.n_anchors,
-        n_directions = args.n_runs,
-        device       = device,
-    )
+    # ---- Phase A: debias_vl map discovery -----------------------------------
+    P_debias, bias_anchors, anti_anchors = discover_confound_map(encoder, cfg)
 
-    print(f"\nRunning CBDC bipolar PGD refinement (encoder-based, multi-anchor L_B) ...")
-    print(f"  n_runs={args.n_runs} | n_restarts={args.n_restarts} | "
-          f"n_anchors={args.n_anchors} | n_steps={args.n_steps} | "
-          f"K={K} anchors | ε={args.epsilon} | λ_s={args.lambda_s}")
+    # Save debias_vl projection matrix
+    p_path = os.path.join(CACHE_DIR, "debias_vl_P.pt")
+    torch.save(P_debias.cpu(), p_path)
+    print(f"  debias_vl projection -> {p_path}")
 
-    delta_subspace = collect_delta_star(
-        z_tweet              = z_tweet,
-        input_ids_tweet      = input_ids_tweet,
-        attention_mask_tweet = attention_mask_tweet,
-        labels_tweet         = labels_tweet,
-        style_anchors        = style_anchors,
-        anti_anchors         = anti_anchors,
-        v_style              = v_style,
-        cfg                  = cfg,
-        encoder              = encoder,
-        n_runs               = args.n_runs,
-        n_restarts           = args.n_restarts,
-        device               = device,
-        n_components         = args.n_components,
-    )
+    # ---- Phase B+C: CBDC text_iccv training ---------------------------------
+    encoder, final_directions = text_iccv(encoder, bias_anchors, anti_anchors, cfg)
 
-    out_path = os.path.join(CACHE_DIR, "delta_subspace.pt")
-    torch.save(delta_subspace, out_path)
-    print(f"\ndelta_subspace shape={tuple(delta_subspace.shape)} saved → {out_path}")
-    print("CBDC bipolar refinement complete.")
+    # Save outputs
+    dir_path = os.path.join(CACHE_DIR, "cbdc_directions.pt")
+    torch.save(final_directions, dir_path)
+    print(f"  CBDC directions ({tuple(final_directions.shape)}) -> {dir_path}")
+
+    ckpt_path = os.path.join(CACHE_DIR, "encoder_cbdc.pt")
+    torch.save(encoder.backbone.encoder.layer[-1].state_dict(), ckpt_path)
+    print(f"  Encoder checkpoint -> {ckpt_path}")
+
+    # ---- Re-encode with fine-tuned encoder ----------------------------------
+    print("\nRe-encoding all splits with fine-tuned encoder ...")
+    reencode_splits(encoder, device, suffix="cbdc")
+
+    # ---- Apply residual projection on CBDC-encoded embeddings ---------------
+    print("\nApplying residual CBDC projection on fine-tuned embeddings ...")
+    from pipeline.clean import project_out
+    for split in ["train", "val", "test"]:
+        in_path = os.path.join(CACHE_DIR, f"z_tweet_{split}_cbdc.pt")
+        if not os.path.exists(in_path):
+            continue
+        data = torch.load(in_path, map_location="cpu")
+        z = data["embeddings"]
+        z_clean = project_out(z, final_directions)
+        out_data = {"embeddings": z_clean}
+        if "labels" in data:
+            out_data["labels"] = data["labels"]
+        out_path = os.path.join(CACHE_DIR, f"z_tweet_{split}_clean_cbdc_proj.pt")
+        torch.save(out_data, out_path)
+        print(f"  {split}: CBDC+proj -> {out_path}")
+
+    print("\nCBDC training complete.")
 
 
 if __name__ == "__main__":
