@@ -56,9 +56,7 @@ def encode_texts_with_tokens(
         ids  = enc["input_ids"].to(encoder.device)
         mask = enc["attention_mask"].to(encoder.device)
         with torch.no_grad():
-            embeds = encoder._forward_from_embeds(
-                encoder._get_embeddings(ids), mask
-            )  # (B, H)
+            embeds = encoder.encode_ids(ids, mask)  # (B, H)
         all_vecs.append(embeds.cpu())
         all_ids.append(ids.cpu())
         all_masks.append(mask.cpu())
