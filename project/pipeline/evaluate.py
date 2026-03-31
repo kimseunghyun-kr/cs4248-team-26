@@ -48,7 +48,7 @@ def main():
         lines.append(s)
 
     log("=" * 70)
-    log("CBDC Financial Sentiment — Full Evaluation Report")
+    log("CBDC Sentiment Debiasing — Full Evaluation Report")
     log("=" * 70)
 
     # ---- Classification results -----------------------------------------------

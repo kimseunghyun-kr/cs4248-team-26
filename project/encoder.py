@@ -1,12 +1,15 @@
 """
 Frozen encoder with latent-space perturbation support.
 
-Architecture correspondence (RN50 ↔ FinBERT):
-  CLIP RN50:  frozen ResNet body → perturb intermediate → attnpool + c_proj (1 MHA + 1 linear)
-  FinBERT:    frozen layers 0–10 → perturb h_layer10    → layer 11 (1 transformer layer)
+Architecture correspondence (RN50 ↔ BERT-derivative):
+  CLIP RN50:       frozen ResNet body → perturb intermediate → attnpool + c_proj (1 MHA + 1 linear)
+  BERT-derivative: frozen layers 0–N  → perturb h_layer_N   → layer N+1 (trainable tail)
 
 Both tails are single-attention-layer structures. Gradients flow through
 the tail to delta; backbone weights remain frozen.
+
+Works with any HuggingFace AutoModel that exposes transformer layers
+(BERT, RoBERTa, FinBERT, BERTweet, DistilBERT, etc.).
 """
 
 import torch
@@ -15,14 +18,23 @@ import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModel
 
 
-class FinBERTEncoder(nn.Module):
-    def __init__(self, model_name: str = "ProsusAI/finbert", device: str = "cpu"):
+class TransformerEncoder(nn.Module):
+    def __init__(
+        self,
+        model_name: str = "bert-base-uncased",
+        device: str = "cpu",
+        tokenizer=None,
+    ):
         super().__init__()
         self.device = device
         self.model_name = model_name
 
-        print(f"Loading tokenizer and model from '{model_name}' ...")
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        print(f"Loading model from '{model_name}' ...")
+        if tokenizer is not None:
+            self.tokenizer = tokenizer
+            print(f"  Using custom tokenizer: {type(tokenizer).__name__}")
+        else:
+            self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.backbone = AutoModel.from_pretrained(model_name)
         self.backbone.to(device)
         self.hidden_size = self.backbone.config.hidden_size
@@ -31,6 +43,25 @@ class FinBERTEncoder(nn.Module):
             p.requires_grad_(False)
         self.backbone.eval()
         print(f"  hidden_size={self.hidden_size} | all backbone params frozen")
+
+    # ------------------------------------------------------------------
+    # Transformer layer resolution (BERT vs DistilBERT vs others)
+    # ------------------------------------------------------------------
+    def _get_transformer_layers(self):
+        """Resolve the sequential list of transformer layers.
+
+        Handles architecture differences:
+          - BERT / RoBERTa / FinBERT: backbone.encoder.layer
+          - DistilBERT:               backbone.transformer.layer
+        """
+        if hasattr(self.backbone, "encoder") and hasattr(self.backbone.encoder, "layer"):
+            return self.backbone.encoder.layer
+        if hasattr(self.backbone, "transformer") and hasattr(self.backbone.transformer, "layer"):
+            return self.backbone.transformer.layer
+        raise AttributeError(
+            f"Cannot find transformer layers in {type(self.backbone).__name__}. "
+            f"Expected .encoder.layer or .transformer.layer"
+        )
 
     # ------------------------------------------------------------------
     # Tokenization
@@ -118,7 +149,7 @@ class FinBERTEncoder(nn.Module):
         return mask
 
     # ------------------------------------------------------------------
-    # Encode with delta perturbation at CLS position (through layer 11)
+    # Encode with delta perturbation at CLS position (through tail layer)
     # ------------------------------------------------------------------
     def encode_with_delta_from_hidden(
         self,
@@ -131,8 +162,8 @@ class FinBERTEncoder(nn.Module):
         NLP analog of CLIP RN50's target_model.forward(z_adv).
 
         Injects delta at the CLS token position of hidden_states, then
-        runs through layer 11 (the trainable tail). Gradients flow to
-        delta and through layer 11 weights.
+        runs through the trainable tail layer(s). Gradients flow to
+        delta and through the tail weights.
         """
         if hidden_states.dim() == 2:
             hidden_states = hidden_states.unsqueeze(0)
@@ -160,7 +191,7 @@ class FinBERTEncoder(nn.Module):
         perturbed = hidden_states + delta_full
 
         # Forward through tail layer(s)
-        for layer_module in self.backbone.encoder.layer[start_layer:]:
+        for layer_module in self._get_transformer_layers()[start_layer:]:
             out = layer_module(hidden_states=perturbed, attention_mask=sdpa_mask)
             perturbed = out[0] if isinstance(out, tuple) else out
 

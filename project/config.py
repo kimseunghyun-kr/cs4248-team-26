@@ -1,12 +1,14 @@
 from dataclasses import dataclass
 
 # ---------------------------------------------------------------------------
-# Model registry for ablation studies
+# Model registry — shortcut keys for common BERT-derivative backbones
 # ---------------------------------------------------------------------------
 MODEL_REGISTRY = {
-    "finbert":  "ProsusAI/finbert",
-    "bert":     "bert-base-uncased",
-    "bertweet": "vinai/bertweet-base",
+    "bert":       "bert-base-uncased",
+    "finbert":    "ProsusAI/finbert",
+    "bertweet":   "vinai/bertweet-base",
+    "roberta":    "roberta-base",
+    "distilbert": "distilbert-base-uncased",
 }
 
 
@@ -25,7 +27,11 @@ class CBDCConfig:
     """Configuration for the combined debias_vl + CBDC text_iccv pipeline.
 
     PGD inner-loop defaults match the original CBDC RN50 hyperparameters.
+    Works with any BERT-derivative backbone.
     """
+    # Prompt wording — controls the text unit in generated prompts
+    text_unit: str = "text"        # "text", "tweet", "review", "post", etc.
+
     # PGD inner loop (matches RN50 / CelebA defaults)
     epsilon: float = 1.0           # L-inf perturbation bound (att_bnd)
     n_pgd_steps: int = 20          # sign-SGD iterations per restart (att_itr)

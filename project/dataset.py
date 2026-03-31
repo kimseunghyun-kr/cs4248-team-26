@@ -1,14 +1,13 @@
 """
 Dataset loading and PyTorch Dataset wrapper.
 
-Primary tweet data:
-  1. TSAD via Kaggle  (abhi8923shriv/sentiment-analysis-dataset)
-  2. tweet_eval/sentiment from HuggingFace
-  3. Synthetic 500-sample fallback
+Supports any text + label dataset for 3-way sentiment classification.
 
-Formal financial sentences:
-  1. financial_phrasebank (sentences_allagree) from HuggingFace
-  2. Synthetic template-based fallback
+Data sources (tried in order by default):
+  1. Local CSV in project/data/
+  2. Kaggle  (abhi8923shriv/sentiment-analysis-dataset)
+  3. HuggingFace dataset (tweet_eval/sentiment by default)
+  4. Synthetic 500-sample fallback
 
 Labels: 0=negative, 1=neutral, 2=positive throughout.
 """
@@ -18,7 +17,7 @@ import os
 import random
 import torch
 from torch.utils.data import Dataset
-from typing import List, Tuple, Dict
+from typing import List, Dict
 
 from transformers import PreTrainedTokenizer
 
@@ -166,18 +165,8 @@ def _split_records(records):
     return tr, va, te
 
 
-def _records_to_legacy_tuple(train_records, val_records, test_records):
-    return (
-        [r["text"] for r in train_records],
-        [r["label"] for r in train_records],
-        [r["text"] for r in val_records],
-        [r["label"] for r in val_records],
-        [r["text"] for r in test_records],
-        [r["label"] for r in test_records],
-    )
 
-
-def _find_local_tweet_csv():
+def _find_local_csv():
     for name in LOCAL_TWEET_FILES:
         path = os.path.join(LOCAL_DATA_DIR, name)
         if os.path.exists(path):
@@ -200,9 +189,13 @@ def _find_local_tweet_csv():
 
 
 # ---------------------------------------------------------------------------
-# Load raw tweet data (TSAD / tweet_eval / synthetic)
+# Load raw text data (local CSV / Kaggle / HuggingFace / synthetic)
 # ---------------------------------------------------------------------------
-def load_tsad_records(dataset_name: str = "tweet_eval", dataset_config: str = "sentiment"):
+def load_records(
+    dataset_name: str = "tweet_eval",
+    dataset_config: str = "sentiment",
+    source: str = "auto",
+):
     """
     Returns (train_records, val_records, test_records).
 
@@ -211,157 +204,155 @@ def load_tsad_records(dataset_name: str = "tweet_eval", dataset_config: str = "s
 
     Optional fields are kept when available:
       entity, cleaned_tokens, selected_text, time_of_tweet, age_of_user, country
-    """
-    # --- Try 0: local cleaned CSV in project/data/ ----------------------------
-    # local_path = _find_local_tweet_csv()
-    # if local_path is not None:
-    #     try:
-    #         import pandas as pd
-    #         print(f"Loading local tweet dataset from '{local_path}' ...")
-    #         df = None
-    #         for encoding in ["utf-8", "latin-1", "cp1252"]:
-    #             try:
-    #                 df = pd.read_csv(local_path, encoding=encoding)
-    #                 print(f"  Loaded with encoding={encoding}")
-    #                 break
-    #             except Exception as enc_err:
-    #                 err_str = str(enc_err).lower()
-    #                 if "codec" in err_str or "decode" in err_str or "utf" in err_str:
-    #                     print(f"  encoding={encoding} failed, trying next ...")
-    #                     continue
-    #                 raise
-    #         if df is None:
-    #             raise RuntimeError("All encodings failed for local tweet CSV")
-    #         records = _records_from_dataframe(df, source_name="Local tweet dataset")
-    #         return _split_records(records)
-    #     except Exception as e:
-    #         print(f"  Local dataset load failed: {e}")
 
-    # --- Try 1: TSAD from Kaggle (try multiple encodings) ---------------------
-    try:
-        import kagglehub
-        from kagglehub import KaggleDatasetAdapter
-        print("Loading TSAD from Kaggle (abhi8923shriv/sentiment-analysis-dataset) ...")
-        df = None
-        for encoding in ["utf-8", "latin-1", "cp1252"]:
+    Args:
+        dataset_name:   HuggingFace dataset name (used when source="auto" or "huggingface")
+        dataset_config: HuggingFace dataset config
+        source:         "auto" | "local" | "kaggle" | "huggingface" | file path
+    """
+    # --- Direct file path source ---
+    if source not in ("auto", "local", "kaggle", "huggingface"):
+        if os.path.exists(source):
+            import pandas as pd
+            print(f"Loading dataset from '{source}' ...")
+            df = pd.read_csv(source)
+            records = _records_from_dataframe(df, source_name=os.path.basename(source))
+            return _split_records(records)
+        else:
+            raise FileNotFoundError(f"Dataset source not found: {source}")
+
+    # --- Try 0: local cleaned CSV in project/data/ ---
+    if source in ("auto", "local"):
+        local_path = _find_local_csv()
+        if local_path is not None:
             try:
-                df = kagglehub.load_dataset(
-                    KaggleDatasetAdapter.PANDAS,
-                    "abhi8923shriv/sentiment-analysis-dataset",
-                    "train.csv",
-                    pandas_kwargs={"encoding": encoding},
-                )
-                print(f"  Loaded with encoding={encoding}")
-                break
-            except Exception as enc_err:
-                err_str = str(enc_err).lower()
-                if "codec" in err_str or "decode" in err_str or "utf" in err_str:
-                    print(f"  encoding={encoding} failed, trying next ...")
-                    continue
-                raise  # non-encoding error — propagate immediately
-        if df is None:
-            raise RuntimeError("All encodings failed for TSAD CSV")
-        records = _records_from_dataframe(df, source_name="TSAD")
-        return _split_records(records)
-    except Exception as e:
-        print(f"  Kaggle load failed: {e}")
+                import pandas as pd
+                print(f"Loading local dataset from '{local_path}' ...")
+                df = None
+                for encoding in ["utf-8", "latin-1", "cp1252"]:
+                    try:
+                        df = pd.read_csv(local_path, encoding=encoding)
+                        print(f"  Loaded with encoding={encoding}")
+                        break
+                    except Exception as enc_err:
+                        err_str = str(enc_err).lower()
+                        if "codec" in err_str or "decode" in err_str or "utf" in err_str:
+                            print(f"  encoding={encoding} failed, trying next ...")
+                            continue
+                        raise
+                if df is None:
+                    raise RuntimeError("All encodings failed for local CSV")
+                records = _records_from_dataframe(df, source_name="Local dataset")
+                return _split_records(records)
+            except Exception as e:
+                print(f"  Local dataset load failed: {e}")
+        if source == "local":
+            raise FileNotFoundError("No local CSV found in project/data/")
 
-    # --- Try 2: tweet_eval from HuggingFace -----------------------------------
-    # try:
-    #     from datasets import load_dataset
-    #     print(f"Loading dataset '{dataset_name}' config='{dataset_config}' ...")
-    #     ds = load_dataset(dataset_name, dataset_config)
+    # --- Try 1: Kaggle TSAD (try multiple encodings) ---
+    if source in ("auto", "kaggle"):
+        try:
+            import kagglehub
+            from kagglehub import KaggleDatasetAdapter
+            print("Loading TSAD from Kaggle (abhi8923shriv/sentiment-analysis-dataset) ...")
+            df = None
+            for encoding in ["utf-8", "latin-1", "cp1252"]:
+                try:
+                    df = kagglehub.load_dataset(
+                        KaggleDatasetAdapter.PANDAS,
+                        "abhi8923shriv/sentiment-analysis-dataset",
+                        "train.csv",
+                        pandas_kwargs={"encoding": encoding},
+                    )
+                    print(f"  Loaded with encoding={encoding}")
+                    break
+                except Exception as enc_err:
+                    err_str = str(enc_err).lower()
+                    if "codec" in err_str or "decode" in err_str or "utf" in err_str:
+                        print(f"  encoding={encoding} failed, trying next ...")
+                        continue
+                    raise  # non-encoding error — propagate immediately
+            if df is None:
+                raise RuntimeError("All encodings failed for TSAD CSV")
+            records = _records_from_dataframe(df, source_name="TSAD")
+            return _split_records(records)
+        except Exception as e:
+            print(f"  Kaggle load failed: {e}")
+        if source == "kaggle":
+            raise RuntimeError("Kaggle TSAD load failed")
 
-    #     def extract(split):
-    #         return [{"text": ex["text"], "label": int(ex["label"])} for ex in ds[split]]
+    # --- Try 2: HuggingFace dataset ---
+    if source in ("auto", "huggingface"):
+        try:
+            from datasets import load_dataset
+            print(f"Loading dataset '{dataset_name}' config='{dataset_config}' ...")
+            ds = load_dataset(dataset_name, dataset_config)
 
-    #     train_records = extract("train")
-    #     val_records = extract("validation")
-    #     test_records = extract("test")
+            def extract(split):
+                return [{"text": ex["text"], "label": int(ex["label"])} for ex in ds[split]]
 
-    #     print(
-    #         f"  train={len(train_records)} | val={len(val_records)} | test={len(test_records)}"
-    #     )
-    #     return train_records, val_records, test_records
+            train_records = extract("train")
+            val_records = extract("validation")
+            test_records = extract("test")
 
-    # except Exception as e:
-    #     print(f"WARNING: Could not load '{dataset_name}/{dataset_config}': {e}")
-    #     print("Falling back to synthetic 500-sample dataset.")
-    #     tr_t, tr_l, va_t, va_l, te_t, te_l = _make_synthetic_dataset()
-    #     return (
-    #         [{"text": t, "label": int(y)} for t, y in zip(tr_t, tr_l)],
-    #         [{"text": t, "label": int(y)} for t, y in zip(va_t, va_l)],
-    #         [{"text": t, "label": int(y)} for t, y in zip(te_t, te_l)],
-    #     )
+            print(
+                f"  train={len(train_records)} | val={len(val_records)} | test={len(test_records)}"
+            )
+            return train_records, val_records, test_records
+        except Exception as e:
+            print(f"  HuggingFace load failed: {e}")
+        if source == "huggingface":
+            raise RuntimeError(f"HuggingFace dataset '{dataset_name}/{dataset_config}' load failed")
 
-
-def load_tsad(dataset_name: str = "tweet_eval", dataset_config: str = "sentiment"):
-    """
-    Returns (train_texts, train_labels, val_texts, val_labels, test_texts, test_labels).
-    Labels: 0=negative, 1=neutral, 2=positive.
-    """
-    return _records_to_legacy_tuple(*load_tsad_records(dataset_name, dataset_config))
-
-
-def _parse_tsad_kaggle(df):
-    """
-    Parse the TSAD Kaggle dataframe.
-
-    Expected columns (auto-detected):
-      text column  : 'text', 'Text', 'tweet', 'Tweet', 'sentence'
-      label column : 'sentiment', 'Sentiment', 'label', 'Label', 'polarity'
-
-    Label values → 0/1/2:
-      'negative' / 'Negative' / '-1' / 0  → 0
-      'neutral'  / 'Neutral'  / '0'  / 1  → 1
-      'positive' / 'Positive' / '1'  / 2  → 2
-    """
-    records = _records_from_dataframe(df, source_name="TSAD")
-    return _records_to_legacy_tuple(*_split_records(records))
-
-
+    # --- Fallback: synthetic dataset ---
+    print("Falling back to synthetic 500-sample dataset.")
+    tr_t, tr_l, va_t, va_l, te_t, te_l = _make_synthetic_dataset()
+    return (
+        [{"text": t, "label": int(y)} for t, y in zip(tr_t, tr_l)],
+        [{"text": t, "label": int(y)} for t, y in zip(va_t, va_l)],
+        [{"text": t, "label": int(y)} for t, y in zip(te_t, te_l)],
+    )
 
 
 def _make_synthetic_dataset():
-    """Creates a minimal synthetic financial tweet dataset."""
+    """Creates a minimal synthetic dataset for 3-way sentiment classification."""
     random.seed(42)
 
     templates = {
         0: [  # negative
-            "Stock {} crashed today, down {} percent.",
-            "Earnings miss for {}, losses widen to ${}M.",
-            "Revenue declined sharply for {} this quarter.",
-            "{} faces bankruptcy fears as debt soars.",
-            "Investors dump {} shares after poor guidance.",
+            "I'm really disappointed with {}.",
+            "Terrible experience with {}, would not recommend.",
+            "The quality of {} has declined significantly.",
+            "{} completely failed to meet expectations.",
+            "Very frustrated with {} after this experience.",
         ],
         1: [  # neutral
-            "Company {} released its quarterly report today.",
-            "{} will hold its annual shareholder meeting next week.",
-            "The CEO of {} commented on market conditions.",
-            "{} announced a routine dividend payment.",
-            "Analysts maintain hold rating on {}.",
+            "{} released an update today.",
+            "Here is some information about {}.",
+            "The spokesperson for {} commented on the situation.",
+            "{} announced routine changes this quarter.",
+            "Analysts are monitoring {} for further developments.",
         ],
         2: [  # positive
-            "{} stock surged {}% on strong earnings.",
-            "Record revenue for {} this quarter, beating estimates.",
-            "{} raises full-year guidance after strong performance.",
-            "Investors cheer as {} announces share buyback.",
-            "{} profit rose sharply, topping analyst forecasts.",
+            "{} exceeded all my expectations!",
+            "Absolutely love what {} has done recently.",
+            "{} delivered outstanding results this time.",
+            "Really impressed with the quality of {}.",
+            "Great news from {} — well deserved recognition.",
         ],
     }
-    tickers = ["AAPL", "GOOG", "TSLA", "MSFT", "AMZN", "NVDA", "META", "JPM"]
+    subjects = [
+        "the product", "the service", "the team", "the update",
+        "the platform", "the release", "the company", "the project",
+    ]
 
     texts, labels = [], []
     n_per_class = 167  # ~500 total
     for label, tmpl_list in templates.items():
         for i in range(n_per_class):
-            ticker = tickers[i % len(tickers)]
+            subject = subjects[i % len(subjects)]
             tmpl = tmpl_list[i % len(tmpl_list)]
-            val = random.randint(2, 40)
-            try:
-                text = tmpl.format(ticker, val)
-            except IndexError:
-                text = tmpl.format(ticker)
+            text = tmpl.format(subject)
             texts.append(text)
             labels.append(label)
 
@@ -388,7 +379,7 @@ def _make_synthetic_dataset():
 # ---------------------------------------------------------------------------
 # PyTorch Dataset
 # ---------------------------------------------------------------------------
-class TweetDataset(Dataset):
+class TextDataset(Dataset):
     def __init__(
         self,
         texts: List[str],

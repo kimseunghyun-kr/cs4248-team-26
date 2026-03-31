@@ -1,18 +1,21 @@
 """
-End-to-end orchestrator for the CBDC financial sentiment pipeline.
+End-to-end orchestrator for the CBDC sentiment debiasing pipeline.
 
 Pipeline:
-  1. data/embed.py       — encode tweets + formal text, cache embeddings
+  1. data/embed.py       — encode text, cache embeddings
   2. cbdc/refine.py      — debias_vl map discovery + CBDC text_iccv training
   3. pipeline/clean.py   — orthogonal projection (all conditions)
   4. pipeline/classify.py — linear probe training + evaluation
   5. pipeline/evaluate.py — full evaluation report
 
 Usage:
-  python run_all.py                      # run all phases
-  python run_all.py --start_phase 2      # resume from phase 2
-  python run_all.py --only_phase 4       # run only evaluation
-  python run_all.py --model bert         # use bert-base-uncased
+  python run_all.py                            # run all phases with BERT
+  python run_all.py --model finbert --text_unit tweet  # financial tweets mode
+  python run_all.py --start_phase 2            # resume from phase 2
+  python run_all.py --only_phase 4             # run only evaluation
+  python run_all.py --skip_cbdc                # skip CBDC (baseline only)
+  python run_all.py --model roberta-base       # arbitrary HuggingFace model
+  python run_all.py --tokenizer custom-tok     # custom tokenizer
 """
 
 import subprocess
@@ -60,14 +63,21 @@ def run_phase(script_path: str, description: str, extra_env: dict) -> bool:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run CBDC financial sentiment pipeline.")
+    parser = argparse.ArgumentParser(description="Run CBDC sentiment debiasing pipeline.")
     parser.add_argument("--start_phase", type=int, default=1,
                         help="Resume from this phase (1-5).")
     parser.add_argument("--only_phase", type=int, default=None,
                         help="Run only this phase.")
-    parser.add_argument("--model", default="finbert",
-                        choices=list(MODEL_REGISTRY.keys()),
-                        help=f"Backbone encoder. Choices: {list(MODEL_REGISTRY.keys())}.")
+    parser.add_argument("--model", default="bert",
+                        help=f"Backbone encoder. Registry shortcuts: {list(MODEL_REGISTRY.keys())}. "
+                             "Or pass any HuggingFace model ID.")
+    parser.add_argument("--tokenizer", default=None,
+                        help="Optional custom tokenizer (HuggingFace ID). "
+                             "If omitted, uses the model's own tokenizer.")
+    parser.add_argument("--text_unit", default="text",
+                        help="Text unit for prompts: 'text', 'tweet', 'review', etc.")
+    parser.add_argument("--skip_cbdc", action="store_true",
+                        help="Skip Phase 2 (CBDC training). Runs baseline-only evaluation.")
     args = parser.parse_args()
 
     hf_model_name = get_model_name(args.model)
@@ -76,7 +86,10 @@ def main():
     extra_env = {
         "MODEL_NAME": hf_model_name,
         "CACHE_DIR":  cache_dir,
+        "TEXT_UNIT":  args.text_unit,
     }
+    if args.tokenizer:
+        extra_env["TOKENIZER_NAME"] = args.tokenizer
 
     if args.only_phase is not None:
         phases = [p for p in PHASES if p[0] == args.only_phase]
@@ -86,15 +99,23 @@ def main():
     else:
         phases = [p for p in PHASES if p[0] >= args.start_phase]
 
+    if args.skip_cbdc:
+        phases = [p for p in phases if p[0] != 2]
+
     os.makedirs(cache_dir, exist_ok=True)
     os.makedirs(os.path.join(PROJECT_DIR, "results"), exist_ok=True)
 
     print("=" * 70)
-    print("CBDC Financial Sentiment Pipeline")
+    print("CBDC Sentiment Debiasing Pipeline")
     print("=" * 70)
     print(f"Model:         {hf_model_name}  (--model {args.model})")
+    if args.tokenizer:
+        print(f"Tokenizer:     {args.tokenizer}")
+    print(f"Text unit:     {args.text_unit}")
     print(f"Cache dir:     {cache_dir}")
     print(f"Running phases: {[p[0] for p in phases]}")
+    if args.skip_cbdc:
+        print(f"CBDC:          SKIPPED (baseline only)")
 
     total_start = time.time()
     for num, script, desc in phases:

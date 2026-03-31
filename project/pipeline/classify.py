@@ -2,7 +2,7 @@
 Phase 4: Train and evaluate linear probes for all experiment conditions.
 
 Conditions:
-  B1 (raw)          : raw BERT/FinBERT CLS embeddings (baseline)
+  B1 (raw)          : raw BERT-derivative CLS embeddings (baseline)
   D1 (debias_vl)    : debias_vl word-pair projection applied to raw embeddings
   D2 (CBDC)         : CBDC text_iccv fine-tuned encoder embeddings
   D3 (CBDC+proj)    : CBDC encoder + residual CBDC direction projection
@@ -10,7 +10,7 @@ Conditions:
   D5 (CBDC+sent-boost) : CBDC embeddings + sentiment boost
   C (label-guided)  : label-guided within-class mean-shift projection (oracle)
 
-All conditions train a Linear(768, 3) probe and evaluate with macro F1.
+All conditions train a Linear(H, 3) probe and evaluate with macro F1.
 
 Run from project/ directory:
   python pipeline/classify.py

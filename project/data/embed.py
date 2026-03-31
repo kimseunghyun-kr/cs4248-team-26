@@ -1,15 +1,14 @@
 """
 Phase 1: Encode all corpora and cache embeddings to disk.
 
-Outputs (saved to project/cache/):
-  z_tweet_train.pt  — dict {"embeddings": (N,768), "labels": (N,),
+Outputs (saved to cache directory):
+  z_tweet_train.pt  — dict {"embeddings": (N,H), "labels": (N,),
                              "input_ids": (N,L), "attention_mask": (N,L),
                              "texts": list[str], "entities": list[str|None],
                              "cleaned_tokens": list[list[str]|None],
                              "selected_texts": list[str|None]}
   z_tweet_val.pt
   z_tweet_test.pt
-  z_formal.pt       — dict {"embeddings": (N,768)}  (no labels, no token tensors)
 
 Run from project/ directory:
   python data/embed.py [--batch_size 64] [--max_length 128]
@@ -24,8 +23,8 @@ import torch
 
 from tqdm import tqdm
 
-from encoder import FinBERTEncoder
-from dataset import load_tsad_records
+from encoder import TransformerEncoder
+from dataset import load_records
 
 
 _DEFAULT_CACHE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache")
@@ -33,7 +32,7 @@ CACHE_DIR = os.environ.get("CACHE_DIR", _DEFAULT_CACHE)
 
 
 def encode_texts_with_tokens(
-    encoder: FinBERTEncoder,
+    encoder: TransformerEncoder,
     texts: list[str],
     batch_size: int,
     max_length: int,
@@ -69,7 +68,7 @@ def encode_texts_with_tokens(
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_name", default=os.environ.get("MODEL_NAME", "ProsusAI/finbert"))
+    parser.add_argument("--model_name", default=os.environ.get("MODEL_NAME", "bert-base-uncased"))
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--max_length", type=int, default=128)
     args = parser.parse_args()
@@ -78,15 +77,22 @@ def main():
     print(f"Device: {device}")
     os.makedirs(CACHE_DIR, exist_ok=True)
 
-    # ---- Load encoder --------------------------------------------------------
+    # ---- Load encoder (with optional custom tokenizer) -----------------------
+    tokenizer = None
+    tokenizer_name = os.environ.get("TOKENIZER_NAME")
+    if tokenizer_name:
+        from transformers import AutoTokenizer
+        print(f"Loading custom tokenizer from '{tokenizer_name}' ...")
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+
     try:
-        encoder = FinBERTEncoder(model_name=args.model_name, device=device)
+        encoder = TransformerEncoder(model_name=args.model_name, device=device, tokenizer=tokenizer)
     except Exception:
         print("Falling back to distilbert-base-uncased")
-        encoder = FinBERTEncoder(model_name="distilbert-base-uncased", device=device)
+        encoder = TransformerEncoder(model_name="distilbert-base-uncased", device=device)
 
-    # ---- Load tweet data -----------------------------------------------------
-    train_records, val_records, test_records = load_tsad_records()
+    # ---- Load text data ------------------------------------------------------
+    train_records, val_records, test_records = load_records()
 
     for split_name, records in [
         ("train", train_records),
@@ -96,7 +102,7 @@ def main():
         texts = [r["text"] for r in records]
         labels = [r["label"] for r in records]
         out_path = os.path.join(CACHE_DIR, f"z_tweet_{split_name}.pt")
-        print(f"\nEncoding tweet {split_name} ({len(texts)} samples) ...")
+        print(f"\nEncoding {split_name} ({len(texts)} samples) ...")
         embs, ids, masks = encode_texts_with_tokens(
             encoder, texts, args.batch_size, args.max_length
         )

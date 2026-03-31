@@ -1,19 +1,22 @@
 """
-Prompt banks for CBDC tweet sentiment.
+Prompt banks for CBDC sentiment debiasing.
 
 The static prompt roles stay the same:
   cls_text_groups   ↔ class concepts pooled into sentiment prototypes
   target_text       ↔ prompts attacked by PGD and matched to class prototypes
-  keep_text         ↔ neutral finance prompts used only for L_s
+  keep_text         ↔ neutral concept prompts used only for L_s
 
-For the debias_vl stage, topics can now be mined from the tweet training split:
+For the debias_vl stage, topics can now be mined from the training split:
   candidate_prompt  ↔ sentiment × mined-topic crossed grid
   spurious_prompt   ↔ mined-topic prompts without sentiment
   S_pairs           ↔ same sentiment, different topic
   B_pairs           ↔ same topic, different sentiment
 
-If mining fails or the cached tweet split is unavailable, the code falls back to
-the original hand-written topic list so the pipeline remains runnable.
+If mining fails or the cached split is unavailable, the code falls back to
+the default topic list so the pipeline remains runnable.
+
+All prompt templates are parameterized by `text_unit` (e.g., "text", "tweet",
+"review") so the pipeline works across domains without code changes.
 """
 
 from __future__ import annotations
@@ -60,59 +63,98 @@ _PLACEHOLDER_TOKENS = {"<url>", "<other_user>", "<user>", "<person>", "<number>"
 _CONTRACTION_TAILS = {"'s", "'t", "'m", "'re", "'ve", "'ll", "'d", "s", "t", "m", "re", "ve", "ll", "d"}
 
 
-# ── Sentiment class concepts (pooled prototypes) ───────────────────────
-cls_text_groups = [
-    [
-        "A tweet expressing negative sentiment.",
-        "This text conveys unfavorable or unhappy sentiment.",
-        "The writer sounds negative about the topic or entity.",
-        "A pessimistic social media post.",
-    ],
-    [
-        "A tweet expressing neutral sentiment.",
-        "This text is informational and emotionally neutral.",
-        "The writer sounds balanced and non-committal about the topic or entity.",
-        "A factual post without strong sentiment.",
-    ],
-    [
-        "A tweet expressing positive sentiment.",
-        "This text conveys favorable or enthusiastic sentiment.",
-        "The writer sounds positive about the topic or entity.",
-        "An optimistic social media post.",
-    ],
-]
+# ── Factory functions for text_unit-parameterized prompts ─────────────────
 
-cls_group_sizes = [len(group) for group in cls_text_groups]
-cls_text = [group[0] for group in cls_text_groups]
-
-
-# ── PGD targets for RN50-style text_iccv matching ──────────────────────
-target_text = [
-    "A negative-sentiment tweet.",
-    "A neutral-sentiment tweet.",
-    "A positive-sentiment tweet.",
-]
+def make_cls_text_groups(text_unit: str = "text") -> list[list[str]]:
+    """Sentiment class concept prompts, parameterized by text_unit."""
+    return [
+        [
+            f"A {text_unit} expressing negative sentiment.",
+            "This text conveys unfavorable or unhappy sentiment.",
+            f"The writer sounds negative about the topic or entity.",
+            f"A pessimistic {text_unit}.",
+        ],
+        [
+            f"A {text_unit} expressing neutral sentiment.",
+            "This text is informational and emotionally neutral.",
+            f"The writer sounds balanced and non-committal about the topic or entity.",
+            f"A factual {text_unit} without strong sentiment.",
+        ],
+        [
+            f"A {text_unit} expressing positive sentiment.",
+            "This text conveys favorable or enthusiastic sentiment.",
+            f"The writer sounds positive about the topic or entity.",
+            f"An optimistic {text_unit}.",
+        ],
+    ]
 
 
-# ── Neutral finance prompts for L_s preservation ────────────────────────
-keep_text = [
-    "A discussion about recent events.",
-    "Commentary on an entity or topic.",
-    "An observation about a product or service.",
-    "A remark about public reaction online.",
-    "Thoughts on a recent update or announcement.",
-    "A perspective on a trending topic.",
-    "A note about social media discussion.",
-    "An analysis of public response.",
-    "A comment on community reactions.",
-    "A report on recent online conversation.",
-    "An overview of a popular topic.",
-    "A summary of recent public discussion.",
-]
+def make_target_text(text_unit: str = "text") -> list[str]:
+    """PGD target prompts for RN50-style text_iccv matching."""
+    return [
+        f"A negative-sentiment {text_unit}.",
+        f"A neutral-sentiment {text_unit}.",
+        f"A positive-sentiment {text_unit}.",
+    ]
 
 
-# ── Static fallback topics ──────────────────────────────────────────────
+def make_keep_text(text_unit: str = "text") -> list[str]:
+    """Neutral concept prompts for L_s preservation."""
+    return [
+        "A discussion about recent events.",
+        "Commentary on an entity or topic.",
+        "An observation about a product or service.",
+        "A remark about public reaction online.",
+        "Thoughts on a recent update or announcement.",
+        "A perspective on a trending topic.",
+        f"A note about {text_unit} discussion.",
+        "An analysis of public response.",
+        "A comment on community reactions.",
+        "A report on recent online conversation.",
+        "An overview of a popular topic.",
+        "A summary of recent public discussion.",
+    ]
+
+
+
+# ── Domain-agnostic default topics ────────────────────────────────────────
 DEFAULT_TOPICS = [
+    "technology",
+    "entertainment",
+    "sports",
+    "politics",
+    "health",
+    "education",
+    "travel",
+    "food",
+    "the environment",
+    "science",
+    "fashion",
+    "music",
+    "gaming",
+    "business",
+    "social media",
+    "weather",
+    "transportation",
+    "housing",
+    "energy",
+    "culture",
+    "art",
+    "relationships",
+    "work",
+    "news",
+    "community",
+    "digital privacy",
+    "artificial intelligence",
+    "climate change",
+    "public safety",
+    "economics",
+    "media",
+    "innovation",
+]
+
+# ── Financial domain topics (preserved for --text_unit tweet / finance) ───
+FINANCE_TOPICS = [
     "cryptocurrency",
     "equities",
     "bonds",
@@ -187,7 +229,7 @@ def _normalize_cleaned_tokens(tokens: Sequence[str] | None) -> list[str]:
         return []
     normalized = []
     for tok in tokens:
-        tok = str(tok).strip().lower().replace("’", "'")
+        tok = str(tok).strip().lower().replace("'", "'")
         if not tok or tok in {",", ".", "!", "?", ";", ":", "''", "``", "'", "\"", "[", "]", "(", ")"}:
             continue
         if tok in _PLACEHOLDER_TOKENS:
@@ -337,7 +379,7 @@ def mine_phrase_topics_from_records(
     min_doc_freq: int = 20,
     max_doc_freq_ratio: float = 0.20,
 ) -> list[dict]:
-    """Mine label-balanced topic/style phrases from cleaned/context tweet tokens.
+    """Mine label-balanced topic/style phrases from cleaned/context tokens.
 
     Phrases are ranked by:
       frequency × class-balance entropy × small specificity bonus
@@ -445,11 +487,11 @@ def _load_records_for_mining(tokenizer, cache_dir: str) -> tuple[list[dict] | No
             return records, f"cache:{train_path}"
 
     try:
-        from dataset import load_tsad_records
+        from dataset import load_records
 
-        train_records, _, _ = load_tsad_records()
+        train_records, _, _ = load_records()
         if train_records:
-            return train_records, "dataset:load_tsad_records"
+            return train_records, "dataset:load_records"
     except Exception:
         pass
 
@@ -505,7 +547,7 @@ def mine_topic_phrases_from_cache(
     max_doc_freq_ratio: float = 0.20,
     force_refresh: bool = False,
 ) -> tuple[list[str], list[dict], bool]:
-    """Mine topic phrases from cached train tweets and persist the result."""
+    """Mine topic phrases from cached train data and persist the result."""
     cache_dir = cache_dir or DEFAULT_CACHE_DIR
     os.makedirs(cache_dir, exist_ok=True)
     out_path = os.path.join(cache_dir, "mined_topics.json")
@@ -575,6 +617,7 @@ def build_prompt_bank(
     topics: Sequence[str],
     topic_metadata: Sequence[dict] | None = None,
     using_mined_topics: bool = False,
+    text_unit: str = "text",
 ) -> dict:
     """Build the debias_vl prompt grid and index pairs for a topic list."""
     topics = list(topics)
@@ -585,21 +628,28 @@ def build_prompt_bank(
         if topic is not None and topic not in meta_by_topic:
             meta_by_topic[topic] = row
 
+    # Build text_unit-parameterized prompt sets
+    _cls_text_groups = make_cls_text_groups(text_unit)
+    _cls_group_sizes = [len(group) for group in _cls_text_groups]
+    _cls_text = [group[0] for group in _cls_text_groups]
+    _target_text = make_target_text(text_unit)
+    _keep_text = make_keep_text(text_unit)
+
     def _topic_templates(topic: str):
         meta = meta_by_topic.get(topic, {})
         kind = meta.get("kind", "phrase")
         if kind == "entity":
             return {
-                "spurious": f"A tweet mentioning {topic}.",
-                "negative": f"A negative tweet mentioning {topic}.",
-                "neutral": f"A neutral tweet mentioning {topic}.",
-                "positive": f"A positive tweet mentioning {topic}.",
+                "spurious": f"A {text_unit} mentioning {topic}.",
+                "negative": f"A negative {text_unit} mentioning {topic}.",
+                "neutral": f"A neutral {text_unit} mentioning {topic}.",
+                "positive": f"A positive {text_unit} mentioning {topic}.",
             }
         return {
-            "spurious": f"A tweet using the context phrase {topic}.",
-            "negative": f"A negative tweet using the context phrase {topic}.",
-            "neutral": f"A neutral tweet using the context phrase {topic}.",
-            "positive": f"A positive tweet using the context phrase {topic}.",
+            "spurious": f"A {text_unit} using the context phrase {topic}.",
+            "negative": f"A negative {text_unit} using the context phrase {topic}.",
+            "neutral": f"A neutral {text_unit} using the context phrase {topic}.",
+            "positive": f"A positive {text_unit} using the context phrase {topic}.",
         }
 
     templates = [_topic_templates(topic) for topic in topics]
@@ -625,11 +675,12 @@ def build_prompt_bank(
         "topics": topics,
         "topic_metadata": list(topic_metadata or []),
         "using_mined_topics": using_mined_topics,
-        "cls_text_groups": cls_text_groups,
-        "cls_group_sizes": cls_group_sizes,
-        "cls_text": cls_text,
-        "target_text": target_text,
-        "keep_text": keep_text,
+        "text_unit": text_unit,
+        "cls_text_groups": _cls_text_groups,
+        "cls_group_sizes": _cls_group_sizes,
+        "cls_text": _cls_text,
+        "target_text": _target_text,
+        "keep_text": _keep_text,
         "candidate_prompt": candidate_prompt,
         "spurious_prompt": spurious_prompt,
         "S_pairs": S_pairs,
@@ -645,8 +696,9 @@ def get_prompt_bank(
     min_doc_freq: int = 20,
     max_doc_freq_ratio: float = 0.20,
     force_refresh: bool = False,
+    text_unit: str = "text",
 ) -> dict:
-    """Return the active prompt bank, preferring mined tweet phrases."""
+    """Return the active prompt bank, preferring mined phrases."""
     if use_mined_topics:
         try:
             topics, metadata, using_mined = mine_topic_phrases_from_cache(
@@ -661,20 +713,25 @@ def get_prompt_bank(
                 topics,
                 topic_metadata=metadata,
                 using_mined_topics=using_mined,
+                text_unit=text_unit,
             )
         except Exception as exc:
-            bank = build_prompt_bank(DEFAULT_TOPICS[:max_topics], using_mined_topics=False)
+            bank = build_prompt_bank(
+                DEFAULT_TOPICS[:max_topics],
+                using_mined_topics=False,
+                text_unit=text_unit,
+            )
             bank["mining_error"] = str(exc)
             return bank
 
-    return build_prompt_bank(DEFAULT_TOPICS[:max_topics], using_mined_topics=False)
+    return build_prompt_bank(
+        DEFAULT_TOPICS[:max_topics],
+        using_mined_topics=False,
+        text_unit=text_unit,
+    )
 
 
-DEFAULT_PROMPT_BANK = build_prompt_bank(DEFAULT_TOPICS, using_mined_topics=False)
-candidate_prompt = DEFAULT_PROMPT_BANK["candidate_prompt"]
-spurious_prompt = DEFAULT_PROMPT_BANK["spurious_prompt"]
-S_pairs = DEFAULT_PROMPT_BANK["S_pairs"]
-B_pairs = DEFAULT_PROMPT_BANK["B_pairs"]
+DEFAULT_PROMPT_BANK = build_prompt_bank(DEFAULT_TOPICS, using_mined_topics=False, text_unit="text")
 
 
 def encode_all_prompts(encoder, prompt_bank: dict | None = None) -> dict:

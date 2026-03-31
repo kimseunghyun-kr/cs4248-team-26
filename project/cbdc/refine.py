@@ -12,17 +12,17 @@ Phase B — CBDC text_iccv refines the map and trains the encoder:
     1. Bipolar PGD on target_text (class-conditioned prompts)
        using debias_vl-discovered directions as bias anchors
     2. S = z_adv_pos - z_adv_neg  (clean confound directions)
-    3. Class-specific match_loss + ck_loss → update layer 11
+    3. Class-specific match_loss + ck_loss → update trainable tail
 
-Architecture correspondence (RN50 ↔ FinBERT):
-  CLIP:    frozen ResNet body → perturb → attnpool + c_proj (trainable tail)
-  FinBERT: frozen layers 0–10 → perturb → layer 11 (trainable tail)
+Architecture correspondence (RN50 ↔ BERT-derivative):
+  CLIP:            frozen ResNet body → perturb → attnpool + c_proj (trainable tail)
+  BERT-derivative: frozen layers 0–N  → perturb → layer N+1 (trainable tail)
   Both are single-attention-layer tails. This IS the RN50 approach.
 
 Outputs:
   cache/debias_vl_P.pt             — (H, H) debiasing projection matrix
   cache/cbdc_directions.pt         — (K, H) PGD-refined confound directions
-  cache/encoder_cbdc.pt            — fine-tuned layer 11 checkpoint
+  cache/encoder_cbdc.pt            — fine-tuned tail layer checkpoint
   cache/z_tweet_{split}_cbdc.pt    — re-encoded embeddings
 
 Run from project/ directory:
@@ -41,13 +41,9 @@ from tqdm import tqdm
 from sklearn.metrics import f1_score
 
 from config import CBDCConfig
-from encoder import FinBERTEncoder
+from encoder import TransformerEncoder
 from losses import l_bias_contrastive, l_semantic_preservation, l_ck
 from cbdc.prompts import (
-    cls_text_groups,
-    cls_group_sizes,
-    target_text,
-    keep_text,
     get_prompt_bank,
     encode_all_prompts,
     flatten_prompt_groups,
@@ -142,7 +138,7 @@ def _instantiate_anchor_poles(
 
 
 def discover_confound_map(
-    encoder: FinBERTEncoder,
+    encoder: TransformerEncoder,
     cfg: CBDCConfig,
     prompt_bank: dict,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[dict]]:
@@ -230,7 +226,7 @@ def _pgd_bipolar(
     bias_anchors: torch.Tensor,     # (K, H)
     anti_anchors: torch.Tensor,     # (K, H)
     keep_cb: torch.Tensor,          # (N_keep, H) for multi-axis L_s
-    encoder: FinBERTEncoder,
+    encoder: TransformerEncoder,
     cfg: CBDCConfig,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
@@ -305,7 +301,7 @@ def _pgd_bipolar(
 
 
 def _encode_class_prototypes(
-    encoder: FinBERTEncoder,
+    encoder: TransformerEncoder,
     cls_ids: torch.Tensor,
     cls_mask: torch.Tensor,
     group_sizes: list[int],
@@ -353,7 +349,7 @@ def _select_balanced_indices(
 
 @torch.no_grad()
 def _encode_cached_ids(
-    encoder: FinBERTEncoder,
+    encoder: TransformerEncoder,
     input_ids: torch.Tensor,
     attention_mask: torch.Tensor,
     batch_size: int,
@@ -410,7 +406,7 @@ def _prepare_selector_data(cfg: CBDCConfig) -> dict:
 
 @torch.no_grad()
 def _selector_val_f1(
-    encoder: FinBERTEncoder,
+    encoder: TransformerEncoder,
     selector_data: dict,
     batch_size: int,
 ) -> float:
@@ -436,7 +432,7 @@ def _selector_val_f1(
 
 
 def _compute_direction_snapshot(
-    encoder: FinBERTEncoder,
+    encoder: TransformerEncoder,
     target_ids: torch.Tensor,
     target_mask: torch.Tensor,
     bias_anchors: torch.Tensor,
@@ -471,27 +467,33 @@ def _compute_direction_snapshot(
 # ═══════════════════════════════════════════════════════════════════════════
 
 def text_iccv(
-    encoder: FinBERTEncoder,
+    encoder: TransformerEncoder,
     bias_anchors: torch.Tensor,     # (K, H) from debias_vl Phase A
     anti_anchors: torch.Tensor,     # (K, H)
     cfg: CBDCConfig,
-) -> tuple[FinBERTEncoder, torch.Tensor, torch.Tensor]:
+    prompt_bank: dict,
+) -> tuple[TransformerEncoder, torch.Tensor, torch.Tensor]:
     """
     CBDC text_iccv loop — iterative PGD + encoder training.
 
     Each epoch:
       1. PGD on target_text concept prompts
       2. S = z_adv_pos - z_adv_neg (confound direction per class-conditioned target)
-      3. Class-specific match_loss + ck_loss → update layer 11 weights
+      3. Class-specific match_loss + ck_loss → update trainable tail weights
 
     Returns:
-        encoder:          best validation-selected FinBERTEncoder
+        encoder:          best validation-selected TransformerEncoder
         final_directions: (K, H)  best-epoch PGD-refined directions
         final_cls_em:     (3, H)  best-epoch pooled sentiment prototypes
     """
     device = cfg.device
-    n_cls = len(cls_text_groups)
-    n_target = len(target_text)
+    _cls_text_groups = prompt_bank["cls_text_groups"]
+    _cls_group_sizes = prompt_bank["cls_group_sizes"]
+    _target_text = prompt_bank["target_text"]
+    _keep_text = prompt_bank["keep_text"]
+
+    n_cls = len(_cls_text_groups)
+    n_target = len(_target_text)
     if n_target != n_cls:
         raise ValueError(
             f"RN50-style indexed match_loss expects len(target_text) == len(cls_text_groups); "
@@ -503,25 +505,25 @@ def text_iccv(
           f"PGD: ε={cfg.epsilon} steps={cfg.n_pgd_steps} restarts={cfg.num_samples}")
 
     # Tokenize concept prompts once
-    cls_flat_text = flatten_prompt_groups(cls_text_groups)
+    cls_flat_text = flatten_prompt_groups(_cls_text_groups)
     cls_enc = encoder.tokenize(cls_flat_text)
-    target_enc = encoder.tokenize(target_text)
+    target_enc = encoder.tokenize(_target_text)
     cls_ids  = cls_enc["input_ids"].to(device)
     cls_mask = cls_enc["attention_mask"].to(device)
     target_ids = target_enc["input_ids"].to(device)
     target_mask = target_enc["attention_mask"].to(device)
 
-    # keep_cb for L_s (finance semantics we want to preserve)
+    # keep_cb for L_s (semantic content we want to preserve)
     with torch.no_grad():
-        keep_cb = encoder.encode_text(keep_text).to(device)
+        keep_cb = encoder.encode_text(_keep_text).to(device)
 
-    # Set up trainable layer 11
-    layer_11 = encoder.backbone.encoder.layer[-1]
-    for p in layer_11.parameters():
+    # Set up trainable tail layer
+    layer_tail = encoder._get_transformer_layers()[-1]
+    for p in layer_tail.parameters():
         p.requires_grad_(True)
-    optimizer = torch.optim.AdamW(layer_11.parameters(), lr=cfg.lr, weight_decay=1e-4)
+    optimizer = torch.optim.AdamW(layer_tail.parameters(), lr=cfg.lr, weight_decay=1e-4)
 
-    n_trainable = sum(p.numel() for p in layer_11.parameters())
+    n_trainable = sum(p.numel() for p in layer_tail.parameters())
     print(f"  Trainable params (layer 11): {n_trainable:,}")
     print(f"  Selector: eval_every={cfg.eval_every} | "
           f"train_per_class={cfg.selector_train_per_class} | "
@@ -543,7 +545,7 @@ def text_iccv(
             )
 
         # --- 2. Freeze layer 11 for PGD ---
-        for p in layer_11.parameters():
+        for p in layer_tail.parameters():
             p.requires_grad_(False)
 
         z_adv_pos, z_adv_neg = _pgd_bipolar(
@@ -561,10 +563,10 @@ def text_iccv(
             S = z_adv_pos - z_adv_neg   # (num_samples * N_test, H)
 
         # --- 4. Unfreeze layer 11, compute cls_em WITH gradient ---
-        for p in layer_11.parameters():
+        for p in layer_tail.parameters():
             p.requires_grad_(True)
 
-        cls_em = _encode_class_prototypes(encoder, cls_ids, cls_mask, cls_group_sizes)
+        cls_em = _encode_class_prototypes(encoder, cls_ids, cls_mask, _cls_group_sizes)
 
         # --- 5. Class-specific match_loss ---
         match_loss = torch.tensor(0.0, device=device)
@@ -602,7 +604,7 @@ def text_iccv(
                 best_epoch = epoch + 1
                 best_state = {
                     k: v.detach().cpu().clone()
-                    for k, v in layer_11.state_dict().items()
+                    for k, v in layer_tail.state_dict().items()
                 }
 
         if should_eval or (epoch + 1) % 10 == 0 or epoch == 0:
@@ -617,12 +619,12 @@ def text_iccv(
                   f"{selector_msg}")
 
     if best_state is not None:
-        layer_11.load_state_dict(best_state)
+        layer_tail.load_state_dict(best_state)
         print(f"\n  Restored best CBDC epoch: {best_epoch}/{cfg.n_epochs} "
               f"(selector_f1={best_selector_f1:.4f})")
 
     # Freeze after training
-    for p in layer_11.parameters():
+    for p in layer_tail.parameters():
         p.requires_grad_(False)
     encoder.backbone.eval()
 
@@ -652,7 +654,7 @@ def text_iccv(
         cls_bank_final = encoder.encode_text(cls_flat_text).cpu()
         final_cls_em = pool_prompt_group_embeddings(
             cls_bank_final,
-            cls_group_sizes,
+            _cls_group_sizes,
             normalize=True,
         )
 
@@ -664,7 +666,7 @@ def text_iccv(
 # ═══════════════════════════════════════════════════════════════════════════
 
 @torch.no_grad()
-def reencode_splits(encoder: FinBERTEncoder, device: str, suffix: str = "cbdc"):
+def reencode_splits(encoder: TransformerEncoder, device: str, suffix: str = "cbdc"):
     """Re-encode train/val/test with the fine-tuned encoder."""
     for split in ["train", "val", "test"]:
         in_path = os.path.join(CACHE_DIR, f"z_tweet_{split}.pt")
@@ -757,11 +759,18 @@ def main():
         device=device,
     )
 
-    # ---- Load encoder -------------------------------------------------------
-    model_name = os.environ.get("MODEL_NAME", "ProsusAI/finbert")
-    encoder = FinBERTEncoder(model_name=model_name, device=device)
+    # ---- Load encoder (with optional custom tokenizer) -----------------------
+    model_name = os.environ.get("MODEL_NAME", "bert-base-uncased")
+    tokenizer = None
+    tokenizer_name = os.environ.get("TOKENIZER_NAME")
+    if tokenizer_name:
+        from transformers import AutoTokenizer
+        print(f"Loading custom tokenizer from '{tokenizer_name}' ...")
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+    encoder = TransformerEncoder(model_name=model_name, device=device, tokenizer=tokenizer)
 
     # ---- Prompt bank --------------------------------------------------------
+    text_unit = os.environ.get("TEXT_UNIT", cfg.text_unit)
     prompt_bank = get_prompt_bank(
         tokenizer=encoder.tokenizer,
         cache_dir=CACHE_DIR,
@@ -770,6 +779,7 @@ def main():
         min_doc_freq=cfg.mine_min_doc_freq,
         max_doc_freq_ratio=cfg.mine_max_doc_freq_ratio,
         force_refresh=args.refresh_mined_topics,
+        text_unit=text_unit,
     )
     prompt_bank_path = os.path.join(CACHE_DIR, "prompt_bank.json")
     with open(prompt_bank_path, "w") as f:
@@ -803,7 +813,7 @@ def main():
     print(f"  anchor poles -> {anchor_path}")
 
     # ---- Phase B+C: CBDC text_iccv training ---------------------------------
-    encoder, final_directions, final_cls_prototypes = text_iccv(encoder, bias_anchors, anti_anchors, cfg)
+    encoder, final_directions, final_cls_prototypes = text_iccv(encoder, bias_anchors, anti_anchors, cfg, prompt_bank)
 
     # Save outputs
     dir_path = os.path.join(CACHE_DIR, "cbdc_directions.pt")
@@ -815,7 +825,7 @@ def main():
     print(f"  Sentiment prototypes ({tuple(final_cls_prototypes.shape)}) -> {sent_path}")
 
     ckpt_path = os.path.join(CACHE_DIR, "encoder_cbdc.pt")
-    torch.save(encoder.backbone.encoder.layer[-1].state_dict(), ckpt_path)
+    torch.save(encoder._get_transformer_layers()[-1].state_dict(), ckpt_path)
     print(f"  Encoder checkpoint -> {ckpt_path}")
 
     # ---- Re-encode with fine-tuned encoder ----------------------------------
