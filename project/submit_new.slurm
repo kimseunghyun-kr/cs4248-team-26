@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=cbdc-sae
+#SBATCH --job-name=cbdc-sentiment
 #SBATCH --output=results/slurm_new_%j.log
 #SBATCH --error=results/slurm_new_%j.err
 #SBATCH --partition=gpu

@@ -118,13 +118,6 @@ def main():
 
         direction_files = {"cbdc_directions": "cbdc_directions.pt"}
 
-        # Optional legacy comparisons for older experiments.
-        if os.environ.get("INCLUDE_LEGACY_DIRECTIONS") == "1":
-            for legacy in ["delta_subspace.pt", "v_style.pt", "v_shift.pt"]:
-                lpath = os.path.join(CACHE_DIR, legacy)
-                if os.path.exists(lpath):
-                    direction_files[legacy.replace(".pt", "")] = legacy
-
         interp_results = {}
         for d_name, fname in direction_files.items():
             fpath = os.path.join(CACHE_DIR, fname)

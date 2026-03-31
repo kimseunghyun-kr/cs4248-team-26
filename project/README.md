@@ -9,8 +9,10 @@ run_all.py :: main()
   └─ for each phase: subprocess.run([sys.executable, script_path])
        ├─ Phase 1  data/embed.py       → z_tweet_{split}.pt, z_formal.pt
        ├─ Phase 2  cbdc/refine.py      → debias_vl_P.pt, cbdc_directions.pt,
-       │                                  encoder_cbdc.pt, z_*_cbdc.pt, z_*_clean_cbdc_proj.pt
-       ├─ Phase 3  pipeline/clean.py   → z_*_clean_{debias_vl,cbdc_directions,label_guided}.pt
+       │                                  sentiment_prototypes.pt, encoder_cbdc.pt,
+       │                                  z_*_cbdc.pt, z_*_clean_cbdc_proj.pt
+       ├─ Phase 3  pipeline/clean.py   → z_*_clean_{debias_vl,cbdc_directions,
+       │                                  label_guided,raw_sentiment_boost,cbdc_sentiment_boost}.pt
        ├─ Phase 4  pipeline/classify.py → results.pt
        └─ Phase 5  pipeline/evaluate.py → results/eval_report.txt
 ```
@@ -23,10 +25,10 @@ Adapted from `references/debias_vl.py`. Uses (sentiment x topic) crossed prompts
 
 ```
 Input:
-  spurious_cb  = encode(6 pure topic prompts)        # (6, H)
-  candidate_cb = encode(18 sentiment x topic prompts) # (18, H)
-  S_pairs = 45 same-sentiment, different-topic pairs
-  B_pairs = 18 same-topic, different-sentiment pairs
+  spurious_cb  = encode(32 pure topic prompts)         # (32, H)
+  candidate_cb = encode(96 sentiment x topic prompts)  # (96, H)
+  S_pairs = 1488 same-sentiment, different-topic pairs
+  B_pairs = 96 same-topic, different-sentiment pairs
 
 Algorithm:
   P0 = I - V(V^T V)^{-1} V^T           # orthogonal complement of spurious subspace
@@ -47,31 +49,31 @@ Adapted from `references/base.py::text_iccv`. Matches the original RN50 algorith
 ```
 for epoch in range(100):
 
-  # 1. Freeze layer 11, get test_text intermediate features
-  h_test = frozen_body(test_text_ids)          # (6, L, H)
-  z_orig = layer_11(h_test, delta=0)           # (6, H)
+  # 1. Freeze layer 11, get target_text intermediate features
+  h_target = frozen_body(target_text_ids)      # (3, L, H)
+  z_orig = layer_11(h_target, delta=0)         # (3, H)
 
-  # 2. Bipolar PGD on test_text (6 neutral concept prompts)
+  # 2. Bipolar PGD on target_text, preserving keep_text semantics
   for restart in range(10):
     delta = 0 or random_init
     for step in range(20):
-      z_pert = layer_11(h_test + delta_at_CLS)
+      z_pert = layer_11(h_target + delta_at_CLS)
       L_B = cross_entropy(100 * [z·bias_i, z·anti_i], target=0)
-      L_s = 100 * ((z_pert - z_orig) @ test_cb.T)^2.mean()   # MULTI-AXIS
+      L_s = 100 * ((z_pert - z_orig) @ keep_cb.T)^2.mean()   # MULTI-AXIS
       loss = L_B * (1 - 0.92) - L_s * 0.92
-      delta -= 0.0037 * sign(grad(loss))
+      delta += 0.0037 * sign(grad(loss))
       clamp(delta, -1.0, 1.0)                                 # L-inf
     adv_pos.append(z_pert)
     # repeat for negative pole (target=1)
     adv_neg.append(z_pert)
 
-  # 3. Unfreeze layer 11, compute class embeddings with gradient
+  # 3. Unfreeze layer 11, compute pooled class prototypes with gradient
   S = cat(adv_pos) - cat(adv_neg)
-  cls_em = encode_with_grad(cls_text)          # (3, H)
+  cls_em = pool(encode_with_grad(cls_text_groups))  # (3, H)
 
-  # 4. Class-specific match_loss
+  # 4. RN50-style class-specific match_loss
   for c in [0, 1, 2]:
-    match_loss += (S @ cls_em[c:c+1].T)^2.mean()
+    match_loss += (S[c::3] @ cls_em[c:c+1].T)^2.mean()
   match_loss *= 100
 
   # 5. ck_loss
@@ -118,9 +120,10 @@ CLIP RN50 (original):                   FinBERT (adaptation):
 
 ```
 Phase 1 → z_tweet_{train,val,test}.pt, z_formal.pt
-Phase 2 → debias_vl_P.pt, cbdc_directions.pt,
+Phase 2 → debias_vl_P.pt, cbdc_directions.pt, sentiment_prototypes.pt,
            encoder_cbdc.pt, z_*_cbdc.pt, z_*_clean_cbdc_proj.pt
-Phase 3 → z_*_clean_{debias_vl,label_guided}.pt
+Phase 3 → z_*_clean_{debias_vl,cbdc_directions,label_guided,
+           raw_sentiment_boost,cbdc_sentiment_boost}.pt
 Phase 4 → results.pt
 Phase 5 → eval_report.txt
 ```
