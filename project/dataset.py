@@ -213,29 +213,29 @@ def load_tsad_records(dataset_name: str = "tweet_eval", dataset_config: str = "s
       entity, cleaned_tokens, selected_text, time_of_tweet, age_of_user, country
     """
     # --- Try 0: local cleaned CSV in project/data/ ----------------------------
-    local_path = _find_local_tweet_csv()
-    if local_path is not None:
-        try:
-            import pandas as pd
-            print(f"Loading local tweet dataset from '{local_path}' ...")
-            df = None
-            for encoding in ["utf-8", "latin-1", "cp1252"]:
-                try:
-                    df = pd.read_csv(local_path, encoding=encoding)
-                    print(f"  Loaded with encoding={encoding}")
-                    break
-                except Exception as enc_err:
-                    err_str = str(enc_err).lower()
-                    if "codec" in err_str or "decode" in err_str or "utf" in err_str:
-                        print(f"  encoding={encoding} failed, trying next ...")
-                        continue
-                    raise
-            if df is None:
-                raise RuntimeError("All encodings failed for local tweet CSV")
-            records = _records_from_dataframe(df, source_name="Local tweet dataset")
-            return _split_records(records)
-        except Exception as e:
-            print(f"  Local dataset load failed: {e}")
+    # local_path = _find_local_tweet_csv()
+    # if local_path is not None:
+    #     try:
+    #         import pandas as pd
+    #         print(f"Loading local tweet dataset from '{local_path}' ...")
+    #         df = None
+    #         for encoding in ["utf-8", "latin-1", "cp1252"]:
+    #             try:
+    #                 df = pd.read_csv(local_path, encoding=encoding)
+    #                 print(f"  Loaded with encoding={encoding}")
+    #                 break
+    #             except Exception as enc_err:
+    #                 err_str = str(enc_err).lower()
+    #                 if "codec" in err_str or "decode" in err_str or "utf" in err_str:
+    #                     print(f"  encoding={encoding} failed, trying next ...")
+    #                     continue
+    #                 raise
+    #         if df is None:
+    #             raise RuntimeError("All encodings failed for local tweet CSV")
+    #         records = _records_from_dataframe(df, source_name="Local tweet dataset")
+    #         return _split_records(records)
+    #     except Exception as e:
+    #         print(f"  Local dataset load failed: {e}")
 
     # --- Try 1: TSAD from Kaggle (try multiple encodings) ---------------------
     try:

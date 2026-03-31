@@ -26,16 +26,46 @@ Prompt roles in the current pipeline:
 ```
 cls_text_groups   = class prototype bank for [negative, neutral, positive]
 target_text       = 3 class-conditioned prompts attacked by PGD
-keep_text         = neutral finance prompts used only for L_s
+keep_text         = neutral tweet prompts used only for L_s
 candidate_prompt  = sentiment x mined-topic crossed prompts for debias_vl
 spurious_prompt   = mined topic/style prompts for debias_vl
+```
+
+## Data Source Preference
+
+The tweet loader now prefers a local CSV in `project/data/` before falling back
+to Kaggle or HuggingFace.
+
+Supported optional columns:
+
+```
+text
+sentiment
+entity
+cleaned_text
+selected_text
+Time of Tweet / time_of_tweet
+Age of User / age_of_user
+Country / country
+```
+
+Current priority order:
+
+```
+1. local CSV in project/data/ (for example output_file.csv)
+2. Kaggle TSAD
+3. HuggingFace tweet_eval/sentiment
+4. synthetic fallback
 ```
 
 ### Phase A: debias_vl confound map discovery
 
 Adapted from `references/debias_vl.py`. Uses a prompt bank mined from the
 cached tweet train split when available, with static fallback topics otherwise.
-The mined topic bank is saved to `prompt_bank.json`.
+If the cache is stale or missing rich metadata, the miner falls back to the
+dataset loader and mines directly from the local CSV records.
+The mined topic bank is saved to `mined_topics.json`, and the active Phase 2
+prompt bank is saved to `prompt_bank.json`.
 
 ```
 Input:
@@ -56,6 +86,55 @@ Algorithm:
   bias_anchors = avg(top-scoring spurious prompts per svd_dir)
   anti_anchors = avg(bottom-scoring spurious prompts per svd_dir)
 ```
+
+## Mining Rationale
+
+The local cleaned CSV gives us much stronger structure than the old text-only
+path. The current miner uses that structure in three layers:
+
+```
+entity         -> main topic / nuisance candidates
+cleaned_text   -> cleaner residual context phrases
+selected_text  -> optional sentiment-bearing span to remove before phrase mining
+```
+
+### Why entities are preferred
+
+Entities such as `Microsoft`, `Hearthstone`, or `Borderlands` are much better
+`debias_vl` / CBDC topics than generic words because they define coherent prompt
+poles:
+
+```
+"A tweet mentioning Microsoft."
+"A negative tweet mentioning Microsoft."
+```
+
+That gives the model a stable "same sentiment, different topic" structure.
+
+### Why broad tokens are filtered
+
+Words such as `all`, `some`, `like`, `more`, `just`, or `now` can absolutely
+act as style markers, quantifiers, or weak sentiment cues. But they are poor
+main confound poles for this pipeline:
+
+1. They are too polysemous.
+2. They often carry direct sentiment/discourse signal rather than topic signal.
+3. Prompt templates built from them are not coherent concepts.
+4. They tend to make CBDC remove generic language instead of a stable nuisance axis.
+
+So the current miner treats them as noise for the *main topic bank*, even if
+they may still matter stylistically.
+
+### Practical rule used here
+
+For the main `debias_vl` / CBDC prompt bank, we prefer:
+
+1. balanced high-frequency `entity` values
+2. concrete bigrams/trigrams from `cleaned_text`
+3. residual context phrases after removing `selected_text` when available
+
+We avoid using broad discourse markers as primary poles unless they are modeled
+in a separate style-specific bank.
 
 ### Phase B+C: CBDC text_iccv loop
 
@@ -155,7 +234,7 @@ CLIP RN50 (original):                   FinBERT (adaptation):
 ```
 Phase 1 → z_tweet_{train,val,test}.pt, z_formal.pt
 Phase 2 → debias_vl_P.pt, cbdc_directions.pt, sentiment_prototypes.pt,
-           encoder_cbdc.pt, prompt_bank.json, anchor_poles.json,
+           encoder_cbdc.pt, prompt_bank.json, mined_topics.json, anchor_poles.json,
            z_*_cbdc.pt, z_*_clean_cbdc_proj.pt
 Phase 3 → z_*_clean_{debias_vl,cbdc_directions,label_guided,
            raw_sentiment_boost,cbdc_sentiment_boost}.pt
