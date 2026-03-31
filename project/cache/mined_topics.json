@@ -1,0 +1,23 @@
+{
+  "using_mined_topics": false,
+  "topics": [
+    "cryptocurrency",
+    "equities",
+    "bonds",
+    "commodities",
+    "real estate",
+    "derivatives",
+    "the technology sector",
+    "the energy sector",
+    "the healthcare sector",
+    "the financial sector",
+    "consumer goods and retail",
+    "industrials and manufacturing",
+    "telecommunications",
+    "utilities",
+    "interest rates",
+    "inflation"
+  ],
+  "metadata": [],
+  "reason": "missing /Users/kimseunghyun/cs4248/cs4248-team-26/project/cache/z_tweet_train.pt"
+}
