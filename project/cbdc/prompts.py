@@ -1,33 +1,66 @@
 """
 Concept prompts and word-pair definitions for CBDC financial sentiment.
 
-Maps to original CBDC:
-  cls_text      ↔  class concepts ("landbird"/"waterbird")
-  test_text     ↔  neutral concepts for L_s ("bird", "celebrity")
-  candidate_prompt ↔  debias_vl crossed grid (class × spurious)
-  spurious_prompt  ↔  pure spurious descriptions ("water background")
-  S_pairs       ↔  same class, different spurious (semantic preservation)
-  B_pairs       ↔  same spurious, different class (bias direction)
+Prompt roles are split to match the RN50 `text_iccv` pathway more closely:
+  cls_text_groups   ↔ class concepts pooled into sentiment prototypes
+  target_text       ↔ prompts attacked by PGD and matched to class prototypes
+  keep_text         ↔ neutral finance prompts used only for L_s
+  candidate_prompt  ↔ debias_vl crossed grid (sentiment × topic)
+  spurious_prompt   ↔ pure topic descriptions
+  S_pairs           ↔ same sentiment, different topic (semantic preservation)
+  B_pairs           ↔ same topic, different sentiment (bias contrast pairs)
 
 Grid: 3 sentiments × 32 topics = 96 candidate prompts
-  S_pairs: 3 × C(32,2) = 3 × 496 = 1488  (semantic preservation)
-  B_pairs: 32 × 3 = 96                    (bias direction)
+  S_pairs: 3 × C(32,2) = 1488
+  B_pairs: 32 × 3 = 96
 """
+
+from typing import Sequence
 
 import torch
 import torch.nn.functional as F
 
-# ── Sentiment class concepts ────────────────────────────────────────────
-# Analogous to "landbird" / "waterbird" in Waterbirds
-cls_text = [
-    "This expresses negative financial sentiment.",
-    "This expresses neutral financial sentiment.",
-    "This expresses positive financial sentiment.",
+# ── Sentiment class concepts (pooled prototypes) ───────────────────────
+# Multiple paraphrases make the class embeddings less brittle than a single
+# template while still collapsing to three sentiment prototypes.
+cls_text_groups = [
+    [
+        "A tweet expressing negative financial sentiment.",
+        "This text conveys bearish or unfavorable market sentiment.",
+        "The writer sounds negative about the company or asset.",
+        "A pessimistic financial post.",
+    ],
+    [
+        "A tweet expressing neutral financial sentiment.",
+        "This text is informational and emotionally neutral about the market.",
+        "The writer sounds balanced and non-committal about the company or asset.",
+        "A factual financial post without strong sentiment.",
+    ],
+    [
+        "A tweet expressing positive financial sentiment.",
+        "This text conveys bullish or favorable market sentiment.",
+        "The writer sounds positive about the company or asset.",
+        "An optimistic financial post.",
+    ],
 ]
 
-# ── Neutral concepts for L_s preservation ───────────────────────────────
-# Analogous to "bird", "celebrity" — must NOT correlate with sentiment
-test_text = [
+cls_group_sizes = [len(group) for group in cls_text_groups]
+
+# Canonical one-line representatives kept for logging / downstream reporting.
+cls_text = [group[0] for group in cls_text_groups]
+
+# ── PGD targets for RN50-style text_iccv matching ──────────────────────
+# These are the prompts whose latent representations are adversarially
+# perturbed, producing S[i::3] that aligns to cls_em[i].
+target_text = [
+    "A negative-sentiment financial tweet.",
+    "A neutral-sentiment financial tweet.",
+    "A positive-sentiment financial tweet.",
+]
+
+# ── Neutral finance prompts for L_s preservation ────────────────────────
+# These should carry finance semantics but be as sentiment-agnostic as possible.
+keep_text = [
     "A discussion about market conditions.",
     "Commentary on recent financial developments.",
     "An observation about trading activity.",
@@ -123,14 +156,47 @@ def encode_all_prompts(encoder) -> dict:
     """Encode every prompt set with the given encoder.
 
     Returns dict with keys:
-        cls_cb       (3, H)   sentiment class embeddings
-        test_cb      (12, H)  neutral concept embeddings
+        cls_cb       (3, H)   pooled sentiment class embeddings
+        target_cb    (3, H)   PGD target prompt embeddings
+        keep_cb      (12, H)  neutral finance embeddings for L_s
         candidate_cb (96, H)  sentiment × topic crossed
         spurious_cb  (32, H)  pure topic embeddings
     """
     return {
-        "cls_cb":       encoder.encode_text(cls_text),
-        "test_cb":      encoder.encode_text(test_text),
+        "cls_cb":       encode_grouped_prompts(encoder, cls_text_groups),
+        "target_cb":    encoder.encode_text(target_text),
+        "keep_cb":      encoder.encode_text(keep_text),
         "candidate_cb": encoder.encode_text(candidate_prompt),
         "spurious_cb":  encoder.encode_text(spurious_prompt),
     }
+
+
+def flatten_prompt_groups(prompt_groups: Sequence[Sequence[str]]) -> list[str]:
+    """Flatten prompt groups while preserving class order."""
+    return [prompt for group in prompt_groups for prompt in group]
+
+
+def pool_prompt_group_embeddings(
+    embeddings: torch.Tensor,
+    group_sizes: Sequence[int],
+    normalize: bool = True,
+) -> torch.Tensor:
+    """Average sequential chunks of embeddings into one vector per group."""
+    pooled = []
+    start = 0
+    for size in group_sizes:
+        chunk = embeddings[start : start + size]
+        group_emb = chunk.mean(dim=0)
+        if normalize:
+            group_emb = F.normalize(group_emb, dim=-1)
+        pooled.append(group_emb)
+        start += size
+    return torch.stack(pooled, dim=0)
+
+
+def encode_grouped_prompts(encoder, prompt_groups: Sequence[Sequence[str]]) -> torch.Tensor:
+    """Encode prompt groups and return one pooled embedding per group."""
+    flat = flatten_prompt_groups(prompt_groups)
+    sizes = [len(group) for group in prompt_groups]
+    encoded = encoder.encode_text(flat)
+    return pool_prompt_group_embeddings(encoded, sizes, normalize=True)

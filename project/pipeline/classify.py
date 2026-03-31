@@ -6,8 +6,8 @@ Conditions:
   D1 (debias_vl)    : debias_vl word-pair projection applied to raw embeddings
   D2 (CBDC)         : CBDC text_iccv fine-tuned encoder embeddings
   D3 (CBDC+proj)    : CBDC encoder + residual CBDC direction projection
-  D4 (debias+boost) : confound removal + sentiment-direction amplification (raw)
-  D5 (CBDC+boost)   : confound removal + sentiment-direction amplification (CBDC)
+  D4 (debias+boost) : CBDC confound removal + sentiment-subspace amplification (raw)
+  D5 (CBDC+boost)   : CBDC confound removal + sentiment-subspace amplification (CBDC)
   C (label-guided)  : label-guided within-class mean-shift projection (oracle)
 
 All conditions train a Linear(768, 3) probe and evaluate with macro F1.

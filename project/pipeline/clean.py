@@ -62,18 +62,18 @@ def project_out_and_boost(
     sentiment_dirs: torch.Tensor,
     alpha: float = 2.0,
 ) -> torch.Tensor:
-    """Remove topic/confound subspace, then amplify the sentiment axis.
+    """Remove confound subspace, then amplify the sentiment subspace.
 
     Args:
         z:              (N, H) embeddings
         confound_dirs:  (K, H) directions to remove (cbdc_directions)
-        sentiment_dirs: (3, H) cls_em [neg, neu, pos] from encoder
+        sentiment_dirs: (3, H) class prototypes [neg, neu, pos] or
+                        (2, H) precomputed sentiment basis
         alpha:          amplification factor (>1 boosts sentiment signal)
 
-    The sentiment axis is defined as normalize(cls_em[pos] - cls_em[neg]),
-    the direction that maximally separates positive from negative in the
-    encoder's representation space. This is a single orthonormal vector,
-    making the projection well-defined regardless of cls_em correlation.
+    For 3-way sentiment classification, a 2D sentiment subspace is more faithful
+    than a single positive-minus-negative axis. If class prototypes are given,
+    we form two centered directions (pos-neu, neg-neu) and orthonormalize them.
 
     Returns:
         z_boost: (N, H) L2-normalized, confound removed + sentiment amplified
@@ -82,11 +82,28 @@ def project_out_and_boost(
     U_conf = F.normalize(confound_dirs.to(z.device), dim=-1)
     z_clean = z - (z @ U_conf.T) @ U_conf
 
-    # Sentiment axis: positive − negative (single direction, always orthonormal)
-    v_sent = F.normalize(
-        (sentiment_dirs[2] - sentiment_dirs[0]).to(z.device), dim=-1
-    )  # (H,)
-    sent_proj = (z_clean @ v_sent).unsqueeze(-1) * v_sent.unsqueeze(0)  # (N, H)
+    # Build an orthonormal sentiment basis from either class prototypes or
+    # a precomputed basis tensor.
+    sentiment_dirs = sentiment_dirs.to(z.device)
+    if sentiment_dirs.dim() == 1:
+        U_sent = F.normalize(sentiment_dirs, dim=-1).unsqueeze(0)
+    elif sentiment_dirs.shape[0] == 3:
+        neg, neu, pos = F.normalize(sentiment_dirs, dim=-1)
+        v1 = F.normalize(pos - neu, dim=-1)
+        v2 = neg - neu
+        v2 = v2 - torch.dot(v2, v1) * v1
+        if v2.norm() < 1e-8:
+            v2 = neg - pos
+            v2 = v2 - torch.dot(v2, v1) * v1
+        if v2.norm() < 1e-8:
+            U_sent = v1.unsqueeze(0)
+        else:
+            v2 = F.normalize(v2, dim=-1)
+            U_sent = torch.stack([v1, v2], dim=0)
+    else:
+        U_sent = F.normalize(sentiment_dirs, dim=-1)
+
+    sent_proj = (z_clean @ U_sent.T) @ U_sent
     z_boost = z_clean + (alpha - 1.0) * sent_proj
 
     return F.normalize(z_boost, dim=-1)
@@ -199,7 +216,7 @@ def main():
         confound_dirs  = torch.load(cbdc_path, map_location="cpu")
         alpha = 2.0
 
-        # D4: boost applied to raw embeddings (analogous to debias_vl + amplify)
+        # D4: boost applied to raw embeddings using CBDC confound dirs.
         print(f"\nApplying sentiment boost (alpha={alpha}) on raw embeddings -> 'debias_vl_boost' ...")
         for split in ["train", "val", "test"]:
             in_path  = os.path.join(CACHE_DIR, f"z_tweet_{split}.pt")

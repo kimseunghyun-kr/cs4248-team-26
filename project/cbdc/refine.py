@@ -9,7 +9,7 @@ Phase A — debias_vl discovers confound "map" from word pairs:
 
 Phase B — CBDC text_iccv refines the map and trains the encoder:
   For each epoch:
-    1. Bipolar PGD on test_text (neutral concept prompts)
+    1. Bipolar PGD on target_text (class-conditioned prompts)
        using debias_vl-discovered directions as bias anchors
     2. S = z_adv_pos - z_adv_neg  (clean confound directions)
     3. Class-specific match_loss + ck_loss → update layer 11
@@ -42,10 +42,15 @@ from config import CBDCConfig
 from encoder import FinBERTEncoder
 from losses import l_bias_contrastive, l_semantic_preservation, l_ck
 from cbdc.prompts import (
-    cls_text, test_text,
-    candidate_prompt, spurious_prompt,
+    cls_text,
+    cls_text_groups,
+    cls_group_sizes,
+    target_text,
+    keep_text,
     S_pairs, B_pairs,
     encode_all_prompts,
+    flatten_prompt_groups,
+    pool_prompt_group_embeddings,
 )
 
 _DEFAULT_CACHE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache")
@@ -95,8 +100,8 @@ def discover_confound_map(
     print("\n=== Phase A: debias_vl confound map discovery ===")
 
     prompts = encode_all_prompts(encoder)
-    spurious_cb  = prompts["spurious_cb"]    # (6, H)
-    candidate_cb = prompts["candidate_cb"]   # (18, H)
+    spurious_cb  = prompts["spurious_cb"]
+    candidate_cb = prompts["candidate_cb"]
 
     print(f"  spurious_cb:  {tuple(spurious_cb.shape)}")
     print(f"  candidate_cb: {tuple(candidate_cb.shape)}")
@@ -138,16 +143,16 @@ def discover_confound_map(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Phase B: PGD inner loop — perturbs test_text concept prompts
+# Phase B: PGD inner loop — perturbs target_text concept prompts
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _pgd_bipolar(
-    h_test: torch.Tensor,           # (N_test, L, H) intermediate features of test_text
+    h_target: torch.Tensor,         # (N_target, L, H) intermediate features of target_text
     attention_mask: torch.Tensor,    # (N_test, L)
-    z_orig: torch.Tensor,           # (N_test, H) embeddings at delta=0
+    z_orig: torch.Tensor,           # (N_target, H) embeddings at delta=0
     bias_anchors: torch.Tensor,     # (K, H)
     anti_anchors: torch.Tensor,     # (K, H)
-    test_cb: torch.Tensor,          # (N_keep, H) for multi-axis L_s
+    keep_cb: torch.Tensor,          # (N_keep, H) for multi-axis L_s
     encoder: FinBERTEncoder,
     cfg: CBDCConfig,
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -155,22 +160,22 @@ def _pgd_bipolar(
     Bipolar PGD on concept prompt representations.
 
     Matches perturb_bafa_txt_multi_ablation_lb_ls:
-      - Perturbs test_text intermediate features (6 neutral prompts)
+      - Perturbs target_text intermediate features
       - L_B: cross-entropy over bias anchor pairs
-      - L_s: multi-axis preservation via test_cb
+      - L_s: multi-axis preservation via keep_cb
       - Sign-SGD + L∞ clamp
 
     Returns:
-        z_adv_pos_all: (num_samples * N_test, H)  pushed toward bias_anchors
-        z_adv_neg_all: (num_samples * N_test, H)  pushed toward anti_anchors
+        z_adv_pos_all: (num_samples * N_target, H)  pushed toward bias_anchors
+        z_adv_neg_all: (num_samples * N_target, H)  pushed toward anti_anchors
     """
     device = cfg.device
-    N_test = h_test.shape[0]
+    N_target = h_target.shape[0]
     H = encoder.hidden_size
 
     bias_anchors = F.normalize(bias_anchors.to(device), dim=-1)
     anti_anchors = F.normalize(anti_anchors.to(device), dim=-1)
-    test_cb = F.normalize(test_cb.to(device), dim=-1)
+    keep_cb = F.normalize(keep_cb.to(device), dim=-1)
 
     adv_pos_all = []
     adv_neg_all = []
@@ -178,27 +183,28 @@ def _pgd_bipolar(
     for restart in range(cfg.num_samples):
         # Random init for restarts > 0
         if restart == 0:
-            init_pos = torch.zeros(N_test, H, device=device)
-            init_neg = torch.zeros(N_test, H, device=device)
+            init_pos = torch.zeros(N_target, H, device=device)
+            init_neg = torch.zeros(N_target, H, device=device)
         else:
-            init_pos = (torch.rand(N_test, H, device=device) * 2 - 1) * cfg.random_eps
-            init_neg = (torch.rand(N_test, H, device=device) * 2 - 1) * cfg.random_eps
+            init_pos = (torch.rand(N_target, H, device=device) * 2 - 1) * cfg.random_eps
+            init_neg = (torch.rand(N_target, H, device=device) * 2 - 1) * cfg.random_eps
 
         # --- Positive pole: push toward bias_anchors (target=0) ---
         delta = init_pos.clone().requires_grad_(True)
         for _ in range(cfg.n_pgd_steps):
             if delta.grad is not None:
                 delta.grad.zero_()
-            z_pert = encoder.encode_with_delta_from_hidden(h_test, attention_mask, delta)
+            z_pert = encoder.encode_with_delta_from_hidden(h_target, attention_mask, delta)
             L_B = l_bias_contrastive(z_pert, bias_anchors, anti_anchors, push_toward_a=True)
-            L_s = l_semantic_preservation(z_pert, z_orig, test_cb)
+            L_s = l_semantic_preservation(z_pert, z_orig, keep_cb)
             loss = L_B * (1.0 - cfg.keep_weight) - L_s * cfg.keep_weight
             loss.backward()
             with torch.no_grad():
-                delta.data -= cfg.step_lr * delta.grad.sign()
+                # Match RN50 text_iccv / simple_pgd: ascend on the PGD objective.
+                delta.data += cfg.step_lr * delta.grad.sign()
                 delta.data.clamp_(-cfg.epsilon, cfg.epsilon)
         with torch.no_grad():
-            z_pos = encoder.encode_with_delta_from_hidden(h_test, attention_mask, delta.detach())
+            z_pos = encoder.encode_with_delta_from_hidden(h_target, attention_mask, delta.detach())
         adv_pos_all.append(z_pos)
 
         # --- Negative pole: push toward anti_anchors (target=1) ---
@@ -206,19 +212,37 @@ def _pgd_bipolar(
         for _ in range(cfg.n_pgd_steps):
             if delta.grad is not None:
                 delta.grad.zero_()
-            z_pert = encoder.encode_with_delta_from_hidden(h_test, attention_mask, delta)
+            z_pert = encoder.encode_with_delta_from_hidden(h_target, attention_mask, delta)
             L_B = l_bias_contrastive(z_pert, bias_anchors, anti_anchors, push_toward_a=False)
-            L_s = l_semantic_preservation(z_pert, z_orig, test_cb)
+            L_s = l_semantic_preservation(z_pert, z_orig, keep_cb)
             loss = L_B * (1.0 - cfg.keep_weight) - L_s * cfg.keep_weight
             loss.backward()
             with torch.no_grad():
-                delta.data -= cfg.step_lr * delta.grad.sign()
+                delta.data += cfg.step_lr * delta.grad.sign()
                 delta.data.clamp_(-cfg.epsilon, cfg.epsilon)
         with torch.no_grad():
-            z_neg = encoder.encode_with_delta_from_hidden(h_test, attention_mask, delta.detach())
+            z_neg = encoder.encode_with_delta_from_hidden(h_target, attention_mask, delta.detach())
         adv_neg_all.append(z_neg)
 
     return torch.cat(adv_pos_all, dim=0), torch.cat(adv_neg_all, dim=0)
+
+
+def _encode_class_prototypes(
+    encoder: FinBERTEncoder,
+    cls_ids: torch.Tensor,
+    cls_mask: torch.Tensor,
+    group_sizes: list[int],
+) -> torch.Tensor:
+    """Forward grouped class prompts through the trainable tail and pool them."""
+    with torch.no_grad():
+        h_cls = encoder.get_intermediate_features(cls_ids, cls_mask)
+
+    cls_bank_em = encoder.encode_with_delta_from_hidden(
+        h_cls,
+        cls_mask,
+        torch.zeros(len(cls_ids), encoder.hidden_size, device=cls_ids.device),
+    )
+    return pool_prompt_group_embeddings(cls_bank_em, group_sizes, normalize=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -235,8 +259,8 @@ def text_iccv(
     CBDC text_iccv loop — iterative PGD + encoder training.
 
     Each epoch:
-      1. PGD on test_text concept prompts (6 prompts, not random data)
-      2. S = z_adv_pos - z_adv_neg (confound direction per sample)
+      1. PGD on target_text concept prompts
+      2. S = z_adv_pos - z_adv_neg (confound direction per class-conditioned target)
       3. Class-specific match_loss + ck_loss → update layer 11 weights
 
     Returns:
@@ -244,23 +268,30 @@ def text_iccv(
         final_directions: (K, H)  last-epoch PGD-refined directions (for residual projection)
     """
     device = cfg.device
-    n_cls = len(cls_text)  # 3
+    n_cls = len(cls_text_groups)
+    n_target = len(target_text)
+    if n_target != n_cls:
+        raise ValueError(
+            f"RN50-style indexed match_loss expects len(target_text) == len(cls_text_groups); "
+            f"got {n_target} vs {n_cls}"
+        )
 
     print(f"\n=== Phase B+C: CBDC text_iccv training ===")
     print(f"  n_epochs={cfg.n_epochs} | lr={cfg.lr} | "
           f"PGD: ε={cfg.epsilon} steps={cfg.n_pgd_steps} restarts={cfg.num_samples}")
 
     # Tokenize concept prompts once
-    cls_enc  = encoder.tokenize(cls_text)
-    test_enc = encoder.tokenize(test_text)
+    cls_flat_text = flatten_prompt_groups(cls_text_groups)
+    cls_enc = encoder.tokenize(cls_flat_text)
+    target_enc = encoder.tokenize(target_text)
     cls_ids  = cls_enc["input_ids"].to(device)
     cls_mask = cls_enc["attention_mask"].to(device)
-    test_ids = test_enc["input_ids"].to(device)
-    test_mask = test_enc["attention_mask"].to(device)
+    target_ids = target_enc["input_ids"].to(device)
+    target_mask = target_enc["attention_mask"].to(device)
 
-    # test_cb for L_s (encode once, these are frozen neutral concepts)
+    # keep_cb for L_s (finance semantics we want to preserve)
     with torch.no_grad():
-        test_cb = encoder.encode_text(test_text).to(device)  # (6, H)
+        keep_cb = encoder.encode_text(keep_text).to(device)
 
     # Set up trainable layer 11
     layer_11 = encoder.backbone.encoder.layer[-1]
@@ -274,11 +305,13 @@ def text_iccv(
     last_S = None
 
     for epoch in tqdm(range(cfg.n_epochs), desc="text_iccv"):
-        # --- 1. Pre-compute test_text intermediate features (frozen body) ---
+        # --- 1. Pre-compute target_text intermediate features (frozen body) ---
         with torch.no_grad():
-            h_test = encoder.get_intermediate_features(test_ids, test_mask)  # (6, L, H)
+            h_target = encoder.get_intermediate_features(target_ids, target_mask)
             z_orig = encoder.encode_with_delta_from_hidden(
-                h_test, test_mask, torch.zeros(len(test_text), encoder.hidden_size, device=device)
+                h_target,
+                target_mask,
+                torch.zeros(n_target, encoder.hidden_size, device=device),
             )
 
         # --- 2. Freeze layer 11 for PGD ---
@@ -286,8 +319,12 @@ def text_iccv(
             p.requires_grad_(False)
 
         z_adv_pos, z_adv_neg = _pgd_bipolar(
-            h_test, test_mask, z_orig,
-            bias_anchors, anti_anchors, test_cb,
+            h_target,
+            target_mask,
+            z_orig,
+            bias_anchors,
+            anti_anchors,
+            keep_cb,
             encoder, cfg,
         )
 
@@ -300,29 +337,13 @@ def text_iccv(
         for p in layer_11.parameters():
             p.requires_grad_(True)
 
-        # Get intermediate features for cls_text
-        with torch.no_grad():
-            h_cls = encoder.get_intermediate_features(cls_ids, cls_mask)
-
-        # Forward through layer 11 with gradient (delta=0)
-        cls_em = encoder.encode_with_delta_from_hidden(
-            h_cls, cls_mask,
-            torch.zeros(n_cls, encoder.hidden_size, device=device),
-        )  # (3, H) — gradient flows through layer 11
+        cls_em = _encode_class_prototypes(encoder, cls_ids, cls_mask, cls_group_sizes)
 
         # --- 5. Class-specific match_loss ---
-        N_test = len(test_text)
         match_loss = torch.tensor(0.0, device=device)
-        for c in range(n_cls):
-            # S[c::N_test] selects the c-th test prompt from each restart
-            # But with multiple restarts, indices are:
-            #   restart_0: [0..5], restart_1: [6..11], ...
-            # We want class-specific: match S directions against their corresponding cls_em
-            # Original uses S[c::n_target_classes], mapping each target prompt to a class
-            # Here test_text has 6 prompts (not class-specific), so we match all S to all cls_em
-            # This follows the CounterAnimal path in the original where n_target > n_class
-            match_loss += (S.to(device) @ cls_em[c:c+1].T).pow(2).mean()
-        match_loss = match_loss * cfg.up_scale / n_cls
+        for c in range(n_target):
+            match_loss += (S[c::n_target].to(device) @ cls_em[c:c+1].T).pow(2).mean()
+        match_loss = match_loss * cfg.up_scale / n_target
 
         # --- 6. ck_loss ---
         ck_loss = l_ck(
@@ -358,9 +379,14 @@ def text_iccv(
     ortho_err = (gram - torch.eye(cfg.n_bias_dirs)).abs().max().item()
     print(f"  Orthonormality error: {ortho_err:.2e}")
 
-    # Encode cls_text with the final (fine-tuned) encoder — used for sentiment boost
+    # Encode class prompt bank with the final encoder and pool to 3 prototypes.
     with torch.no_grad():
-        final_cls_em = encoder.encode_text(cls_text).cpu()  # (3, H)
+        cls_bank_final = encoder.encode_text(cls_flat_text).cpu()
+        final_cls_em = pool_prompt_group_embeddings(
+            cls_bank_final,
+            cls_group_sizes,
+            normalize=True,
+        )
 
     return encoder, final_directions, final_cls_em
 
