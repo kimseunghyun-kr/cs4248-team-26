@@ -27,14 +27,15 @@ Prompt roles in the current pipeline:
 cls_text_groups   = class prototype bank for [negative, neutral, positive]
 target_text       = 3 class-conditioned prompts attacked by PGD
 keep_text         = neutral finance prompts used only for L_s
-candidate_prompt  = sentiment x topic crossed prompts for debias_vl
-spurious_prompt   = pure topic/context prompts for debias_vl
+candidate_prompt  = sentiment x mined-topic crossed prompts for debias_vl
+spurious_prompt   = mined topic/style prompts for debias_vl
 ```
 
 ### Phase A: debias_vl confound map discovery
 
-Adapted from `references/debias_vl.py`. Uses the
-`candidate_prompt` / `spurious_prompt` grid.
+Adapted from `references/debias_vl.py`. Uses a prompt bank mined from the
+cached tweet train split when available, with static fallback topics otherwise.
+The mined topic bank is saved to `prompt_bank.json`.
 
 ```
 Input:
@@ -51,8 +52,9 @@ Algorithm:
 
   confound_matrix = I - P_debias
   U, S, Vh = svd(confound_matrix)
-  bias_anchors = Vh[:K]                  # top-K confound directions
-  anti_anchors = -Vh[:K]                 # opposing pole
+  svd_dirs = Vh[:K]                      # top-K confound directions
+  bias_anchors = avg(top-scoring spurious prompts per svd_dir)
+  anti_anchors = avg(bottom-scoring spurious prompts per svd_dir)
 ```
 
 ### Phase B+C: CBDC text_iccv loop
@@ -153,7 +155,8 @@ CLIP RN50 (original):                   FinBERT (adaptation):
 ```
 Phase 1 → z_tweet_{train,val,test}.pt, z_formal.pt
 Phase 2 → debias_vl_P.pt, cbdc_directions.pt, sentiment_prototypes.pt,
-           encoder_cbdc.pt, z_*_cbdc.pt, z_*_clean_cbdc_proj.pt
+           encoder_cbdc.pt, prompt_bank.json, anchor_poles.json,
+           z_*_cbdc.pt, z_*_clean_cbdc_proj.pt
 Phase 3 → z_*_clean_{debias_vl,cbdc_directions,label_guided,
            raw_sentiment_boost,cbdc_sentiment_boost}.pt
 Phase 4 → results.pt

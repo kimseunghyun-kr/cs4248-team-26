@@ -42,6 +42,13 @@ class CBDCConfig:
     selector_train_per_class: int = 512   # balanced train subset size per class
     selector_batch_size: int = 128        # batch size for selector re-encoding
 
+    # debias_vl topic mining / pole instantiation
+    use_mined_topics: bool = True
+    mine_max_topics: int = 32
+    mine_min_doc_freq: int = 20
+    mine_max_doc_freq_ratio: float = 0.20
+    pole_phrases_per_side: int = 4
+
     # debias_vl map
     n_bias_dirs: int = 4           # top-K SVD components from I - P_debias
     lambda_reg: float = 1000.0     # regularization: G = lambda * M + I

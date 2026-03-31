@@ -3,7 +3,8 @@ Phase 1: Encode all corpora and cache embeddings to disk.
 
 Outputs (saved to project/cache/):
   z_tweet_train.pt  — dict {"embeddings": (N,768), "labels": (N,),
-                             "input_ids": (N,L), "attention_mask": (N,L)}
+                             "input_ids": (N,L), "attention_mask": (N,L),
+                             "texts": list[str]}
   z_tweet_val.pt
   z_tweet_test.pt
   z_formal.pt       — dict {"embeddings": (N,768)}  (no labels, no token tensors)
@@ -101,6 +102,7 @@ def main():
                 "labels":         torch.tensor(labels, dtype=torch.long),
                 "input_ids":      ids,
                 "attention_mask": masks,
+                "texts":          texts,
             },
             out_path,
         )

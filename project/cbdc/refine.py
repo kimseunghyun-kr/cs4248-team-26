@@ -34,6 +34,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import argparse
+import json
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
@@ -43,12 +44,11 @@ from config import CBDCConfig
 from encoder import FinBERTEncoder
 from losses import l_bias_contrastive, l_semantic_preservation, l_ck
 from cbdc.prompts import (
-    cls_text,
     cls_text_groups,
     cls_group_sizes,
     target_text,
     keep_text,
-    S_pairs, B_pairs,
+    get_prompt_bank,
     encode_all_prompts,
     flatten_prompt_groups,
     pool_prompt_group_embeddings,
@@ -86,10 +86,66 @@ def _get_proj_matrix(embeddings: torch.Tensor) -> torch.Tensor:
     return torch.eye(proj_sup.shape[0], device=embeddings.device) - proj_sup
 
 
+def _instantiate_anchor_poles(
+    spurious_cb: torch.Tensor,
+    topics: list[str],
+    svd_dirs: torch.Tensor,
+    phrases_per_side: int,
+) -> tuple[torch.Tensor, torch.Tensor, list[dict]]:
+    """Instantiate real pole anchors from mined topic prompts.
+
+    For each top singular direction, select the highest- and lowest-scoring
+    topic prompts and average them into two prompt-backed pole embeddings.
+    """
+    n_topics = len(topics)
+    side_k = max(1, min(phrases_per_side, n_topics // 2))
+
+    bias_anchors = []
+    anti_anchors = []
+    anchor_info = []
+
+    for idx, direction in enumerate(F.normalize(svd_dirs, dim=-1)):
+        scores = (spurious_cb @ direction).detach().cpu()
+        pos_idx = torch.topk(scores, k=side_k).indices.tolist()
+        neg_idx = torch.topk(-scores, k=side_k).indices.tolist()
+
+        bias_anchor = F.normalize(spurious_cb[pos_idx].mean(0), dim=-1)
+        anti_anchor = F.normalize(spurious_cb[neg_idx].mean(0), dim=-1)
+
+        # Guard against degenerate poles by falling back to the SVD axis.
+        pole_cos = F.cosine_similarity(
+            bias_anchor.unsqueeze(0),
+            anti_anchor.unsqueeze(0),
+            dim=-1,
+        ).item()
+        if pole_cos > 0.98:
+            bias_anchor = F.normalize(direction, dim=-1)
+            anti_anchor = F.normalize(-direction, dim=-1)
+
+        bias_anchors.append(bias_anchor)
+        anti_anchors.append(anti_anchor)
+        anchor_info.append(
+            {
+                "anchor_index": idx,
+                "positive_topics": [topics[i] for i in pos_idx],
+                "negative_topics": [topics[i] for i in neg_idx],
+                "positive_scores": [float(scores[i]) for i in pos_idx],
+                "negative_scores": [float(scores[i]) for i in neg_idx],
+            }
+        )
+
+    return (
+        torch.stack(bias_anchors, dim=0),
+        torch.stack(anti_anchors, dim=0),
+        anchor_info,
+    )
+
+
 def discover_confound_map(
     encoder: FinBERTEncoder,
     cfg: CBDCConfig,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    prompt_bank: dict,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, list[dict]]:
     """
     Phase A: Use debias_vl to discover confound directions from word pairs.
 
@@ -97,16 +153,27 @@ def discover_confound_map(
         P_debias:        (H, H)  debiasing projection matrix
         bias_anchors:    (K, H)  confound directions (bias anchors for PGD)
         anti_anchors:    (K, H)  opposing directions (negated)
+        anchor_info:     prompt-backed pole descriptions for logging / inspection
     """
     print("\n=== Phase A: debias_vl confound map discovery ===")
 
-    prompts = encode_all_prompts(encoder)
+    prompts = encode_all_prompts(encoder, prompt_bank)
     spurious_cb  = prompts["spurious_cb"]
     candidate_cb = prompts["candidate_cb"]
+    S_pairs = prompt_bank["S_pairs"]
+    B_pairs = prompt_bank["B_pairs"]
+    topics = prompt_bank["topics"]
 
     print(f"  spurious_cb:  {tuple(spurious_cb.shape)}")
     print(f"  candidate_cb: {tuple(candidate_cb.shape)}")
     print(f"  S_pairs: {len(S_pairs)} | B_pairs: {len(B_pairs)}")
+    source = "mined tweet phrases" if prompt_bank.get("using_mined_topics") else "static fallback topics"
+    print(f"  topic source: {source} ({len(topics)} topics)")
+    if prompt_bank.get("topic_metadata"):
+        preview = ", ".join(topic["phrase"] for topic in prompt_bank["topic_metadata"][:8])
+        print(f"  mined preview: {preview}")
+    if prompt_bank.get("mining_error"):
+        print(f"  mining fallback reason: {prompt_bank['mining_error']}")
 
     # P0 = orthogonal complement of spurious subspace
     P0 = _get_proj_matrix(spurious_cb)
@@ -127,8 +194,13 @@ def discover_confound_map(
 
     # Top-K directions
     K = cfg.n_bias_dirs
-    bias_anchors = F.normalize(Vh[:K], dim=-1)      # (K, H)
-    anti_anchors = F.normalize(-Vh[:K], dim=-1)      # (K, H) opposing
+    svd_dirs = F.normalize(Vh[:K], dim=-1)
+    bias_anchors, anti_anchors, anchor_info = _instantiate_anchor_poles(
+        spurious_cb,
+        topics,
+        svd_dirs,
+        phrases_per_side=cfg.pole_phrases_per_side,
+    )
 
     print(f"  Top-{K} SVD singular values: {S_vals[:K].tolist()}")
     print(f"  bias_anchors: {tuple(bias_anchors.shape)}")
@@ -139,8 +211,12 @@ def discover_confound_map(
         cos_cls = (bias_anchors[i] @ cls_cb.T).abs().max().item()
         print(f"    anchor {i}: max|cos(anchor, cls_em)|={cos_cls:.4f}  "
               f"(lower = less entangled with sentiment)")
+        pos_topics = ", ".join(anchor_info[i]["positive_topics"])
+        neg_topics = ", ".join(anchor_info[i]["negative_topics"])
+        print(f"      pole A: {pos_topics}")
+        print(f"      pole B: {neg_topics}")
 
-    return P_debias, bias_anchors, anti_anchors
+    return P_debias, bias_anchors, anti_anchors, anchor_info
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -644,6 +720,14 @@ def main():
     parser.add_argument("--eval_every",  type=int,   default=10)
     parser.add_argument("--selector_train_per_class", type=int, default=512)
     parser.add_argument("--selector_batch_size", type=int, default=128)
+    parser.add_argument("--use_static_topics", action="store_true",
+                        help="Disable tweet phrase mining and use the static debias_vl topic list.")
+    parser.add_argument("--mine_max_topics", type=int, default=32)
+    parser.add_argument("--mine_min_doc_freq", type=int, default=20)
+    parser.add_argument("--mine_max_doc_freq_ratio", type=float, default=0.20)
+    parser.add_argument("--pole_phrases_per_side", type=int, default=4)
+    parser.add_argument("--refresh_mined_topics", action="store_true",
+                        help="Ignore cached mined_topics.json and mine the topic bank again.")
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -663,6 +747,11 @@ def main():
         eval_every=args.eval_every,
         selector_train_per_class=args.selector_train_per_class,
         selector_batch_size=args.selector_batch_size,
+        use_mined_topics=not args.use_static_topics,
+        mine_max_topics=args.mine_max_topics,
+        mine_min_doc_freq=args.mine_min_doc_freq,
+        mine_max_doc_freq_ratio=args.mine_max_doc_freq_ratio,
+        pole_phrases_per_side=args.pole_phrases_per_side,
         n_bias_dirs=args.n_bias_dirs,
         lambda_reg=args.lambda_reg,
         device=device,
@@ -672,13 +761,46 @@ def main():
     model_name = os.environ.get("MODEL_NAME", "ProsusAI/finbert")
     encoder = FinBERTEncoder(model_name=model_name, device=device)
 
+    # ---- Prompt bank --------------------------------------------------------
+    prompt_bank = get_prompt_bank(
+        tokenizer=encoder.tokenizer,
+        cache_dir=CACHE_DIR,
+        use_mined_topics=cfg.use_mined_topics,
+        max_topics=cfg.mine_max_topics,
+        min_doc_freq=cfg.mine_min_doc_freq,
+        max_doc_freq_ratio=cfg.mine_max_doc_freq_ratio,
+        force_refresh=args.refresh_mined_topics,
+    )
+    prompt_bank_path = os.path.join(CACHE_DIR, "prompt_bank.json")
+    with open(prompt_bank_path, "w") as f:
+        json.dump(
+            {
+                "using_mined_topics": prompt_bank.get("using_mined_topics", False),
+                "topics": prompt_bank["topics"],
+                "topic_metadata": prompt_bank.get("topic_metadata", []),
+                "mining_error": prompt_bank.get("mining_error"),
+            },
+            f,
+            indent=2,
+        )
+    print(f"  prompt bank -> {prompt_bank_path}")
+
     # ---- Phase A: debias_vl map discovery -----------------------------------
-    P_debias, bias_anchors, anti_anchors = discover_confound_map(encoder, cfg)
+    P_debias, bias_anchors, anti_anchors, anchor_info = discover_confound_map(
+        encoder,
+        cfg,
+        prompt_bank,
+    )
 
     # Save debias_vl projection matrix
     p_path = os.path.join(CACHE_DIR, "debias_vl_P.pt")
     torch.save(P_debias.cpu(), p_path)
     print(f"  debias_vl projection -> {p_path}")
+
+    anchor_path = os.path.join(CACHE_DIR, "anchor_poles.json")
+    with open(anchor_path, "w") as f:
+        json.dump(anchor_info, f, indent=2)
+    print(f"  anchor poles -> {anchor_path}")
 
     # ---- Phase B+C: CBDC text_iccv training ---------------------------------
     encoder, final_directions, final_cls_prototypes = text_iccv(encoder, bias_anchors, anti_anchors, cfg)
