@@ -27,6 +27,8 @@ from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import f1_score, classification_report
 import numpy as np
 
+from pipeline.clean import materialize_sentiment_boost_conditions
+
 _DEFAULT_CACHE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache")
 CACHE_DIR = os.environ.get("CACHE_DIR", _DEFAULT_CACHE)
 
@@ -113,6 +115,11 @@ CONDITIONS = {
     "C (label-guided)":    "clean_label_guided",
 }
 
+BOOST_SUFFIXES = {
+    "clean_raw_sentiment_boost",
+    "clean_cbdc_sentiment_boost",
+}
+
 
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -126,6 +133,10 @@ def main():
         print(f"{'='*60}")
 
         data = load_embeddings(cache_suffix)
+        if data is None and cache_suffix in BOOST_SUFFIXES:
+            print("  missing boost embeddings; attempting to materialize them from Phase 2 artifacts ...")
+            materialize_sentiment_boost_conditions(alpha=2.0)
+            data = load_embeddings(cache_suffix)
         if data is None:
             print(f"  [skip] Embeddings not found for '{cache_suffix}'")
             all_results[cond_name] = None

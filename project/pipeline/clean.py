@@ -173,6 +173,67 @@ def apply_cleaning(direction: torch.Tensor, direction_name: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Sentiment boost materialization
+# ---------------------------------------------------------------------------
+def materialize_sentiment_boost_conditions(alpha: float = 2.0) -> bool:
+    """Create D4/D5 cached embeddings if the required artifacts exist."""
+    sent_path = os.path.join(CACHE_DIR, "sentiment_prototypes.pt")
+    cbdc_path = os.path.join(CACHE_DIR, "cbdc_directions.pt")
+
+    if not os.path.exists(sent_path) or not os.path.exists(cbdc_path):
+        missing = []
+        if not os.path.exists(sent_path):
+            missing.append("sentiment_prototypes.pt")
+        if not os.path.exists(cbdc_path):
+            missing.append("cbdc_directions.pt")
+        print(f"\n[skip] Sentiment boost prerequisites missing: {', '.join(missing)}")
+        return False
+
+    sentiment_prototypes = torch.load(sent_path, map_location="cpu")
+    confound_dirs = torch.load(cbdc_path, map_location="cpu")
+
+    # D4: boost applied to raw embeddings after removing CBDC confounds.
+    print(f"\nApplying sentiment boost (alpha={alpha}) on raw embeddings -> 'raw_sentiment_boost' ...")
+    for split in ["train", "val", "test"]:
+        in_path = os.path.join(CACHE_DIR, f"z_tweet_{split}.pt")
+        out_path = os.path.join(CACHE_DIR, f"z_tweet_{split}_clean_raw_sentiment_boost.pt")
+        if not os.path.exists(in_path):
+            print(f"  [skip] Missing {in_path}")
+            continue
+        data = torch.load(in_path, map_location="cpu")
+        z = data["embeddings"]
+        z_boost = project_out_and_boost(z, confound_dirs, sentiment_prototypes, alpha=alpha)
+        out_data = {"embeddings": z_boost}
+        if "labels" in data:
+            out_data["labels"] = data["labels"]
+        torch.save(out_data, out_path)
+        print(f"  {split}: boost shape={tuple(z_boost.shape)} -> {out_path}")
+
+    # D5: boost applied to CBDC-encoded embeddings.
+    cbdc_encoded = os.path.join(CACHE_DIR, "z_tweet_train_cbdc.pt")
+    if os.path.exists(cbdc_encoded):
+        print(f"\nApplying sentiment boost (alpha={alpha}) on CBDC embeddings -> 'cbdc_sentiment_boost' ...")
+        for split in ["train", "val", "test"]:
+            in_path = os.path.join(CACHE_DIR, f"z_tweet_{split}_cbdc.pt")
+            out_path = os.path.join(CACHE_DIR, f"z_tweet_{split}_clean_cbdc_sentiment_boost.pt")
+            if not os.path.exists(in_path):
+                print(f"  [skip] Missing {in_path}")
+                continue
+            data = torch.load(in_path, map_location="cpu")
+            z = data["embeddings"]
+            z_boost = project_out_and_boost(z, confound_dirs, sentiment_prototypes, alpha=alpha)
+            out_data = {"embeddings": z_boost}
+            if "labels" in data:
+                out_data["labels"] = data["labels"]
+            torch.save(out_data, out_path)
+            print(f"  {split}: boost shape={tuple(z_boost.shape)} -> {out_path}")
+    else:
+        print("\n[skip] CBDC-encoded embeddings missing; cannot build 'cbdc_sentiment_boost'.")
+
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 def main():
@@ -210,48 +271,7 @@ def main():
         apply_cleaning(direction, name)
 
     # ---- Sentiment boost conditions (D4, D5) --------------------------------
-    sent_path = os.path.join(CACHE_DIR, "sentiment_prototypes.pt")
-    cbdc_path = os.path.join(CACHE_DIR, "cbdc_directions.pt")
-    if os.path.exists(sent_path) and os.path.exists(cbdc_path):
-        sentiment_prototypes = torch.load(sent_path, map_location="cpu")
-        confound_dirs  = torch.load(cbdc_path, map_location="cpu")
-        alpha = 2.0
-
-        # D4: boost applied to raw embeddings after removing CBDC confounds.
-        print(f"\nApplying sentiment boost (alpha={alpha}) on raw embeddings -> 'raw_sentiment_boost' ...")
-        for split in ["train", "val", "test"]:
-            in_path  = os.path.join(CACHE_DIR, f"z_tweet_{split}.pt")
-            out_path = os.path.join(CACHE_DIR, f"z_tweet_{split}_clean_raw_sentiment_boost.pt")
-            if not os.path.exists(in_path):
-                print(f"  [skip] Missing {in_path}")
-                continue
-            data = torch.load(in_path, map_location="cpu")
-            z = data["embeddings"]
-            z_boost = project_out_and_boost(z, confound_dirs, sentiment_prototypes, alpha=alpha)
-            out_data = {"embeddings": z_boost}
-            if "labels" in data:
-                out_data["labels"] = data["labels"]
-            torch.save(out_data, out_path)
-            print(f"  {split}: boost shape={tuple(z_boost.shape)} -> {out_path}")
-
-        # D5: boost applied to CBDC-encoded embeddings
-        cbdc_encoded = os.path.join(CACHE_DIR, "z_tweet_train_cbdc.pt")
-        if os.path.exists(cbdc_encoded):
-            print(f"\nApplying sentiment boost (alpha={alpha}) on CBDC embeddings -> 'cbdc_sentiment_boost' ...")
-            for split in ["train", "val", "test"]:
-                in_path  = os.path.join(CACHE_DIR, f"z_tweet_{split}_cbdc.pt")
-                out_path = os.path.join(CACHE_DIR, f"z_tweet_{split}_clean_cbdc_sentiment_boost.pt")
-                if not os.path.exists(in_path):
-                    print(f"  [skip] Missing {in_path}")
-                    continue
-                data = torch.load(in_path, map_location="cpu")
-                z = data["embeddings"]
-                z_boost = project_out_and_boost(z, confound_dirs, sentiment_prototypes, alpha=alpha)
-                out_data = {"embeddings": z_boost}
-                if "labels" in data:
-                    out_data["labels"] = data["labels"]
-                torch.save(out_data, out_path)
-                print(f"  {split}: boost shape={tuple(z_boost.shape)} -> {out_path}")
+    materialize_sentiment_boost_conditions(alpha=2.0)
 
     print("\nCleaning complete.")
 

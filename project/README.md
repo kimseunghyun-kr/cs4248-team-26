@@ -1,6 +1,8 @@
 # Technical Reference
 
-Algorithm internals for the CBDC Financial Sentiment Pipeline.
+Algorithm internals for the 3-way tweet sentiment pipeline
+(`negative / neutral / positive`) built around `debias_vl` and the
+RN50-style `text_iccv` CBDC loop.
 
 ## Combined Pipeline: debias_vl → PGD → text_iccv
 
@@ -19,9 +21,20 @@ run_all.py :: main()
 
 ## Phase 2: Combined debias_vl + CBDC (`cbdc/refine.py`)
 
+Prompt roles in the current pipeline:
+
+```
+cls_text_groups   = class prototype bank for [negative, neutral, positive]
+target_text       = 3 class-conditioned prompts attacked by PGD
+keep_text         = neutral finance prompts used only for L_s
+candidate_prompt  = sentiment x topic crossed prompts for debias_vl
+spurious_prompt   = pure topic/context prompts for debias_vl
+```
+
 ### Phase A: debias_vl confound map discovery
 
-Adapted from `references/debias_vl.py`. Uses (sentiment x topic) crossed prompts.
+Adapted from `references/debias_vl.py`. Uses the
+`candidate_prompt` / `spurious_prompt` grid.
 
 ```
 Input:
@@ -84,6 +97,25 @@ for epoch in range(100):
   optimizer.step()
 ```
 
+## Checkpoint Selection
+
+The current code uses different selection rules in Phase 2 and Phase 4.
+
+```
+Phase 2 / cbdc/refine.py:
+  - cbdc_directions.pt        = best-epoch SVD(best_S)
+  - sentiment_prototypes.pt   = class prototypes from the best encoder
+  - encoder_cbdc.pt           = best validation-selected layer-11 weights
+
+Phase 4 / pipeline/classify.py:
+  - each linear probe keeps the best validation checkpoint
+  - reported val_f1 is the best validation F1 seen during probe training
+```
+
+Phase 2 now selects the encoder checkpoint with a lightweight validation
+selector and then recomputes the final CBDC directions from that best
+checkpoint.
+
 ## Gradient Flow
 
 ```
@@ -127,3 +159,21 @@ Phase 3 → z_*_clean_{debias_vl,cbdc_directions,label_guided,
 Phase 4 → results.pt
 Phase 5 → eval_report.txt
 ```
+
+## Experiment Conditions
+
+```
+B1 (raw)              raw tweet embeddings
+D1 (debias_vl)        debias_vl projection on raw embeddings
+D2 (CBDC)             embeddings from the CBDC-trained encoder
+D3 (CBDC+proj)        CBDC embeddings + residual CBDC projection
+D4 (raw+sent-boost)   raw embeddings + confound removal + sentiment boost
+D5 (CBDC+sent-boost)  CBDC embeddings + confound removal + sentiment boost
+C  (label-guided)     oracle-style label-guided projection baseline
+```
+
+`sentiment_prototypes.pt` stores the 3 pooled class prototypes. In Phase 3,
+the boost path builds a 2D sentiment subspace from those prototypes
+(`pos-neu` and `neg-neu`) rather than using a single `pos-neg` axis.
+If D4/D5 embeddings are missing when Phase 4 starts, `classify.py` now
+tries to materialize them from the Phase 2 artifacts automatically.

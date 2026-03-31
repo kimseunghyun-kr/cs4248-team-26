@@ -38,6 +38,9 @@ class CBDCConfig:
     n_epochs: int = 100            # encoder training epochs (txt_iters)
     lr: float = 1e-5               # AdamW lr for layer 11
     up_scale: float = 100.0        # loss multiplier (up_)
+    eval_every: int = 10           # validation selector frequency during Phase 2
+    selector_train_per_class: int = 512   # balanced train subset size per class
+    selector_batch_size: int = 128        # batch size for selector re-encoding
 
     # debias_vl map
     n_bias_dirs: int = 4           # top-K SVD components from I - P_debias

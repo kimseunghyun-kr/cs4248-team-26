@@ -37,6 +37,7 @@ import argparse
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
+from sklearn.metrics import f1_score
 
 from config import CBDCConfig
 from encoder import FinBERTEncoder
@@ -245,6 +246,150 @@ def _encode_class_prototypes(
     return pool_prompt_group_embeddings(cls_bank_em, group_sizes, normalize=True)
 
 
+def _load_cached_split(split: str) -> dict:
+    """Load cached tweet tensors from Phase 1."""
+    path = os.path.join(CACHE_DIR, f"z_tweet_{split}.pt")
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"Required cached split not found: {path}. Run data/embed.py first."
+        )
+    return torch.load(path, map_location="cpu")
+
+
+def _select_balanced_indices(
+    labels: torch.Tensor,
+    max_per_class: int,
+    seed: int = 42,
+) -> torch.Tensor:
+    """Choose a fixed balanced subset for validation-time selector scoring."""
+    g = torch.Generator().manual_seed(seed)
+    chosen = []
+    for c in [0, 1, 2]:
+        idx = torch.where(labels == c)[0]
+        if len(idx) == 0:
+            continue
+        perm = idx[torch.randperm(len(idx), generator=g)]
+        chosen.append(perm[:min(max_per_class, len(idx))])
+    if not chosen:
+        raise ValueError("Balanced selector sampling found no labeled examples.")
+    return torch.cat(chosen, dim=0).sort().values
+
+
+@torch.no_grad()
+def _encode_cached_ids(
+    encoder: FinBERTEncoder,
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    batch_size: int,
+) -> torch.Tensor:
+    """Encode cached token IDs with the current encoder checkpoint."""
+    all_z = []
+    for i in range(0, len(input_ids), batch_size):
+        z = encoder.encode_ids(
+            input_ids[i:i+batch_size].to(encoder.device),
+            attention_mask[i:i+batch_size].to(encoder.device),
+        )
+        all_z.append(z.cpu())
+    return torch.cat(all_z, dim=0)
+
+
+def _centroid_val_f1(
+    z_train: torch.Tensor,
+    y_train: torch.Tensor,
+    z_val: torch.Tensor,
+    y_val: torch.Tensor,
+) -> float:
+    """Validation macro F1 from a simple cosine nearest-centroid classifier."""
+    centroids = []
+    for c in [0, 1, 2]:
+        mask = y_train == c
+        if mask.sum() == 0:
+            raise ValueError(f"Selector train subset has no samples for class {c}.")
+        centroids.append(F.normalize(z_train[mask].mean(0), dim=-1))
+    centroid_bank = torch.stack(centroids, dim=0)
+    preds = (z_val @ centroid_bank.T).argmax(dim=-1).cpu().numpy()
+    return f1_score(y_val.cpu().numpy(), preds, average="macro")
+
+
+def _prepare_selector_data(cfg: CBDCConfig) -> dict:
+    """Prepare a fixed balanced train subset plus full validation split."""
+    train_data = _load_cached_split("train")
+    val_data = _load_cached_split("val")
+
+    train_labels = train_data["labels"].cpu()
+    subset_idx = _select_balanced_indices(
+        train_labels,
+        max_per_class=cfg.selector_train_per_class,
+    )
+
+    return {
+        "train_ids": train_data["input_ids"][subset_idx],
+        "train_mask": train_data["attention_mask"][subset_idx],
+        "train_labels": train_labels[subset_idx],
+        "val_ids": val_data["input_ids"],
+        "val_mask": val_data["attention_mask"],
+        "val_labels": val_data["labels"].cpu(),
+    }
+
+
+@torch.no_grad()
+def _selector_val_f1(
+    encoder: FinBERTEncoder,
+    selector_data: dict,
+    batch_size: int,
+) -> float:
+    """Encode selector splits and score them with cosine nearest-centroid F1."""
+    z_train = _encode_cached_ids(
+        encoder,
+        selector_data["train_ids"],
+        selector_data["train_mask"],
+        batch_size=batch_size,
+    )
+    z_val = _encode_cached_ids(
+        encoder,
+        selector_data["val_ids"],
+        selector_data["val_mask"],
+        batch_size=batch_size,
+    )
+    return _centroid_val_f1(
+        z_train,
+        selector_data["train_labels"],
+        z_val,
+        selector_data["val_labels"],
+    )
+
+
+def _compute_direction_snapshot(
+    encoder: FinBERTEncoder,
+    target_ids: torch.Tensor,
+    target_mask: torch.Tensor,
+    bias_anchors: torch.Tensor,
+    anti_anchors: torch.Tensor,
+    keep_cb: torch.Tensor,
+    cfg: CBDCConfig,
+) -> torch.Tensor:
+    """Re-run PGD with the current encoder to obtain an S snapshot."""
+    with torch.no_grad():
+        h_target = encoder.get_intermediate_features(target_ids, target_mask)
+        z_orig = encoder.encode_with_delta_from_hidden(
+            h_target,
+            target_mask,
+            torch.zeros(len(target_ids), encoder.hidden_size, device=cfg.device),
+        )
+
+    z_adv_pos, z_adv_neg = _pgd_bipolar(
+        h_target,
+        target_mask,
+        z_orig,
+        bias_anchors,
+        anti_anchors,
+        keep_cb,
+        encoder,
+        cfg,
+    )
+    return (z_adv_pos - z_adv_neg).detach().cpu()
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Phase B+C: text_iccv training loop
 # ═══════════════════════════════════════════════════════════════════════════
@@ -254,7 +399,7 @@ def text_iccv(
     bias_anchors: torch.Tensor,     # (K, H) from debias_vl Phase A
     anti_anchors: torch.Tensor,     # (K, H)
     cfg: CBDCConfig,
-) -> tuple[FinBERTEncoder, torch.Tensor]:
+) -> tuple[FinBERTEncoder, torch.Tensor, torch.Tensor]:
     """
     CBDC text_iccv loop — iterative PGD + encoder training.
 
@@ -264,8 +409,9 @@ def text_iccv(
       3. Class-specific match_loss + ck_loss → update layer 11 weights
 
     Returns:
-        encoder:          fine-tuned FinBERTEncoder
-        final_directions: (K, H)  last-epoch PGD-refined directions (for residual projection)
+        encoder:          best validation-selected FinBERTEncoder
+        final_directions: (K, H)  best-epoch PGD-refined directions
+        final_cls_em:     (3, H)  best-epoch pooled sentiment prototypes
     """
     device = cfg.device
     n_cls = len(cls_text_groups)
@@ -301,8 +447,14 @@ def text_iccv(
 
     n_trainable = sum(p.numel() for p in layer_11.parameters())
     print(f"  Trainable params (layer 11): {n_trainable:,}")
+    print(f"  Selector: eval_every={cfg.eval_every} | "
+          f"train_per_class={cfg.selector_train_per_class} | "
+          f"batch_size={cfg.selector_batch_size}")
 
-    last_S = None
+    selector_data = _prepare_selector_data(cfg)
+    best_selector_f1 = float("-inf")
+    best_epoch = None
+    best_state = None
 
     for epoch in tqdm(range(cfg.n_epochs), desc="text_iccv"):
         # --- 1. Pre-compute target_text intermediate features (frozen body) ---
@@ -331,7 +483,6 @@ def text_iccv(
         # --- 3. Forward adversarial through layer 11 (frozen) to get S ---
         with torch.no_grad():
             S = z_adv_pos - z_adv_neg   # (num_samples * N_test, H)
-        last_S = S.detach().cpu()
 
         # --- 4. Unfreeze layer 11, compute cls_em WITH gradient ---
         for p in layer_11.parameters():
@@ -357,20 +508,61 @@ def text_iccv(
         total_loss.backward()
         optimizer.step()
 
-        if (epoch + 1) % 10 == 0 or epoch == 0:
+        should_eval = (
+            epoch == 0
+            or (epoch + 1) % cfg.eval_every == 0
+            or (epoch + 1) == cfg.n_epochs
+        )
+
+        selector_f1 = None
+        if should_eval:
+            selector_f1 = _selector_val_f1(
+                encoder,
+                selector_data,
+                batch_size=cfg.selector_batch_size,
+            )
+            if selector_f1 > best_selector_f1:
+                best_selector_f1 = selector_f1
+                best_epoch = epoch + 1
+                best_state = {
+                    k: v.detach().cpu().clone()
+                    for k, v in layer_11.state_dict().items()
+                }
+
+        if should_eval or (epoch + 1) % 10 == 0 or epoch == 0:
             with torch.no_grad():
                 alignment = (S.to(device) @ cls_em.detach().T).pow(2).mean().item()
+            selector_msg = ""
+            if selector_f1 is not None:
+                selector_msg = f" selector_f1={selector_f1:.4f}"
             print(f"  Epoch {epoch+1}/{cfg.n_epochs}: "
                   f"match={match_loss.item():.4f} ck={ck_loss.item():.4f} "
-                  f"total={total_loss.item():.4f} alignment={alignment:.6f}")
+                  f"total={total_loss.item():.4f} alignment={alignment:.6f}"
+                  f"{selector_msg}")
+
+    if best_state is not None:
+        layer_11.load_state_dict(best_state)
+        print(f"\n  Restored best CBDC epoch: {best_epoch}/{cfg.n_epochs} "
+              f"(selector_f1={best_selector_f1:.4f})")
 
     # Freeze after training
     for p in layer_11.parameters():
         p.requires_grad_(False)
     encoder.backbone.eval()
 
-    # Extract final directions from last S via SVD
-    S_centered = last_S - last_S.mean(0)
+    # Recompute PGD snapshot using the best encoder checkpoint.
+    best_S = _compute_direction_snapshot(
+        encoder,
+        target_ids,
+        target_mask,
+        bias_anchors,
+        anti_anchors,
+        keep_cb,
+        cfg,
+    )
+
+    # Extract final directions from the best-S snapshot via SVD
+    S_centered = best_S - best_S.mean(0)
     _, _, Vh = torch.linalg.svd(S_centered, full_matrices=False)
     final_directions = Vh[:cfg.n_bias_dirs]  # (K, H) orthonormal
 
@@ -449,6 +641,9 @@ def main():
     parser.add_argument("--n_bias_dirs", type=int,   default=4)
     parser.add_argument("--lambda_reg",  type=float, default=1000.0)
     parser.add_argument("--up_scale",    type=float, default=100.0)
+    parser.add_argument("--eval_every",  type=int,   default=10)
+    parser.add_argument("--selector_train_per_class", type=int, default=512)
+    parser.add_argument("--selector_batch_size", type=int, default=128)
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -465,6 +660,9 @@ def main():
         n_epochs=args.n_epochs,
         lr=args.lr,
         up_scale=args.up_scale,
+        eval_every=args.eval_every,
+        selector_train_per_class=args.selector_train_per_class,
+        selector_batch_size=args.selector_batch_size,
         n_bias_dirs=args.n_bias_dirs,
         lambda_reg=args.lambda_reg,
         device=device,
