@@ -2,11 +2,13 @@
 Phase 4: Train and evaluate linear probes for all experiment conditions.
 
 Conditions:
-  B1 (raw)         : raw FinBERT CLS embeddings (baseline)
-  D1 (debias_vl)   : debias_vl word-pair projection applied to raw embeddings
-  D2 (CBDC)        : CBDC text_iccv fine-tuned encoder embeddings
-  D3 (CBDC+proj)   : CBDC encoder + residual CBDC direction projection
-  C (label-guided) : label-guided within-class mean-shift projection (oracle)
+  B1 (raw)          : raw BERT/FinBERT CLS embeddings (baseline)
+  D1 (debias_vl)    : debias_vl word-pair projection applied to raw embeddings
+  D2 (CBDC)         : CBDC text_iccv fine-tuned encoder embeddings
+  D3 (CBDC+proj)    : CBDC encoder + residual CBDC direction projection
+  D4 (debias+boost) : confound removal + sentiment-direction amplification (raw)
+  D5 (CBDC+boost)   : confound removal + sentiment-direction amplification (CBDC)
+  C (label-guided)  : label-guided within-class mean-shift projection (oracle)
 
 All conditions train a Linear(768, 3) probe and evaluate with macro F1.
 
@@ -106,6 +108,8 @@ CONDITIONS = {
     "D1 (debias_vl)":      "clean_debias_vl",
     "D2 (CBDC)":           "cbdc",
     "D3 (CBDC+proj)":      "clean_cbdc_proj",
+    "D4 (debias+boost)":   "clean_debias_vl_boost",
+    "D5 (CBDC+boost)":     "clean_cbdc_boost",
     "C (label-guided)":    "clean_label_guided",
 }
 

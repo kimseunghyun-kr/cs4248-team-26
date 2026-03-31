@@ -54,6 +54,38 @@ def project_out(z: torch.Tensor, direction: torch.Tensor) -> torch.Tensor:
 
 
 # ---------------------------------------------------------------------------
+# Sentiment boost: remove confound subspace, amplify sentiment subspace
+# ---------------------------------------------------------------------------
+def project_out_and_boost(
+    z: torch.Tensor,
+    confound_dirs: torch.Tensor,
+    sentiment_dirs: torch.Tensor,
+    alpha: float = 2.0,
+) -> torch.Tensor:
+    """Remove topic/confound subspace, then amplify sentiment subspace.
+
+    Args:
+        z:              (N, H) embeddings
+        confound_dirs:  (K, H) directions to remove (cbdc_directions)
+        sentiment_dirs: (S, H) sentiment class prototypes (cls_em) to amplify
+        alpha:          amplification factor (>1 boosts sentiment signal)
+
+    Returns:
+        z_boost: (N, H) L2-normalized, confound removed + sentiment amplified
+    """
+    # Remove confound subspace
+    U_conf = F.normalize(confound_dirs.to(z.device), dim=-1)
+    z_clean = z - (z @ U_conf.T) @ U_conf
+
+    # Amplify sentiment subspace
+    U_sent = F.normalize(sentiment_dirs.to(z.device), dim=-1)
+    sent_proj = (z_clean @ U_sent.T) @ U_sent
+    z_boost = z_clean + (alpha - 1.0) * sent_proj
+
+    return F.normalize(z_boost, dim=-1)
+
+
+# ---------------------------------------------------------------------------
 # Label-guided direction computation (oracle comparison)
 # ---------------------------------------------------------------------------
 def compute_label_guided_direction(
@@ -151,6 +183,50 @@ def main():
 
     for direction, name in directions_to_run:
         apply_cleaning(direction, name)
+
+    # ---- Sentiment boost conditions (D4, D5) --------------------------------
+    sent_path = os.path.join(CACHE_DIR, "sentiment_dirs.pt")
+    cbdc_path = os.path.join(CACHE_DIR, "cbdc_directions.pt")
+    if os.path.exists(sent_path) and os.path.exists(cbdc_path):
+        sentiment_dirs = torch.load(sent_path, map_location="cpu")
+        confound_dirs  = torch.load(cbdc_path, map_location="cpu")
+        alpha = 2.0
+
+        # D4: boost applied to raw embeddings (analogous to debias_vl + amplify)
+        print(f"\nApplying sentiment boost (alpha={alpha}) on raw embeddings -> 'debias_vl_boost' ...")
+        for split in ["train", "val", "test"]:
+            in_path  = os.path.join(CACHE_DIR, f"z_tweet_{split}.pt")
+            out_path = os.path.join(CACHE_DIR, f"z_tweet_{split}_clean_debias_vl_boost.pt")
+            if not os.path.exists(in_path):
+                print(f"  [skip] Missing {in_path}")
+                continue
+            data = torch.load(in_path, map_location="cpu")
+            z = data["embeddings"]
+            z_boost = project_out_and_boost(z, confound_dirs, sentiment_dirs, alpha=alpha)
+            out_data = {"embeddings": z_boost}
+            if "labels" in data:
+                out_data["labels"] = data["labels"]
+            torch.save(out_data, out_path)
+            print(f"  {split}: boost shape={tuple(z_boost.shape)} -> {out_path}")
+
+        # D5: boost applied to CBDC-encoded embeddings
+        cbdc_encoded = os.path.join(CACHE_DIR, "z_tweet_train_cbdc.pt")
+        if os.path.exists(cbdc_encoded):
+            print(f"\nApplying sentiment boost (alpha={alpha}) on CBDC embeddings -> 'cbdc_boost' ...")
+            for split in ["train", "val", "test"]:
+                in_path  = os.path.join(CACHE_DIR, f"z_tweet_{split}_cbdc.pt")
+                out_path = os.path.join(CACHE_DIR, f"z_tweet_{split}_clean_cbdc_boost.pt")
+                if not os.path.exists(in_path):
+                    print(f"  [skip] Missing {in_path}")
+                    continue
+                data = torch.load(in_path, map_location="cpu")
+                z = data["embeddings"]
+                z_boost = project_out_and_boost(z, confound_dirs, sentiment_dirs, alpha=alpha)
+                out_data = {"embeddings": z_boost}
+                if "labels" in data:
+                    out_data["labels"] = data["labels"]
+                torch.save(out_data, out_path)
+                print(f"  {split}: boost shape={tuple(z_boost.shape)} -> {out_path}")
 
     print("\nCleaning complete.")
 

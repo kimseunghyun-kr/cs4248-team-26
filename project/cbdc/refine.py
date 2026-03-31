@@ -358,7 +358,11 @@ def text_iccv(
     ortho_err = (gram - torch.eye(cfg.n_bias_dirs)).abs().max().item()
     print(f"  Orthonormality error: {ortho_err:.2e}")
 
-    return encoder, final_directions
+    # Encode cls_text with the final (fine-tuned) encoder — used for sentiment boost
+    with torch.no_grad():
+        final_cls_em = encoder.encode_text(cls_text).cpu()  # (3, H)
+
+    return encoder, final_directions, final_cls_em
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -453,12 +457,16 @@ def main():
     print(f"  debias_vl projection -> {p_path}")
 
     # ---- Phase B+C: CBDC text_iccv training ---------------------------------
-    encoder, final_directions = text_iccv(encoder, bias_anchors, anti_anchors, cfg)
+    encoder, final_directions, final_cls_em = text_iccv(encoder, bias_anchors, anti_anchors, cfg)
 
     # Save outputs
     dir_path = os.path.join(CACHE_DIR, "cbdc_directions.pt")
     torch.save(final_directions, dir_path)
     print(f"  CBDC directions ({tuple(final_directions.shape)}) -> {dir_path}")
+
+    sent_path = os.path.join(CACHE_DIR, "sentiment_dirs.pt")
+    torch.save(final_cls_em, sent_path)
+    print(f"  Sentiment directions (cls_em {tuple(final_cls_em.shape)}) -> {sent_path}")
 
     ckpt_path = os.path.join(CACHE_DIR, "encoder_cbdc.pt")
     torch.save(encoder.backbone.encoder.layer[-1].state_dict(), ckpt_path)
