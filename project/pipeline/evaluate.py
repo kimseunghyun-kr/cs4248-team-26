@@ -4,9 +4,7 @@ Phase 5: Full evaluation report — direction interpretability + analysis.
 Loads results from classify.py and produces:
   1. Summary table (all conditions)
   2. Direction interpretability per sentiment class
-  3. Confound axis linearity check
-  4. Zero-shot preservation on formal corpus
-  5. Comparative analysis (D1 vs B1, D2 vs B1, D3 vs B1)
+  3. Comparative analysis (D1 vs B1, D2 vs B1, D3 vs B1)
 
 Run from project/ directory:
   python pipeline/evaluate.py
@@ -18,7 +16,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
 import torch.nn.functional as F
-from pipeline.clean import project_out
 
 _DEFAULT_CACHE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache")
 CACHE_DIR   = os.environ.get("CACHE_DIR", _DEFAULT_CACHE)
@@ -40,30 +37,6 @@ def direction_interpretability(z, labels, direction, direction_name):
     result["pos_neg_gap"] = abs(result["positive"] - result["negative"])
     return result
 
-
-def linearity_check(z_sample, direction, formal_centroid):
-    """cosine(z + alpha*d, formal_centroid) vs alpha — should be monotonic."""
-    if direction.dim() == 2:
-        direction = direction[0]
-    d = F.normalize(direction, dim=-1)
-    fc = F.normalize(formal_centroid, dim=-1)
-    alphas = [-1.0, -0.5, -0.25, 0.0, 0.25, 0.5, 1.0]
-    results = {}
-    for a in alphas:
-        z_s = F.normalize(z_sample + a * d.unsqueeze(0), dim=-1)
-        results[a] = F.cosine_similarity(z_s, fc.unsqueeze(0), dim=-1).mean().item()
-    return results
-
-
-def zero_shot_preservation(z_formal, direction):
-    """Cosine between cleaned and original formal embeddings."""
-    z_clean = project_out(z_formal, direction)
-    cos = F.cosine_similarity(z_clean, z_formal, dim=-1)
-    return {
-        "mean": cos.mean().item(),
-        "min":  cos.min().item(),
-        "std":  cos.std().item(),
-    }
 
 
 def main():
@@ -132,41 +105,6 @@ def main():
         for d_name, row in interp_results.items():
             log(f"{d_name:<20} {row['negative']:>10.4f} {row['neutral']:>10.4f} "
                 f"{row['positive']:>10.4f} {row['pos_neg_gap']:>8.4f}")
-
-    # ---- Linearity check ------------------------------------------------------
-    formal_path = os.path.join(CACHE_DIR, "z_formal.pt")
-    if os.path.exists(test_path) and os.path.exists(formal_path):
-        z_formal = torch.load(formal_path, map_location="cpu")["embeddings"]
-        formal_centroid = F.normalize(z_formal.mean(0), dim=-1)
-        sample_idx = torch.randperm(len(z_test))[:20]
-        z_sample = z_test[sample_idx]
-
-        log("\n--- Confound Axis Linearity Check ---")
-        log("(cosine(z + alpha*d, formal_centroid) — monotonic = good axis)")
-
-        for d_name, fname in direction_files.items():
-            fpath = os.path.join(CACHE_DIR, fname)
-            if not os.path.exists(fpath):
-                continue
-            d = torch.load(fpath, map_location="cpu")
-            lin = linearity_check(z_sample, d, formal_centroid)
-            log(f"\n  {d_name}:")
-            log(f"  {'alpha':>6} | {'cos':>8}")
-            log(f"  {'-'*18}")
-            for a, c in lin.items():
-                log(f"  {a:>6.2f} | {c:>8.4f}")
-
-        # ---- Zero-shot preservation -------------------------------------------
-        log("\n--- Zero-Shot Preservation Check ---")
-        log("(cosine between cleaned and original FORMAL embeddings)")
-
-        for d_name, fname in direction_files.items():
-            fpath = os.path.join(CACHE_DIR, fname)
-            if not os.path.exists(fpath):
-                continue
-            d = torch.load(fpath, map_location="cpu")
-            zs = zero_shot_preservation(z_formal, d)
-            log(f"  {d_name:<20} mean={zs['mean']:.4f} min={zs['min']:.4f} std={zs['std']:.4f}")
 
     # ---- Comparative analysis -------------------------------------------------
     log("\n--- Comparative Analysis ---")

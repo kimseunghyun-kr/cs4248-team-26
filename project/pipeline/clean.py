@@ -111,27 +111,6 @@ def project_out_and_boost(
 
 
 # ---------------------------------------------------------------------------
-# Label-guided direction computation (oracle comparison)
-# ---------------------------------------------------------------------------
-def compute_label_guided_direction(
-    z_train: torch.Tensor,
-    labels_train: torch.Tensor,
-    z_formal: torch.Tensor,
-) -> torch.Tensor:
-    """Within-class mean-shift: average (class_mean - formal_mean) across classes."""
-    formal_centroid = z_formal.mean(0)
-    class_directions = []
-    for c in [0, 1, 2]:
-        mask = labels_train == c
-        if mask.sum() == 0:
-            continue
-        v_c = z_train[mask].mean(0) - formal_centroid
-        class_directions.append(v_c)
-    v_label = torch.stack(class_directions).mean(0)
-    return F.normalize(v_label, dim=-1)
-
-
-# ---------------------------------------------------------------------------
 # Apply cleaning to all splits
 # ---------------------------------------------------------------------------
 def apply_cleaning(direction: torch.Tensor, direction_name: str) -> None:
@@ -250,18 +229,6 @@ def main():
     if os.path.exists(cbdc_path):
         dirs = torch.load(cbdc_path, map_location="cpu")
         directions_to_run.append((dirs, "cbdc_directions"))
-
-    # Label-guided (oracle)
-    train_path = os.path.join(CACHE_DIR, "z_tweet_train.pt")
-    formal_path = os.path.join(CACHE_DIR, "z_formal.pt")
-    if os.path.exists(train_path) and os.path.exists(formal_path):
-        train_data = torch.load(train_path, map_location="cpu")
-        z_formal = torch.load(formal_path, map_location="cpu")["embeddings"]
-        direction = compute_label_guided_direction(
-            train_data["embeddings"], train_data["labels"], z_formal
-        )
-        directions_to_run.append((direction, "label_guided"))
-        print("Label-guided direction computed.")
 
     if not directions_to_run:
         print("No directions found. Run cbdc/refine.py first.")

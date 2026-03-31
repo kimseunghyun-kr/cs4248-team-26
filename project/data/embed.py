@@ -21,11 +21,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import argparse
 import torch
-import torch.nn.functional as F
+
 from tqdm import tqdm
 
 from encoder import FinBERTEncoder
-from dataset import load_tsad_records, load_formal_sentences
+from dataset import load_tsad_records
 
 
 _DEFAULT_CACHE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache")
@@ -117,34 +117,6 @@ def main():
             out_path,
         )
         print(f"  Saved → {out_path}  shape={tuple(embs.shape)}")
-
-    # ---- Load formal sentences -----------------------------------------------
-    # formal은 refine.py에서 input_ids 불필요 → embeddings만 저장
-    formal_texts = load_formal_sentences()
-    out_path = os.path.join(CACHE_DIR, "z_formal.pt")
-    print(f"\nEncoding formal sentences ({len(formal_texts)} samples) ...")
-    embs, _, _ = encode_texts_with_tokens(
-        encoder, formal_texts, args.batch_size, args.max_length
-    )
-    torch.save({"embeddings": embs}, out_path)
-    print(f"  Saved → {out_path}  shape={tuple(embs.shape)}")
-
-    # ---- Sanity check --------------------------------------------------------
-    print("\n--- Sanity check ---")
-    z_tw = torch.load(os.path.join(CACHE_DIR, "z_tweet_train.pt"))["embeddings"]
-    z_fo = torch.load(out_path)["embeddings"]
-
-    n      = min(500, len(z_tw), len(z_fo))
-    idx_tw = torch.randperm(len(z_tw))[:n]
-    idx_fo = torch.randperm(len(z_fo))[:n]
-    sim_tw_tw = F.cosine_similarity(z_tw[idx_tw], z_tw[idx_fo[:n]], dim=-1).mean().item()
-    sim_tw_fo = F.cosine_similarity(z_tw[idx_tw], z_fo[idx_fo],     dim=-1).mean().item()
-    print(f"  mean cosine(tweet, tweet) = {sim_tw_tw:.4f}")
-    print(f"  mean cosine(tweet, formal) = {sim_tw_fo:.4f}")
-    if sim_tw_fo < sim_tw_tw:
-        print("  ✓ Domain shift confirmed (tweet-formal gap exists)")
-    else:
-        print("  ⚠ No domain shift detected — style removal may not help")
 
     print("\nEmbedding extraction complete.")
 

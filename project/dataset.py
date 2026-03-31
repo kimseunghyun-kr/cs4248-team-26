@@ -267,32 +267,32 @@ def load_tsad_records(dataset_name: str = "tweet_eval", dataset_config: str = "s
         print(f"  Kaggle load failed: {e}")
 
     # --- Try 2: tweet_eval from HuggingFace -----------------------------------
-    try:
-        from datasets import load_dataset
-        print(f"Loading dataset '{dataset_name}' config='{dataset_config}' ...")
-        ds = load_dataset(dataset_name, dataset_config)
+    # try:
+    #     from datasets import load_dataset
+    #     print(f"Loading dataset '{dataset_name}' config='{dataset_config}' ...")
+    #     ds = load_dataset(dataset_name, dataset_config)
 
-        def extract(split):
-            return [{"text": ex["text"], "label": int(ex["label"])} for ex in ds[split]]
+    #     def extract(split):
+    #         return [{"text": ex["text"], "label": int(ex["label"])} for ex in ds[split]]
 
-        train_records = extract("train")
-        val_records = extract("validation")
-        test_records = extract("test")
+    #     train_records = extract("train")
+    #     val_records = extract("validation")
+    #     test_records = extract("test")
 
-        print(
-            f"  train={len(train_records)} | val={len(val_records)} | test={len(test_records)}"
-        )
-        return train_records, val_records, test_records
+    #     print(
+    #         f"  train={len(train_records)} | val={len(val_records)} | test={len(test_records)}"
+    #     )
+    #     return train_records, val_records, test_records
 
-    except Exception as e:
-        print(f"WARNING: Could not load '{dataset_name}/{dataset_config}': {e}")
-        print("Falling back to synthetic 500-sample dataset.")
-        tr_t, tr_l, va_t, va_l, te_t, te_l = _make_synthetic_dataset()
-        return (
-            [{"text": t, "label": int(y)} for t, y in zip(tr_t, tr_l)],
-            [{"text": t, "label": int(y)} for t, y in zip(va_t, va_l)],
-            [{"text": t, "label": int(y)} for t, y in zip(te_t, te_l)],
-        )
+    # except Exception as e:
+    #     print(f"WARNING: Could not load '{dataset_name}/{dataset_config}': {e}")
+    #     print("Falling back to synthetic 500-sample dataset.")
+    #     tr_t, tr_l, va_t, va_l, te_t, te_l = _make_synthetic_dataset()
+    #     return (
+    #         [{"text": t, "label": int(y)} for t, y in zip(tr_t, tr_l)],
+    #         [{"text": t, "label": int(y)} for t, y in zip(va_t, va_l)],
+    #         [{"text": t, "label": int(y)} for t, y in zip(te_t, te_l)],
+    #     )
 
 
 def load_tsad(dataset_name: str = "tweet_eval", dataset_config: str = "sentiment"):
@@ -320,147 +320,6 @@ def _parse_tsad_kaggle(df):
     return _records_to_legacy_tuple(*_split_records(records))
 
 
-# ---------------------------------------------------------------------------
-# Load formal financial sentences (for style contrast corpus)
-# ---------------------------------------------------------------------------
-def load_formal_sentences() -> List[str]:
-    """
-    Returns Financial PhraseBank sentences via Kaggle (primary), with a
-    hardcoded FPB-style fallback only if Kaggle is unavailable.
-    """
-    import io
-    try:
-        import kagglehub
-        from kagglehub import KaggleDatasetAdapter
-        print("Loading Financial PhraseBank from Kaggle (ankurzing/sentiment-analysis-for-financial-news) ...")
-        for enc in ["utf-8", "latin-1", "cp1252"]:
-            try:
-                df = kagglehub.load_dataset(
-                    KaggleDatasetAdapter.PANDAS,
-                    "ankurzing/sentiment-analysis-for-financial-news",
-                    "all-data.csv",
-                    pandas_kwargs={"header": None, "names": ["label", "sentence"], "encoding": enc},
-                )
-                texts = df["sentence"].dropna().tolist()
-                if len(texts) > 100:
-                    print(f"  Financial PhraseBank: {len(texts)} sentences (encoding={enc})")
-                    return texts
-            except Exception as inner:
-                if "codec" in str(inner).lower() or "decode" in str(inner).lower():
-                    continue
-                raise
-    except Exception as e:
-        print(f"  Kaggle FPB load failed: {e}")
-
-    print("  Using hardcoded FPB-style sentences as fallback.")
-    return _fpb_style_sentences()
-
-
-def _fpb_style_sentences() -> List[str]:
-    """
-    Handcrafted sentences written in the register of Financial PhraseBank
-    (Reuters financial news, short factual statements).
-    These represent the distribution FinBERT was fine-tuned on.
-    """
-    return [
-        # --- Positive sentiment ---
-        "Operating profit rose to EUR 13.1 mn from EUR 8.7 mn in the year-earlier period.",
-        "The company's net sales increased by 9.5 percent to EUR 562.5 million.",
-        "Net profit for the period climbed to EUR 37.6 million from EUR 21.3 million a year ago.",
-        "The board proposed a dividend of EUR 0.22 per share, up from EUR 0.18 the previous year.",
-        "Revenue grew 11 percent year-on-year to reach EUR 1.04 billion.",
-        "The firm reported a record operating margin of 14.2 percent for the quarter.",
-        "Earnings per share rose to EUR 1.43, beating analyst expectations of EUR 1.31.",
-        "The company raised its full-year guidance following stronger-than-expected second-quarter results.",
-        "Order intake increased 18 percent compared with the same period last year.",
-        "The group's EBITDA improved to EUR 88 million from EUR 71 million.",
-        "Shares in the company rose 6.2 percent after the earnings announcement.",
-        "The acquisition is expected to be earnings accretive from the first full year of consolidation.",
-        "Cash flow from operations increased to EUR 142 million, up from EUR 98 million previously.",
-        "The company secured a EUR 320 million contract with a major European utility provider.",
-        "Return on equity improved to 17.4 percent from 13.8 percent a year earlier.",
-        "The firm's market share in the Nordic region expanded to 34 percent.",
-        "Comparable sales growth reached 7.3 percent, driven by strong performance in Asia-Pacific.",
-        "The company completed the divestiture of its non-core logistics unit for EUR 415 million.",
-        "Net interest income rose 8 percent to EUR 1.2 billion in the first half.",
-        "The group announced a EUR 200 million share buyback programme.",
-        "Personnel costs declined as a proportion of revenue, reflecting improved operational efficiency.",
-        "The company's credit rating was upgraded to A- by Standard & Poor's.",
-        "Gross margin improved by 1.8 percentage points to 42.6 percent.",
-        "The firm reported its fifth consecutive quarter of double-digit revenue growth.",
-        "Loan portfolio quality improved with non-performing loans declining to 1.8 percent.",
-        # --- Negative sentiment ---
-        "Operating loss widened to EUR 12.3 million from EUR 4.7 million a year ago.",
-        "The company lowered its full-year sales forecast citing weaker demand in Europe.",
-        "Net loss for the period amounted to EUR 28.4 million compared with a profit of EUR 6.2 million.",
-        "The firm announced plans to cut 1,200 jobs as part of a restructuring programme.",
-        "Revenue fell 7.4 percent to EUR 381 million, missing the consensus estimate of EUR 412 million.",
-        "The company filed for creditor protection following a deterioration in liquidity.",
-        "Impairment charges of EUR 95 million were recorded on goodwill related to the 2019 acquisition.",
-        "The board suspended the annual dividend in response to the deteriorating financial position.",
-        "Operating cash flow turned negative, declining to minus EUR 23 million in the quarter.",
-        "The company warned that full-year EBIT would fall short of prior guidance by approximately 20 percent.",
-        "Shares fell 11.3 percent to their lowest level in three years following the profit warning.",
-        "The firm's debt-to-equity ratio rose to 2.8 times following the refinancing of its credit facility.",
-        "Write-downs on inventory totalling EUR 47 million weighed on quarterly results.",
-        "The company's order backlog declined by 14 percent compared with the same period last year.",
-        "Market conditions in the construction segment remained challenging throughout the period.",
-        "The rating agency placed the company's debt on negative credit watch.",
-        "Cost overruns on a major infrastructure project led to an exceptional charge of EUR 63 million.",
-        "The company reported that its largest customer had terminated a long-term supply agreement.",
-        "Gross margin contracted by 3.1 percentage points due to rising raw material costs.",
-        "The firm disclosed a regulatory investigation into its pricing practices in three markets.",
-        # --- Neutral sentiment ---
-        "The company will publish its half-year results on 14 August.",
-        "Nokian Tyres said it would hold its annual general meeting on 28 March in Helsinki.",
-        "The board of directors decided to maintain the dividend at EUR 0.30 per share.",
-        "The firm appointed Mikko Helander as its new chief executive officer, effective 1 March.",
-        "Outokumpu said it would release its interim report for the first quarter on 29 April.",
-        "The company operates 47 production facilities across 18 countries.",
-        "Nokia confirmed that discussions with the potential acquirer were ongoing.",
-        "The group employs approximately 8,400 people in Finland and 21,000 worldwide.",
-        "The company said the transaction remained subject to regulatory approval.",
-        "Fortum's board proposed an unchanged dividend of EUR 1.14 per share for 2013.",
-        "The interim chief financial officer will assume the role on a permanent basis pending board confirmation.",
-        "The company reiterated its full-year financial targets at the investor day presentation.",
-        "YIT said it would divest its industrial services division by the end of the financial year.",
-        "The firm stated that it did not comment on market speculation regarding potential transactions.",
-        "Kesko Corporation reported that its retail division accounted for 61 percent of group sales.",
-        "The company's fiscal year ends on 31 December.",
-        "UPM-Kymmene said it had completed the previously announced capacity reduction.",
-        "The group operates three reportable business segments: energy, paper, and pulp.",
-        "Metso said it would transfer its mining and construction equipment businesses to a new entity.",
-        "The company confirmed the terms of the rights issue announced on 7 February.",
-        "Elisa Corporation released its third-quarter results in line with preliminary figures.",
-        "The supervisory board approved the proposed amendments to the articles of association.",
-        "Wärtsilä said the acquisition had been completed following receipt of all required regulatory approvals.",
-        "The annual report is available on the company's investor relations website.",
-        "The company's shares are listed on the Nasdaq Helsinki exchange.",
-        "Stora Enso said it would invest EUR 170 million in its packaging board mill in Imatra.",
-        "The chief executive stated that the business environment remained uncertain.",
-        "The company has not yet determined the size or timing of any potential capital markets transaction.",
-        "Neste Oil said it would continue to evaluate strategic options for its retail network.",
-        "The board noted that the results were broadly in line with management expectations.",
-        "The company said operating conditions in its main markets showed little change from the prior quarter.",
-        "Sanoma Corporation confirmed that the divestiture process was proceeding according to plan.",
-        "The firm stated that its financial position remained solid with adequate liquidity reserves.",
-        "The annual general meeting approved all items on the agenda as proposed by the board.",
-        "Tieto said its services segment had been reorganised into four business lines.",
-        "The company maintained its outlook for the full financial year.",
-        "Talvivaara Mining Company said it had received the necessary environmental permits.",
-        "Stockmann noted that the weak consumer sentiment had persisted into the second half.",
-        "The company issued a stock exchange release correcting an error in its previous announcement.",
-        "Cargotec said the Board of Directors had authorised the company to repurchase its own shares.",
-        "The firm confirmed that there had been no material changes to its financial position since the last report.",
-        "Ramirent's board decided to convene an extraordinary general meeting on 5 December.",
-        "The company disclosed that it had received an offer for one of its business units.",
-        "F-Secure said it would focus its product portfolio on cybersecurity solutions for enterprises.",
-        "The board of Fiskars resolved to distribute a dividend of EUR 0.68 per share.",
-        "Huhtamäki said the new production line had commenced operations as scheduled.",
-        "The group's net debt stood at EUR 1.3 billion at the end of the reporting period.",
-        "Cramo said the integration of the acquired businesses was progressing according to plan.",
-        "The company noted that currency fluctuations had a limited impact on reported results.",
-    ]
 
 
 def _make_synthetic_dataset():
