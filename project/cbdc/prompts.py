@@ -1,5 +1,5 @@
 """
-Prompt banks for CBDC financial tweet sentiment.
+Prompt banks for CBDC tweet sentiment.
 
 The static prompt roles stay the same:
   cls_text_groups   ↔ class concepts pooled into sentiment prototypes
@@ -36,7 +36,9 @@ _URL_RE = re.compile(r"https?://\S+|www\.\S+")
 _USER_RE = re.compile(r"@\w+")
 _SYMBOL_GAP_RE = re.compile(r"([#$])\s+([a-z0-9_]+)")
 _TOKEN_RE = re.compile(r"\$[a-z][a-z0-9_]*|#[a-z][a-z0-9_]*|[a-z][a-z0-9']*")
+_CLEAN_TOKEN_RE = re.compile(r"^(?:[$#][a-z0-9_]+|[a-z0-9][a-z0-9'&+-]*)$")
 _MAX_NGRAM = 3
+_ENTITY_TOKEN = "<entity>"
 
 _STOPWORDS = {
     "a", "an", "and", "are", "as", "at", "be", "been", "being", "but", "by",
@@ -46,26 +48,37 @@ _STOPWORDS = {
     "too", "us", "was", "we", "were", "will", "with", "you", "your",
 }
 
+_GENERIC_BANNED = {
+    "about", "all", "back", "best", "better", "can", "day", "days", "don",
+    "game", "games", "get", "good", "great", "how", "just", "like", "lot",
+    "lots", "many", "month", "months", "more", "much", "need", "night",
+    "now", "one", "out", "play", "playing", "really", "see", "some", "still",
+    "story", "there", "thing", "things", "time", "today", "tomorrow", "well",
+    "what", "work", "year", "years",
+}
+_PLACEHOLDER_TOKENS = {"<url>", "<other_user>", "<user>", "<person>", "<number>", "[unk]", "unk"}
+_CONTRACTION_TAILS = {"'s", "'t", "'m", "'re", "'ve", "'ll", "'d", "s", "t", "m", "re", "ve", "ll", "d"}
+
 
 # ── Sentiment class concepts (pooled prototypes) ───────────────────────
 cls_text_groups = [
     [
-        "A tweet expressing negative financial sentiment.",
-        "This text conveys bearish or unfavorable market sentiment.",
-        "The writer sounds negative about the company or asset.",
-        "A pessimistic financial post.",
+        "A tweet expressing negative sentiment.",
+        "This text conveys unfavorable or unhappy sentiment.",
+        "The writer sounds negative about the topic or entity.",
+        "A pessimistic social media post.",
     ],
     [
-        "A tweet expressing neutral financial sentiment.",
-        "This text is informational and emotionally neutral about the market.",
-        "The writer sounds balanced and non-committal about the company or asset.",
-        "A factual financial post without strong sentiment.",
+        "A tweet expressing neutral sentiment.",
+        "This text is informational and emotionally neutral.",
+        "The writer sounds balanced and non-committal about the topic or entity.",
+        "A factual post without strong sentiment.",
     ],
     [
-        "A tweet expressing positive financial sentiment.",
-        "This text conveys bullish or favorable market sentiment.",
-        "The writer sounds positive about the company or asset.",
-        "An optimistic financial post.",
+        "A tweet expressing positive sentiment.",
+        "This text conveys favorable or enthusiastic sentiment.",
+        "The writer sounds positive about the topic or entity.",
+        "An optimistic social media post.",
     ],
 ]
 
@@ -75,26 +88,26 @@ cls_text = [group[0] for group in cls_text_groups]
 
 # ── PGD targets for RN50-style text_iccv matching ──────────────────────
 target_text = [
-    "A negative-sentiment financial tweet.",
-    "A neutral-sentiment financial tweet.",
-    "A positive-sentiment financial tweet.",
+    "A negative-sentiment tweet.",
+    "A neutral-sentiment tweet.",
+    "A positive-sentiment tweet.",
 ]
 
 
 # ── Neutral finance prompts for L_s preservation ────────────────────────
 keep_text = [
-    "A discussion about market conditions.",
-    "Commentary on recent financial developments.",
-    "An observation about trading activity.",
-    "A remark about economic indicators.",
-    "Thoughts on investment performance.",
-    "A perspective on market trends.",
-    "A note about financial news coverage.",
-    "An analysis of sector movements.",
-    "A comment on portfolio allocation.",
-    "A report on capital market dynamics.",
-    "An overview of global economic conditions.",
-    "A summary of recent corporate disclosures.",
+    "A discussion about recent events.",
+    "Commentary on an entity or topic.",
+    "An observation about a product or service.",
+    "A remark about public reaction online.",
+    "Thoughts on a recent update or announcement.",
+    "A perspective on a trending topic.",
+    "A note about social media discussion.",
+    "An analysis of public response.",
+    "A comment on community reactions.",
+    "A report on recent online conversation.",
+    "An overview of a popular topic.",
+    "A summary of recent public discussion.",
 ]
 
 
@@ -148,10 +161,73 @@ def _tokenize_tweet_text(text: str) -> list[str]:
     return _TOKEN_RE.findall(_normalize_tweet_text(text))
 
 
+def _normalize_optional_text(value):
+    if value is None:
+        return None
+    try:
+        if isinstance(value, float) and value != value:
+            return None
+    except Exception:
+        pass
+    text = str(value).strip()
+    return text if text else None
+
+
+def _normalize_entity_text(entity: str | None) -> str | None:
+    entity = _normalize_optional_text(entity)
+    if entity is None:
+        return None
+    entity = entity.replace("_", " ").strip()
+    entity = re.sub(r"\s+", " ", entity)
+    return entity if entity else None
+
+
+def _normalize_cleaned_tokens(tokens: Sequence[str] | None) -> list[str]:
+    if not tokens:
+        return []
+    normalized = []
+    for tok in tokens:
+        tok = str(tok).strip().lower().replace("’", "'")
+        if not tok or tok in {",", ".", "!", "?", ";", ":", "''", "``", "'", "\"", "[", "]", "(", ")"}:
+            continue
+        if tok in _PLACEHOLDER_TOKENS:
+            continue
+        if tok == "<entity>":
+            tok = _ENTITY_TOKEN
+        elif not _CLEAN_TOKEN_RE.match(tok):
+            continue
+        if tok in _CONTRACTION_TAILS:
+            continue
+        normalized.append(tok)
+    return normalized
+
+
+def _tokens_from_record(record: dict) -> list[str]:
+    cleaned_tokens = _normalize_cleaned_tokens(record.get("cleaned_tokens"))
+    if cleaned_tokens:
+        tokens = [tok for tok in cleaned_tokens if tok != _ENTITY_TOKEN]
+    else:
+        tokens = _tokenize_tweet_text(record["text"])
+
+    selected_text = record.get("selected_text")
+    if selected_text:
+        selected_tokens = set(_tokenize_tweet_text(selected_text))
+        if selected_tokens:
+            tokens = [tok for tok in tokens if tok not in selected_tokens]
+
+    return [tok for tok in tokens if tok not in _STOPWORDS]
+
+
 def _is_valid_phrase(tokens: Sequence[str]) -> bool:
     if not tokens or len(tokens) > _MAX_NGRAM:
         return False
+    if any(tok.startswith("<") and tok.endswith(">") for tok in tokens):
+        return False
     if all(tok in _STOPWORDS for tok in tokens):
+        return False
+    if any(tok in _GENERIC_BANNED for tok in tokens):
+        return False
+    if any(tok in _CONTRACTION_TAILS for tok in tokens):
         return False
     if len(tokens) > 1 and (tokens[0] in _STOPWORDS or tokens[-1] in _STOPWORDS):
         return False
@@ -159,7 +235,9 @@ def _is_valid_phrase(tokens: Sequence[str]) -> bool:
         tok = tokens[0]
         if tok in _STOPWORDS:
             return False
-        if len(tok) < 3 and not tok.startswith(("$", "#")):
+        if tok in _GENERIC_BANNED:
+            return False
+        if not tok.startswith(("$", "#")):
             return False
     return True
 
@@ -200,32 +278,82 @@ def _label_entropy(counts: Sequence[int]) -> float:
     return entropy / math.log(3.0)
 
 
-def mine_topic_phrases_from_texts(
-    texts: Sequence[str],
-    labels: Sequence[int],
+def _score_topic_row(total, counts, *, specificity_bonus=1.0) -> float:
+    entropy = _label_entropy(counts)
+    return math.log1p(total) * entropy * specificity_bonus
+
+
+def mine_entity_topics_from_records(
+    records: Sequence[dict],
+    max_topics: int = 12,
+    min_doc_freq: int = 20,
+    max_doc_freq_ratio: float = 0.20,
+) -> list[dict]:
+    """Mine balanced high-frequency entities as debias_vl topics."""
+    n_docs = len(records)
+    max_doc_freq = max(min_doc_freq + 1, int(max_doc_freq_ratio * n_docs))
+
+    doc_counts = Counter()
+    label_doc_counts = defaultdict(lambda: [0, 0, 0])
+    display_forms = defaultdict(Counter)
+
+    for record in records:
+        entity = _normalize_entity_text(record.get("entity"))
+        if entity is None:
+            continue
+        norm = entity.lower()
+        doc_counts[norm] += 1
+        label_doc_counts[norm][int(record["label"])] += 1
+        display_forms[norm][entity] += 1
+
+    rows = []
+    for norm_entity, total in doc_counts.items():
+        if total < min_doc_freq or total > max_doc_freq:
+            continue
+        counts = label_doc_counts[norm_entity]
+        entropy = _label_entropy(counts)
+        if entropy < 0.35:
+            continue
+        display = display_forms[norm_entity].most_common(1)[0][0]
+        rows.append(
+            {
+                "topic": display,
+                "kind": "entity",
+                "source": "entity",
+                "doc_freq": int(total),
+                "label_counts": [int(x) for x in counts],
+                "entropy": float(entropy),
+                "score": float(_score_topic_row(total, counts, specificity_bonus=1.15)),
+            }
+        )
+
+    rows.sort(key=lambda row: (row["score"], row["doc_freq"]), reverse=True)
+    return rows[:max_topics]
+
+
+def mine_phrase_topics_from_records(
+    records: Sequence[dict],
     max_topics: int = 32,
     min_doc_freq: int = 20,
     max_doc_freq_ratio: float = 0.20,
 ) -> list[dict]:
-    """Mine label-balanced topic/style phrases from tweet texts.
+    """Mine label-balanced topic/style phrases from cleaned/context tweet tokens.
 
     Phrases are ranked by:
       frequency × class-balance entropy × small specificity bonus
     and then greedily deduplicated for diversity.
     """
-    if len(texts) != len(labels):
-        raise ValueError("texts and labels must have the same length")
-
     doc_counts = Counter()
     label_doc_counts = defaultdict(lambda: [0, 0, 0])
-    n_docs = len(texts)
+    n_docs = len(records)
     max_doc_freq = max(min_doc_freq + 1, int(max_doc_freq_ratio * n_docs))
 
-    for text, label in zip(texts, labels):
-        phrases = _iter_phrase_candidates(_tokenize_tweet_text(text))
+    for record in records:
+        label = int(record["label"])
+        phrases = _iter_phrase_candidates(_tokens_from_record(record))
         for phrase in phrases:
             doc_counts[phrase] += 1
-            label_doc_counts[phrase][int(label)] += 1
+            label_doc_counts[phrase][label] += 1
 
     scored = []
     for phrase, total in doc_counts.items():
@@ -239,12 +367,14 @@ def mine_topic_phrases_from_texts(
 
         ngram_len = phrase.count(" ") + 1
         has_symbol = int("$" in phrase or "#" in phrase)
-        specificity_bonus = 1.0 + 0.10 * (ngram_len - 1) + 0.10 * has_symbol
-        score = math.log1p(total) * entropy * specificity_bonus
+        specificity_bonus = 1.0 + 0.25 * (ngram_len - 1) + 0.20 * has_symbol
+        score = _score_topic_row(total, counts, specificity_bonus=specificity_bonus)
 
         scored.append(
             {
-                "phrase": phrase,
+                "topic": phrase,
+                "kind": "phrase",
+                "source": "cleaned_context",
                 "doc_freq": int(total),
                 "label_counts": [int(x) for x in counts],
                 "entropy": float(entropy),
@@ -255,25 +385,116 @@ def mine_topic_phrases_from_texts(
     scored.sort(key=lambda row: (row["score"], row["doc_freq"]), reverse=True)
 
     chosen = []
-    chosen_phrases = []
+    chosen_topics = []
     for row in scored:
-        if _is_redundant_phrase(row["phrase"], chosen_phrases):
+        if _is_redundant_phrase(row["topic"], chosen_topics):
             continue
         chosen.append(row)
-        chosen_phrases.append(row["phrase"])
+        chosen_topics.append(row["topic"])
         if len(chosen) >= max_topics:
             break
 
     return chosen
 
 
-def _load_cached_texts(tokenizer, train_data: dict) -> list[str]:
+def _records_from_cached_train(tokenizer, train_data: dict) -> list[dict]:
     texts = train_data.get("texts")
-    if texts is not None:
-        return list(texts)
-    if tokenizer is None:
-        raise ValueError("Tokenizer is required to decode cached train split without raw texts.")
-    return tokenizer.batch_decode(train_data["input_ids"], skip_special_tokens=True)
+    if texts is None:
+        if tokenizer is None:
+            raise ValueError("Tokenizer is required to decode cached train split without raw texts.")
+        texts = tokenizer.batch_decode(train_data["input_ids"], skip_special_tokens=True)
+
+    labels = train_data["labels"].tolist()
+    entities = train_data.get("entities") or [None] * len(texts)
+    cleaned_tokens = train_data.get("cleaned_tokens") or [None] * len(texts)
+    selected_texts = train_data.get("selected_texts") or [None] * len(texts)
+    time_of_tweet = train_data.get("time_of_tweet") or [None] * len(texts)
+    age_of_user = train_data.get("age_of_user") or [None] * len(texts)
+    country = train_data.get("country") or [None] * len(texts)
+
+    return [
+        {
+            "text": texts[i],
+            "label": int(labels[i]),
+            "entity": entities[i],
+            "cleaned_tokens": cleaned_tokens[i],
+            "selected_text": selected_texts[i],
+            "time_of_tweet": time_of_tweet[i],
+            "age_of_user": age_of_user[i],
+            "country": country[i],
+        }
+        for i in range(len(texts))
+    ]
+
+
+def _has_structured_mining_fields(records: Sequence[dict]) -> bool:
+    if not records:
+        return False
+    has_entity = any(record.get("entity") for record in records)
+    has_cleaned = any(record.get("cleaned_tokens") for record in records)
+    has_selected = any(record.get("selected_text") for record in records)
+    return has_entity or has_cleaned or has_selected
+
+
+def _load_records_for_mining(tokenizer, cache_dir: str) -> tuple[list[dict] | None, str]:
+    train_path = os.path.join(cache_dir, "z_tweet_train.pt")
+    if os.path.exists(train_path):
+        train_data = torch.load(train_path, map_location="cpu")
+        records = _records_from_cached_train(tokenizer, train_data)
+        if _has_structured_mining_fields(records):
+            return records, f"cache:{train_path}"
+
+    try:
+        from dataset import load_tsad_records
+
+        train_records, _, _ = load_tsad_records()
+        if train_records:
+            return train_records, "dataset:load_tsad_records"
+    except Exception:
+        pass
+
+    if os.path.exists(train_path):
+        train_data = torch.load(train_path, map_location="cpu")
+        return _records_from_cached_train(tokenizer, train_data), f"cache-text-only:{train_path}"
+
+    return None, "none"
+
+
+def combine_topic_rows(
+    entity_rows: Sequence[dict],
+    phrase_rows: Sequence[dict],
+    max_topics: int,
+) -> list[dict]:
+    """Prefer structured entity topics, then fill with diverse phrase topics."""
+    combined = []
+    chosen_topics = []
+
+    entity_budget = min(max_topics // 2, 12)
+    for row in entity_rows[:entity_budget]:
+        if _is_redundant_phrase(row["topic"], chosen_topics):
+            continue
+        combined.append(row)
+        chosen_topics.append(row["topic"])
+
+    for row in phrase_rows:
+        if _is_redundant_phrase(row["topic"], chosen_topics):
+            continue
+        combined.append(row)
+        chosen_topics.append(row["topic"])
+        if len(combined) >= max_topics:
+            break
+
+    if len(combined) < max_topics:
+        for row in entity_rows[entity_budget:]:
+            if _is_redundant_phrase(row["topic"], chosen_topics):
+                continue
+            combined.append(row)
+            chosen_topics.append(row["topic"])
+            if len(combined) >= max_topics:
+                break
+
+    combined.sort(key=lambda row: row["score"], reverse=True)
+    return combined[:max_topics]
 
 
 def mine_topic_phrases_from_cache(
@@ -298,8 +519,8 @@ def mine_topic_phrases_from_cache(
         if topics:
             return topics[:max_topics], metadata[:max_topics], using_mined
 
-    train_path = os.path.join(cache_dir, "z_tweet_train.pt")
-    if not os.path.exists(train_path):
+    records, record_source = _load_records_for_mining(tokenizer, cache_dir)
+    if not records:
         topics = DEFAULT_TOPICS[:max_topics]
         metadata = []
         with open(out_path, "w") as f:
@@ -308,24 +529,27 @@ def mine_topic_phrases_from_cache(
                     "using_mined_topics": False,
                     "topics": topics,
                     "metadata": metadata,
-                    "reason": f"missing {train_path}",
+                    "reason": f"no mining records available ({record_source})",
                 },
                 f,
                 indent=2,
             )
         return topics, metadata, False
 
-    train_data = torch.load(train_path, map_location="cpu")
-    texts = _load_cached_texts(tokenizer, train_data)
-    labels = train_data["labels"].tolist()
-    metadata = mine_topic_phrases_from_texts(
-        texts,
-        labels,
+    entity_rows = mine_entity_topics_from_records(
+        records,
+        max_topics=max_topics,
+        min_doc_freq=max(5, min_doc_freq // 2),
+        max_doc_freq_ratio=max_doc_freq_ratio,
+    )
+    phrase_rows = mine_phrase_topics_from_records(
+        records,
         max_topics=max_topics,
         min_doc_freq=min_doc_freq,
         max_doc_freq_ratio=max_doc_freq_ratio,
     )
-    topics = [row["phrase"] for row in metadata]
+    metadata = combine_topic_rows(entity_rows, phrase_rows, max_topics=max_topics)
+    topics = [row["topic"] for row in metadata]
 
     using_mined_topics = len(topics) >= min(8, max_topics)
     if not using_mined_topics:
@@ -338,6 +562,7 @@ def mine_topic_phrases_from_cache(
                 "using_mined_topics": using_mined_topics,
                 "topics": topics,
                 "metadata": metadata,
+                "record_source": record_source,
             },
             f,
             indent=2,
@@ -354,12 +579,36 @@ def build_prompt_bank(
     """Build the debias_vl prompt grid and index pairs for a topic list."""
     topics = list(topics)
     n_topics = len(topics)
+    meta_by_topic = {}
+    for row in topic_metadata or []:
+        topic = row.get("topic")
+        if topic is not None and topic not in meta_by_topic:
+            meta_by_topic[topic] = row
+
+    def _topic_templates(topic: str):
+        meta = meta_by_topic.get(topic, {})
+        kind = meta.get("kind", "phrase")
+        if kind == "entity":
+            return {
+                "spurious": f"A tweet mentioning {topic}.",
+                "negative": f"A negative tweet mentioning {topic}.",
+                "neutral": f"A neutral tweet mentioning {topic}.",
+                "positive": f"A positive tweet mentioning {topic}.",
+            }
+        return {
+            "spurious": f"A tweet using the context phrase {topic}.",
+            "negative": f"A negative tweet using the context phrase {topic}.",
+            "neutral": f"A neutral tweet using the context phrase {topic}.",
+            "positive": f"A positive tweet using the context phrase {topic}.",
+        }
+
+    templates = [_topic_templates(topic) for topic in topics]
     candidate_prompt = (
-        [f"A negative tweet about {topic}." for topic in topics]
-        + [f"A neutral tweet about {topic}." for topic in topics]
-        + [f"A positive tweet about {topic}." for topic in topics]
+        [tpl["negative"] for tpl in templates]
+        + [tpl["neutral"] for tpl in templates]
+        + [tpl["positive"] for tpl in templates]
     )
-    spurious_prompt = [f"A tweet about {topic}." for topic in topics]
+    spurious_prompt = [tpl["spurious"] for tpl in templates]
 
     S_pairs = []
     for offset in [0, n_topics, 2 * n_topics]:

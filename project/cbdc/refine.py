@@ -170,7 +170,7 @@ def discover_confound_map(
     source = "mined tweet phrases" if prompt_bank.get("using_mined_topics") else "static fallback topics"
     print(f"  topic source: {source} ({len(topics)} topics)")
     if prompt_bank.get("topic_metadata"):
-        preview = ", ".join(topic["phrase"] for topic in prompt_bank["topic_metadata"][:8])
+        preview = ", ".join(topic["topic"] for topic in prompt_bank["topic_metadata"][:8])
         print(f"  mined preview: {preview}")
     if prompt_bank.get("mining_error"):
         print(f"  mining fallback reason: {prompt_bank['mining_error']}")

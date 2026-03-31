@@ -4,7 +4,9 @@ Phase 1: Encode all corpora and cache embeddings to disk.
 Outputs (saved to project/cache/):
   z_tweet_train.pt  — dict {"embeddings": (N,768), "labels": (N,),
                              "input_ids": (N,L), "attention_mask": (N,L),
-                             "texts": list[str]}
+                             "texts": list[str], "entities": list[str|None],
+                             "cleaned_tokens": list[list[str]|None],
+                             "selected_texts": list[str|None]}
   z_tweet_val.pt
   z_tweet_test.pt
   z_formal.pt       — dict {"embeddings": (N,768)}  (no labels, no token tensors)
@@ -23,7 +25,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from encoder import FinBERTEncoder
-from dataset import load_tsad, load_formal_sentences
+from dataset import load_tsad_records, load_formal_sentences
 
 
 _DEFAULT_CACHE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache")
@@ -84,13 +86,15 @@ def main():
         encoder = FinBERTEncoder(model_name="distilbert-base-uncased", device=device)
 
     # ---- Load tweet data -----------------------------------------------------
-    tr_t, tr_l, va_t, va_l, te_t, te_l = load_tsad()
+    train_records, val_records, test_records = load_tsad_records()
 
-    for split_name, texts, labels in [
-        ("train", tr_t, tr_l),
-        ("val",   va_t, va_l),
-        ("test",  te_t, te_l),
+    for split_name, records in [
+        ("train", train_records),
+        ("val",   val_records),
+        ("test",  test_records),
     ]:
+        texts = [r["text"] for r in records]
+        labels = [r["label"] for r in records]
         out_path = os.path.join(CACHE_DIR, f"z_tweet_{split_name}.pt")
         print(f"\nEncoding tweet {split_name} ({len(texts)} samples) ...")
         embs, ids, masks = encode_texts_with_tokens(
@@ -103,6 +107,12 @@ def main():
                 "input_ids":      ids,
                 "attention_mask": masks,
                 "texts":          texts,
+                "entities":       [r.get("entity") for r in records],
+                "cleaned_tokens": [r.get("cleaned_tokens") for r in records],
+                "selected_texts": [r.get("selected_text") for r in records],
+                "time_of_tweet":  [r.get("time_of_tweet") for r in records],
+                "age_of_user":    [r.get("age_of_user") for r in records],
+                "country":        [r.get("country") for r in records],
             },
             out_path,
         )
