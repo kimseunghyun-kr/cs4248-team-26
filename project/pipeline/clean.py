@@ -62,13 +62,18 @@ def project_out_and_boost(
     sentiment_dirs: torch.Tensor,
     alpha: float = 2.0,
 ) -> torch.Tensor:
-    """Remove topic/confound subspace, then amplify sentiment subspace.
+    """Remove topic/confound subspace, then amplify the sentiment axis.
 
     Args:
         z:              (N, H) embeddings
         confound_dirs:  (K, H) directions to remove (cbdc_directions)
-        sentiment_dirs: (S, H) sentiment class prototypes (cls_em) to amplify
+        sentiment_dirs: (3, H) cls_em [neg, neu, pos] from encoder
         alpha:          amplification factor (>1 boosts sentiment signal)
+
+    The sentiment axis is defined as normalize(cls_em[pos] - cls_em[neg]),
+    the direction that maximally separates positive from negative in the
+    encoder's representation space. This is a single orthonormal vector,
+    making the projection well-defined regardless of cls_em correlation.
 
     Returns:
         z_boost: (N, H) L2-normalized, confound removed + sentiment amplified
@@ -77,9 +82,11 @@ def project_out_and_boost(
     U_conf = F.normalize(confound_dirs.to(z.device), dim=-1)
     z_clean = z - (z @ U_conf.T) @ U_conf
 
-    # Amplify sentiment subspace
-    U_sent = F.normalize(sentiment_dirs.to(z.device), dim=-1)
-    sent_proj = (z_clean @ U_sent.T) @ U_sent
+    # Sentiment axis: positive − negative (single direction, always orthonormal)
+    v_sent = F.normalize(
+        (sentiment_dirs[2] - sentiment_dirs[0]).to(z.device), dim=-1
+    )  # (H,)
+    sent_proj = (z_clean @ v_sent).unsqueeze(-1) * v_sent.unsqueeze(0)  # (N, H)
     z_boost = z_clean + (alpha - 1.0) * sent_proj
 
     return F.normalize(z_boost, dim=-1)
