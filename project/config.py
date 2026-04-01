@@ -65,3 +65,26 @@ class CBDCConfig:
     sent_orthogonal_pgd: bool = True
 
     device: str = "cpu"
+
+
+@dataclass
+class TransformerClassifierConfig:
+    """Configuration for the reusable transformer fine-tuning path."""
+    num_labels: int = 3
+    max_length: int = 128
+    batch_size: int = 32
+    eval_batch_size: int = 64
+    n_epochs: int = 5
+    encoder_lr: float = 2e-5
+    classifier_lr: float = 1e-4
+    weight_decay: float = 1e-2
+    warmup_ratio: float = 0.1
+    dropout: float = 0.1
+    unfreeze_layers: int = 4
+    train_embeddings: bool = False
+    pooling: str = "cls"   # "cls" | "mean" | "pooler"
+    patience: int = 2
+    label_smoothing: float = 0.0
+    use_class_weights: bool = True
+    grad_clip_norm: float = 1.0
+    device: str = "cpu"

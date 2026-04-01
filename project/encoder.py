@@ -35,9 +35,19 @@ class TransformerEncoder(nn.Module):
             print(f"  Using custom tokenizer: {type(tokenizer).__name__}")
         else:
             self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        if self.tokenizer.pad_token is None:
+            fallback_pad = (
+                self.tokenizer.eos_token
+                or self.tokenizer.sep_token
+                or self.tokenizer.unk_token
+            )
+            if fallback_pad is not None:
+                self.tokenizer.pad_token = fallback_pad
         self.backbone = AutoModel.from_pretrained(model_name)
         self.backbone.to(device)
         self.hidden_size = self.backbone.config.hidden_size
+        if getattr(self.backbone.config, "pad_token_id", None) is None:
+            self.backbone.config.pad_token_id = self.tokenizer.pad_token_id
 
         for p in self.backbone.parameters():
             p.requires_grad_(False)
@@ -89,6 +99,59 @@ class TransformerEncoder(nn.Module):
             max_length=max_length,
             return_tensors="pt",
         )
+
+    def _pool_output(self, outputs, attention_mask: torch.Tensor, pooling: str = "cls") -> torch.Tensor:
+        if pooling == "pooler" and getattr(outputs, "pooler_output", None) is not None:
+            return outputs.pooler_output
+        if pooling == "mean":
+            mask = attention_mask.unsqueeze(-1).type_as(outputs.last_hidden_state)
+            denom = mask.sum(dim=1).clamp_min(1e-6)
+            return (outputs.last_hidden_state * mask).sum(dim=1) / denom
+        if pooling != "cls":
+            raise ValueError(f"Unsupported pooling='{pooling}'. Use 'cls', 'mean', or 'pooler'.")
+        return outputs.last_hidden_state[:, 0, :]
+
+    def forward_features(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        pooling: str = "cls",
+        normalize: bool = False,
+    ) -> torch.Tensor:
+        """Forward through the backbone with gradient enabled."""
+        if input_ids.dim() == 1:
+            input_ids = input_ids.unsqueeze(0)
+        if attention_mask.dim() == 1:
+            attention_mask = attention_mask.unsqueeze(0)
+
+        input_ids = input_ids.to(self.device)
+        attention_mask = attention_mask.to(self.device)
+        outputs = self.backbone(input_ids=input_ids, attention_mask=attention_mask)
+        pooled = self._pool_output(outputs, attention_mask, pooling=pooling)
+        return F.normalize(pooled, dim=-1) if normalize else pooled
+
+    def set_trainable_layers(self, n_layers: int = 0, train_embeddings: bool = False) -> None:
+        """Freeze the backbone, then unfreeze the last `n_layers` transformer blocks."""
+        if n_layers < 0:
+            raise ValueError("n_layers must be >= 0")
+
+        for p in self.backbone.parameters():
+            p.requires_grad_(False)
+
+        if train_embeddings and hasattr(self.backbone, "embeddings"):
+            for p in self.backbone.embeddings.parameters():
+                p.requires_grad_(True)
+
+        layers = list(self._get_transformer_layers())
+        n_layers = min(n_layers, len(layers))
+        if n_layers > 0:
+            for layer_module in layers[-n_layers:]:
+                for p in layer_module.parameters():
+                    p.requires_grad_(True)
+
+        trainable = sum(p.numel() for p in self.backbone.parameters() if p.requires_grad)
+        print(f"  trainable backbone params={trainable:,} | unfrozen_layers={n_layers} | "
+              f"train_embeddings={train_embeddings}")
 
     # ------------------------------------------------------------------
     # Encode text strings → normalized CLS vectors

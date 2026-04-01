@@ -3,7 +3,7 @@
 #SBATCH --output=results/slurm_new_%j.log
 #SBATCH --error=results/slurm_new_%j.err
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:h100-96:1
+#SBATCH --gres=gpu:a100-40:1
 #SBATCH --time=06:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1

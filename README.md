@@ -1,268 +1,475 @@
-# cs4248-team-26
-noah's project
+# Sentiment Pipeline Guide
 
+This repository now has one shared sentiment pipeline spine with two entry paths built on top of it:
 
+1. The original CBDC path for confound-direction discovery and debiasing.
+2. A transformer fine-tuning path for direct sentiment classification.
 
-# CBDC Financial Sentiment Pipeline
+The important design choice is that both paths reuse the same core pieces instead of maintaining separate stacks.
 
-NLP adaptation of **CBDC (Clean Bias Direction Construction)** (CVPR 2026) applied to FinBERT embeddings for tweet financial sentiment classification. The core idea: use an SAE to find a tweet-style direction, then use PGD-based bipolar search to refine it into a clean, semantics-preserving style axis (`delta_star`). Projecting this out of embeddings removes stylistic confounds before classification.
+## What This Repo Does
+
+At a high level, the codebase is organized around:
+
+1. Loading and standardizing a 3-way sentiment dataset.
+2. Encoding text and caching reusable artifacts.
+3. Optionally running CBDC and projection-based debiasing.
+4. Training a classifier.
+5. Producing a report.
+
+The shared spine is:
+
+`dataset.py -> data/embed.py -> cached artifacts -> pipeline/classify.py -> pipeline/evaluate.py`
+
+CBDC is built on top of that shared spine, not separate from it.
+
+## Which Entry Script To Use
+
+Use these from inside `project/`.
+
+| Goal | Script |
+|---|---|
+| Full original CBDC pipeline | `python run_all.py` |
+| Run the original pipeline but skip CBDC training | `python run_all.py --skip_cbdc` |
+| Fine-tune a transformer classifier directly | `python run_transformer.py` |
+| Debug phases more easily in-process | `python run_all_debug.py --inprocess` |
+| Run a single original phase | `python run_all.py --only_phase N` |
+| Resume original pipeline from a phase | `python run_all.py --start_phase N` |
+| Run a single transformer phase | `python run_transformer.py --only_phase N` |
+| Resume transformer pipeline from a phase | `python run_transformer.py --start_phase N` |
 
 ## Quick Start
 
 ```bash
-cd project/
+cd project
+python -m pip install -r requirements.txt
+```
 
-# Full pipeline (all 7 phases)
+### Original CBDC pipeline
+
+```bash
 python run_all.py
-
-# Or run phases individually:
-python data/embed.py          # Phase 1
-python sae/sae.py             # Phase 2
-python sae/sae_analysis.py    # Phase 3a
-python cbdc/refine.py         # Phase 3b
-python pipeline/clean.py      # Phase 4
-python pipeline/classify.py   # Phase 5
-python pipeline/evaluate.py   # Phase 6
 ```
 
----
+Useful variants:
 
-## 7-Phase Pipeline
-
-```
-[Tweet corpus]   [Formal corpus]
-     │                 │
-     └────── Phase 1 ──┘
-         data/embed.py
-    FinBERT CLS embeddings
-    z_tweet_{train,val,test}.pt
-    z_formal.pt
-         │
-     Phase 2
-     sae/sae.py
-    Sparse Autoencoder (768→1536→768)
-    trained on mixed tweet+formal
-    sae_model.pt
-         │
-     Phase 3a
-     sae/sae_analysis.py
-    style_scores = tweet_acts − formal_acts
-    v_style = top-K SAE decoder columns
-    v_style.pt, v_shift.pt
-         │
-     Phase 3b
-     cbdc/refine.py  ← CBDC bipolar PGD
-    For each anchor batch:
-      δ+ → push toward v_style  (tweet pole)
-      δ− → push away from v_style (formal pole)
-      V_B = normalize(mean(z_pos − z_neg))
-    delta_star = normalize(mean(V_B over runs))
-    delta_star.pt
-         │
-     Phase 4
-     pipeline/clean.py
-    z_clean = normalize(z − (z·d)·d)
-    z_tweet_{split}_clean_{direction}.pt
-         │
-     Phase 5
-     pipeline/classify.py
-    Linear(768, 3) probe trained per condition
-    B1/B2/B2.5/B3/C evaluated, results.pt
-         │
-     Phase 6
-     pipeline/evaluate.py
-    Direction interpretability + linearity + report
-    results/eval_report_new.txt
+```bash
+python run_all.py --skip_cbdc
+python run_all.py --model bertweet
+python run_all.py --start_phase 2
+python run_all.py --only_phase 4
+python run_all.py --no_sent_orthogonal_pgd
 ```
 
----
+### Transformer classifier pipeline
 
-## How SAE and CBDC Work Together
-
-### Step 1 — SAE discovers v_style (Phase 2–3a)
-
-The SAE is trained on a mixture of tweet and formal embeddings. Its decoder matrix `W_d ∈ ℝ^{768×1536}` learns an overcomplete feature dictionary. After training, for each feature `j`:
-
-```
-style_score[j] = mean_activation(tweets)[j] − mean_activation(formal)[j]
+```bash
+python run_transformer.py
 ```
 
-The top-K highest-scoring features are the SAE's best candidates for "tweet style". The style direction is then:
+Common variants:
 
+```bash
+python run_transformer.py --model distilbert --epochs 3 --unfreeze_layers 2
+python run_transformer.py --model finbert --max_length 160
+python run_transformer.py --only_phase 2
+python run_transformer.py --start_phase 2
 ```
-v_style = normalize(W_d[:, top_K] @ style_scores[top_K])   # (768,)
-```
 
-This gives a *linear* summary of the SAE's learned style features — it points in the embedding direction most associated with tweet-like content.
+## Mental Model Of The Code
 
-**Why SAE over plain mean-shift?**
-Plain mean-shift (`v_shift = mean(z_tweet) − mean(z_formal)`) mixes style with sentiment signal. The SAE's sparse activations isolate features that are consistently tweet-like *regardless* of sentiment class, giving a cleaner style axis.
+The code is not coordinated by one large pipeline class. It is coordinated by small reusable modules and runner scripts.
 
-### Step 2 — CBDC bipolar PGD refines v_style into delta_star (Phase 3b)
+Think of it like this:
 
-The SAE gives a good but imperfect style direction. CBDC (paper §4.3–4.4) refines it using adversarial search:
+- `dataset.py` decides what the dataset is.
+- `encoder.py` decides how text becomes features.
+- `data/embed.py` materializes cached artifacts.
+- `cbdc/refine.py` and `pipeline/clean.py` build debiased variants.
+- `pipeline/classify.py` trains a classifier from cached artifacts.
+- `pipeline/evaluate.py` turns saved results into reports.
+- `run_all.py` and `run_transformer.py` decide which phases to run and in what order.
 
-**Bipolar PGD** — for each anchor batch from `z_tweet_train`:
+## File Map: What Does What
 
-| | Positive pole (tweet) | Negative pole (formal) |
+### Core shared files
+
+- `project/config.py`
+  - Central config dataclasses and model registry.
+  - Change this when you want to add or standardize hyperparameters.
+
+- `project/dataset.py`
+  - Loads the dataset and normalizes it into a shared record format.
+  - This is where to change column mapping, label mapping, local-file preference, or split behavior.
+
+- `project/encoder.py`
+  - Shared encoder abstraction.
+  - Handles tokenizer/model loading, hidden-size discovery, transformer-layer resolution, feature pooling, and layer unfreezing.
+  - This is the right place to change pooling behavior or model-architecture support.
+
+- `project/losses.py`
+  - CBDC-specific loss functions.
+  - Refer here when changing the actual debiasing objective.
+
+### Data and caching
+
+- `project/data/embed.py`
+  - Phase 1 for both pipelines.
+  - Encodes train/val/test and saves:
+    - normalized embeddings
+    - labels
+    - `input_ids`
+    - `attention_mask`
+    - raw texts and optional metadata
+
+### CBDC path
+
+- `project/cbdc/prompts.py`
+  - Prompt bank and prompt encoding utilities for debias_vl/CBDC.
+  - Change this when experimenting with confound topics, prompt wording, or mined topic behavior.
+
+- `project/cbdc/refine.py`
+  - Phase 2 of the original path.
+  - Builds the debias_vl map, discovers CBDC confound directions, trains the CBDC tail, and re-encodes embeddings.
+
+- `project/pipeline/clean.py`
+  - Phase 3 of the original path.
+  - Applies projection-based cleaning and creates the cleaned experiment conditions.
+
+### Classifier and reporting
+
+- `project/pipeline/classify.py`
+  - Phase 4 for both paths.
+  - Default mode is the original linear-probe experiment set.
+  - Optional mode is transformer fine-tuning using the same cached tokenized data.
+
+- `project/pipeline/evaluate.py`
+  - Phase 5 for both paths.
+  - Default mode reports original CBDC/linear results.
+  - Optional mode reports transformer classifier results.
+
+### Entry scripts
+
+- `project/run_all.py`
+  - Main runner for the original CBDC pipeline.
+
+- `project/run_all_debug.py`
+  - Debug-oriented version of `run_all.py`.
+  - Useful when you want subprocess mode or in-process mode for debugging.
+
+- `project/run_transformer.py`
+  - Separate runner for the transformer classifier path.
+  - Reuses Phase 1, then runs `classify.py` in transformer mode and `evaluate.py` in transformer mode.
+
+### Cluster helpers
+
+- `project/submit_new.sh`
+  - Shell wrapper for running the original `run_all.py` pipeline.
+
+- `project/submit_new.slurm`
+  - SLURM job file for running the original `run_all.py` pipeline on a cluster.
+
+Important: the current submit scripts still call `run_all.py`. If you want cluster execution for the transformer path, update the command to run `run_transformer.py`.
+
+## How The Pipelines Run
+
+### Original CBDC path
+
+`python run_all.py`
+
+Phases:
+
+| Phase | Script | Purpose |
 |---|---|---|
-| **Bias loss L_B** | `-cosine(z+δ⁺, v_style)` | `+cosine(z+δ⁻, v_style)` |
-| **Semantic loss L_s** | `‖v_semantic · (z_pert⁺ − z)‖²` | `‖v_semantic · (z_pert⁻ − z)‖²` |
-| **Objective** | minimize `L_B + λ_s · L_s` | minimize `L_B + λ_s · L_s` |
+| 1 | `data/embed.py` | Encode dataset and cache reusable artifacts |
+| 2 | `cbdc/refine.py` | Discover confound map, train CBDC tail, re-encode CBDC embeddings |
+| 3 | `pipeline/clean.py` | Build projection-cleaned experiment conditions |
+| 4 | `pipeline/classify.py` | Train linear probes for all experiment conditions |
+| 5 | `pipeline/evaluate.py` | Write the final CBDC-oriented report |
 
-Where `v_semantic = normalize(mean(z_formal))` is the formal centroid, serving as the semantic axis to preserve (paper eq. 9).
+### Transformer path
 
-The **clean direction** per batch (paper eq. 6):
-```
-V_B = normalize(mean(z_pos − z_neg))
-```
+`python run_transformer.py`
 
-Taking the difference cancels noisy concepts shared by both poles, leaving only the style axis. This is CBDC's key insight over monopolar perturbation.
+Phases:
 
-Final aggregation over `n_runs` batches × `n_restarts` random initializations:
-```
-delta_star = normalize(mean(V_B over all runs))
-```
-
-### Step 3 — Orthogonal projection removes style (Phase 4)
-
-```python
-z_clean = normalize(z − (z · delta_star) · delta_star)
-```
-
-This is paper eq. 2. The style component along `delta_star` is subtracted out, and the result is re-normalized. A linear probe trained on `z_clean` should classify sentiment based on semantics rather than style.
-
----
-
-## Evaluation Conditions
-
-| Condition | Embedding | Direction removed |
-|-----------|-----------|------------------|
-| B1 (raw) | Raw FinBERT CLS | — |
-| B2 (SAE) | Projected | `v_style` (SAE-derived) |
-| B2.5 (mean-shift) | Projected | `v_shift` (plain mean-shift) |
-| **B3 (SAE+CBDC)** | Projected | `delta_star` (refined) ← main method |
-| C (label-guided) | Projected | `v_label_guided` (oracle, uses labels) |
-
-All evaluated with macro F1 on tweet sentiment (negative/neutral/positive).
-
----
-
-## Gradient Flow — Technical Detail
-
-This section directly addresses the structural difference between the original CLIP implementation and this NLP adaptation.
-
-### Original CLIP implementation (`simple_pgd.py`)
-
-In the CLIP version, `z = Ψ(x)` is computed *online* — perturbation `δ` is applied to the input (or an intermediate representation), and the gradient `∂L/∂δ` flows **back through the projection layer and the last N transformer resblocks** of the vision encoder.
-
-Computational graph:
-```
-δ → [last N transformer blocks] → projection layer → z_pert → cosine(z_pert, text_emb) → L
-```
-
-The gradient signal carries second-order information about how the encoder maps inputs to the embedding space.
-
-### Our NLP adaptation (this codebase)
-
-We operate on **pre-cached final CLS embeddings**. `z` is the FinBERT CLS token embedding *after all 12 transformer layers have already run*. The cache files (`z_tweet_train.pt`, etc.) are fixed tensors — the FinBERT encoder is not re-invoked during PGD.
-
-The computational graph for `∂L/∂δ` is:
-
-```
-δ → z + δ → normalize(z + δ) → cosine(z_pert, v_style) → L
-              ↑
-        L2-normalization
-     (only operation in graph)
-```
-
-**There are zero transformer layers in the gradient graph.** The gradient `∂L/∂δ` flows only through the L2-normalization:
-
-```
-∂L/∂δ = ∂L/∂z_pert · ∂z_pert/∂(z+δ) · ∂(z+δ)/∂δ
-       = ∂L/∂z_pert · J_normalize · I
-```
-
-Where `J_normalize = (I − z_pert z_pert^T) / ‖z+δ‖` is the Jacobian of L2-normalization.
-
-### Why is this valid?
-
-Paper §4.2 explicitly states: *"latent-space PGD operates on z = Ψ(x) directly"* — i.e., the perturbation is in the embedding space, not the input space. Our implementation is consistent with this formulation.
-
-The trade-off:
-- **CLIP**: richer gradient signal (through encoder layers) → potentially better curvature information for δ optimization
-- **Ours**: δ is optimized purely in the linear embedding space → simpler optimization landscape, but also simpler geometry. Since the final objective (linear probe on embeddings) also operates in this same linear space, this is a reasonable compromise.
-
-### Summary table: CLIP vs ours
-
-| | CLIP (original) | Ours (NLP adaptation) |
+| Phase | Script | Purpose |
 |---|---|---|
-| **z is** | Pre-projection intermediate | Final cached CLS embedding |
-| **Gradient flows through** | Projection layer + last N transformer blocks | L2-normalization only |
-| **Transformer layers in graph** | N (last few) | 0 |
-| **L_B (bias loss)** | Cross-entropy over text prompt pairs | ±cosine(z+δ, v_style) |
-| **v_C (semantic axis)** | Neutral concept from text prompts | Formal centroid |
-| **Direction per step** | v_style replaces "he"/"she" prompts | v_style from SAE top-K features |
-| **Output** | Full subspace S_B | Single delta_star vector |
+| 1 | `data/embed.py` | Cache embeddings and tokenized splits |
+| 2 | `pipeline/classify.py --classifier transformer` | Fine-tune a transformer classifier |
+| 3 | `pipeline/evaluate.py --mode transformer` | Write the transformer report |
 
----
+## Data Contract
 
-## Compromises vs Original CLIP CBDC
+The loader expects a 3-way sentiment dataset.
 
-| CLIP version | Our NLP adaptation | Justification |
-|---|---|---|
-| Online encoder re-pass per PGD step | Pre-cached embeddings, no re-pass | §4.2: latent-space PGD valid; FinBERT re-encoding at every step would be prohibitively slow |
-| Contrastive text prompt pairs (e.g. "he"/"she") as L_B target | v_style from SAE decoder as L_B target | No image encoder in NLP; SAE provides the closest analog to CLIP's text prompts |
-| Neutral text concept v_C | Formal corpus centroid v_semantic | Formal financial prose is the domain-appropriate "neutral" register |
-| Full orthogonal subspace S_B | Single delta_star vector | Sufficient for linear-probe evaluation; single projection is the standard debiasing operation in NLP literature |
-| Random restarts = `num_samples` in multi-sample loop | `n_restarts` parameter | Direct correspondence; same purpose |
+Required columns:
 
----
+- a text column such as `text`, `tweet`, `sentence`, or `content`
+- a label column such as `sentiment`, `label`, or `polarity`
 
-## Configuration
+Supported labels are normalized to:
 
-Key hyperparameters (`config.py`):
+- `0 = negative`
+- `1 = neutral`
+- `2 = positive`
 
-| Parameter | Default | Meaning |
-|---|---|---|
-| `epsilon` | 0.10 | PGD perturbation budget (L∞) |
-| `n_steps` | 50 | PGD optimization steps per pole |
-| `step_lr` | 0.01 | Adam lr for δ |
-| `lambda_s` | 0.2 | Semantic preservation weight |
-| `n_anchors` | 500 | Anchor batch size per run |
-| `n_directions` / `n_runs` | 16 | Independent runs to average |
-| `n_restarts` | 3 | Random restarts per run |
-| SAE hidden_dim | 1536 | 2× overcomplete dictionary |
-| SAE top_k | 32 | Top-K style features for v_style |
+Optional metadata columns that are kept when present:
 
----
+- `selected_text`
+- `entity`
+- `cleaned_text` / `clean_text` / `tokens`
+- `Time of Tweet` / `time_of_tweet`
+- `Age of User` / `age_of_user`
+- `Country` / `country`
 
-## File Structure
+By default the loader tries:
 
+1. a local CSV in `project/data/`
+2. Kaggle
+3. HuggingFace
+4. a synthetic fallback
+
+If you already have `project/data/train.csv`, that local file is the main source to care about.
+
+## Cache And Output Layout
+
+When you use the runner scripts, outputs are organized per model:
+
+`project/cache/<model_slug>/`
+
+Example:
+
+- `project/cache/bert/`
+- `project/cache/distilbert/`
+- `project/cache/finbert/`
+
+Important files produced along the way:
+
+### Phase 1 artifacts
+
+- `z_tweet_train.pt`
+- `z_tweet_val.pt`
+- `z_tweet_test.pt`
+
+Each contains cached embeddings plus token IDs, attention masks, labels, and texts.
+
+### CBDC path artifacts
+
+- `debias_vl_P.pt`
+- `cbdc_directions.pt`
+- `sentiment_prototypes.pt`
+- `encoder_cbdc.pt`
+- `z_tweet_train_cbdc.pt`
+- `z_tweet_val_cbdc.pt`
+- `z_tweet_test_cbdc.pt`
+
+### Cleaned-condition artifacts
+
+- `z_tweet_*_clean_debias_vl.pt`
+- `z_tweet_*_clean_cbdc_directions.pt`
+- `z_tweet_*_clean_raw_sentiment_boost.pt`
+- `z_tweet_*_clean_cbdc_sentiment_boost.pt`
+
+### Linear-probe outputs
+
+- `probe_<condition>.pt`
+- `results.pt`
+
+### Transformer outputs
+
+- `transformer_classifier.pt`
+- `transformer_results.pt`
+
+### Reports
+
+- `project/results/eval_report.txt`
+- `project/results/transformer_eval_report.txt`
+
+## What You Can Change Safely
+
+These are the safest knobs to change without restructuring the repo.
+
+### Run-time arguments
+
+- backbone model with `--model`
+- tokenizer with `--tokenizer`
+- max sequence length with `--max_length`
+- batch sizes
+- number of epochs
+- learning rates
+- weight decay
+- transformer unfreezing depth with `--unfreeze_layers`
+- transformer pooling with `--pooling`
+- whether to train embeddings in transformer mode
+- text-unit wording for prompts with `--text_unit`
+- whether to disable sentiment-orthogonal PGD with `--no_sent_orthogonal_pgd`
+
+### Safe code-level extension points
+
+- `dataset.py`
+  - new CSV columns
+  - new file-discovery rules
+  - split policy
+
+- `encoder.py`
+  - pooling method
+  - support for more HuggingFace architectures
+  - trainable-layer strategy
+
+- `cbdc/prompts.py`
+  - prompt templates
+  - mined topic strategy
+  - prompt bank composition
+
+- `pipeline/classify.py`
+  - classifier head
+  - optimizer policy
+  - scheduler policy
+  - reporting metrics
+
+- `pipeline/evaluate.py`
+  - report layout
+  - comparison logic
+
+## What To Change Carefully
+
+These parts are shared contracts between phases. Change them only if you also update downstream consumers.
+
+- cache filenames in each phase
+- keys saved inside cached `.pt` payloads
+- condition names such as `B1 (raw)` or `D2 (CBDC)`
+- the expected meaning of `z_tweet_{split}.pt`
+- the meaning of `cbdc_directions.pt` and `sentiment_prototypes.pt`
+- the default behavior of `pipeline/classify.py` and `pipeline/evaluate.py`
+
+If your goal is to preserve CBDC correctness, do not casually change:
+
+- the CBDC losses in `losses.py`
+- the Phase 2 training loop in `cbdc/refine.py`
+- the projection semantics in `pipeline/clean.py`
+
+## When To Refer To Which File
+
+Use this as the fastest navigation guide.
+
+| If you want to... | Start here |
+|---|---|
+| understand dataset loading | `project/dataset.py` |
+| change supported CSV columns | `project/dataset.py` |
+| change model/backbone selection | `project/config.py` |
+| change tokenization or pooling | `project/encoder.py` |
+| inspect what gets cached | `project/data/embed.py` |
+| change CBDC prompts | `project/cbdc/prompts.py` |
+| change CBDC training behavior | `project/cbdc/refine.py` |
+| change projection cleaning | `project/pipeline/clean.py` |
+| change classifier training | `project/pipeline/classify.py` |
+| change report formatting or comparisons | `project/pipeline/evaluate.py` |
+| run the original pipeline | `project/run_all.py` |
+| run the transformer pipeline | `project/run_transformer.py` |
+| debug runner behavior | `project/run_all_debug.py` |
+
+## Common Workflows
+
+### 1. I want the original method exactly
+
+```bash
+cd project
+python run_all.py
 ```
-project/
-├── config.py              # PGDConfig, SAEConfig, MODEL_REGISTRY
-├── encoder.py             # FinBERTEncoder (frozen), encode_with_delta()
-├── losses.py              # l_semantic_preservation, l_bias_*
-├── dataset.py             # load_tsad(), load_formal_sentences()
-├── run_all.py             # Full pipeline orchestrator (7 phases)
-├── data/
-│   └── embed.py           # Phase 1: encode & cache embeddings
-├── sae/
-│   ├── sae.py             # Phase 2: train SparseAutoencoder
-│   └── sae_analysis.py    # Phase 3a: extract v_style from SAE
-├── cbdc/
-│   └── refine.py          # Phase 3b: bipolar PGD → delta_star
-├── pipeline/
-│   ├── clean.py           # Phase 4: orthogonal projection
-│   ├── classify.py        # Phase 5: linear probe per condition
-│   └── evaluate.py        # Phase 6: full eval report
-└── cache/                 # Auto-generated intermediate files
-    ├── z_tweet_{split}.pt
-    ├── z_formal.pt
-    ├── sae_model.pt
-    ├── v_style.pt
-    ├── v_shift.pt
-    ├── delta_star.pt
-    └── results.pt
+
+### 2. I want the original structure but without CBDC training
+
+```bash
+cd project
+python run_all.py --skip_cbdc
 ```
+
+### 3. I want a plain transformer classifier on the same dataset
+
+```bash
+cd project
+python run_transformer.py --model distilbert --epochs 3 --unfreeze_layers 2
+```
+
+### 4. I want to change prompt design but keep the rest stable
+
+Edit:
+
+- `project/cbdc/prompts.py`
+
+Then rerun at least:
+
+```bash
+python run_all.py --start_phase 2
+```
+
+### 5. I want to change dataset columns or local file behavior
+
+Edit:
+
+- `project/dataset.py`
+
+Then rerun from Phase 1:
+
+```bash
+python run_all.py --start_phase 1
+```
+
+or
+
+```bash
+python run_transformer.py --start_phase 1
+```
+
+### 6. I want to tune only the transformer classifier
+
+Usually the files to inspect are:
+
+- `project/run_transformer.py`
+- `project/pipeline/classify.py`
+- `project/encoder.py`
+
+## Environment Variables
+
+The runners mainly communicate with phases through environment variables.
+
+Useful ones:
+
+- `MODEL_NAME`
+- `TOKENIZER_NAME`
+- `CACHE_DIR`
+- `TEXT_UNIT`
+- `NO_SENT_ORTHOGONAL_PGD`
+
+If you run phase scripts directly, set these yourself if you want the same behavior as the orchestrators.
+
+## Requirements
+
+Main dependencies are listed in `project/requirements.txt`:
+
+- `torch`
+- `transformers`
+- `datasets`
+- `scikit-learn`
+- `numpy`
+- `tqdm`
+- `kagglehub[pandas-datasets]`
+
+Install with:
+
+```bash
+cd project
+python -m pip install -r requirements.txt
+```
+
+## Final Notes
+
+- The original CBDC path remains the default path.
+- The transformer classifier path is opt-in and separate at the runner level.
+- The two paths stay coherent because they share dataset loading, encoder logic, cached splits, classifier/report phases, and model-specific cache directories.
+
+If you are unsure where to begin, start with:
+
+1. `project/run_all.py` if your goal is to study or preserve the CBDC method.
+2. `project/run_transformer.py` if your goal is to get a strong direct classifier baseline using the same dataset infrastructure.

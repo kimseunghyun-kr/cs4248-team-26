@@ -1,0 +1,22 @@
+======================================================================
+CBDC Sentiment Debiasing — Full Evaluation Report
+======================================================================
+
+--- Classification Results ---
+Condition                   Val F1   Test F1
+---------------------------------------------
+B1 (raw)                       N/A       N/A
+D1 (debias_vl)                 N/A       N/A
+D2 (CBDC)                      N/A       N/A
+D3 (CBDC+proj)                 N/A       N/A
+D4 (raw+sent-boost)            N/A       N/A
+D5 (CBDC+sent-boost)           N/A       N/A
+C (label-guided)               N/A       N/A
+
+--- Detailed Test Reports ---
+
+--- Direction Interpretability ---
+(Lower pos-neg gap = direction is sentiment-neutral = better confound direction)
+  [skip] z_tweet_test.pt not found
+
+--- Comparative Analysis ---
