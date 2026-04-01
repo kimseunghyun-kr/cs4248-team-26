@@ -1,5 +1,5 @@
 """
-Phase 4: Train and evaluate linear probes for all experiment conditions.
+Phase 4: Evaluate TRUE ZERO-SHOT for all experiment conditions.
 
 Conditions:
   B1 (raw)          : raw BERT-derivative CLS embeddings (baseline)
@@ -10,7 +10,7 @@ Conditions:
   D5 (CBDC+sent-boost) : CBDC embeddings + sentiment boost
   C (label-guided)  : label-guided within-class mean-shift projection (oracle)
 
-All conditions train a Linear(H, 3) probe and evaluate with macro F1.
+All conditions evaluate using zero-shot Cosine Similarity against sentiment prototypes.
 
 Run from project/ directory:
   python pipeline/classify.py
@@ -21,9 +21,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import f1_score, classification_report
 import numpy as np
 
@@ -33,60 +31,33 @@ _DEFAULT_CACHE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__
 CACHE_DIR = os.environ.get("CACHE_DIR", _DEFAULT_CACHE)
 
 
-class LinearProbe(nn.Module):
-    def __init__(self, in_dim: int = 768, n_classes: int = 3):
-        super().__init__()
-        self.linear = nn.Linear(in_dim, n_classes)
+def evaluate_zero_shot(z_tweets, y_true, z_prototypes, device):
+    """
+    Perform true zero-shot classification without any learned weights.
+    Calculates cosine similarity between tweets and the 3 sentiment prototypes.
+    """
+    z_tweets = z_tweets.to(device)
+    z_prototypes = z_prototypes.to(device)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.linear(x)
+    # 1. L2 Normalize to prepare for Cosine Similarity
+    z_norm = F.normalize(z_tweets, dim=-1)
+    proto_norm = F.normalize(z_prototypes, dim=-1)
 
+    # 2. Calculate Cosine Similarity (Dot Product of normalized vectors)
+    # Resulting shape: (N_tweets, 3_classes)
+    sim = z_norm @ proto_norm.T  
 
-def train_probe(z_train, y_train, z_val, y_val, device,
-                epochs=50, lr=1e-3, batch_size=256, weight_decay=1e-4):
-    in_dim = z_train.shape[1]
-    model = LinearProbe(in_dim=in_dim, n_classes=3).to(device)
-    opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
-    crit = nn.CrossEntropyLoss()
+    # 3. The prediction is the prototype with the highest similarity score
+    preds = sim.argmax(dim=-1).cpu().numpy()
+    labels_np = y_true.numpy()
 
-    loader = DataLoader(TensorDataset(z_train, y_train),
-                        batch_size=batch_size, shuffle=True)
-
-    best_val_f1 = 0.0
-    best_state = None
-
-    for epoch in range(epochs):
-        model.train()
-        for z_b, y_b in loader:
-            z_b, y_b = z_b.to(device), y_b.to(device)
-            opt.zero_grad()
-            crit(model(z_b), y_b).backward()
-            opt.step()
-
-        model.eval()
-        with torch.no_grad():
-            preds = model(z_val.to(device)).argmax(dim=-1).cpu().numpy()
-        val_f1 = f1_score(y_val.numpy(), preds, average="macro")
-
-        if val_f1 > best_val_f1:
-            best_val_f1 = val_f1
-            best_state = {k: v.clone() for k, v in model.state_dict().items()}
-
-    if best_state is not None:
-        model.load_state_dict(best_state)
-    return model, best_val_f1
-
-
-def evaluate_probe(model, z, y, device):
-    model.eval()
-    with torch.no_grad():
-        preds = model(z.to(device)).argmax(dim=-1).cpu().numpy()
-    labels_np = y.numpy()
+    # 4. Calculate metrics
     f1 = f1_score(labels_np, preds, average="macro")
     report = classification_report(
         labels_np, preds,
         target_names=["negative", "neutral", "positive"],
         digits=4,
+        zero_division=0
     )
     return f1, report
 
@@ -125,11 +96,24 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
 
+    # ---------------------------------------------------------
+    # LOAD ZERO-SHOT PROTOTYPES
+    # ---------------------------------------------------------
+    proto_path = os.path.join(CACHE_DIR, "sentiment_prototypes.pt")
+    if not os.path.exists(proto_path):
+        print(f"CRITICAL ERROR: Cannot find sentiment prototypes at {proto_path}")
+        print("Please ensure Phase 2 (refine.py) has run successfully.")
+        return
+
+    # Shape should be (3, H) for Negative, Neutral, Positive
+    z_prototypes = torch.load(proto_path, map_location="cpu")
+    print(f"\nLoaded Zero-Shot Sentiment Prototypes: Shape {tuple(z_prototypes.shape)}")
+
     all_results = {}
 
     for cond_name, cache_suffix in CONDITIONS.items():
         print(f"\n{'='*60}")
-        print(f"Condition: {cond_name}")
+        print(f"Condition: {cond_name} (Zero-Shot)")
         print(f"{'='*60}")
 
         data = load_embeddings(cache_suffix)
@@ -142,35 +126,32 @@ def main():
             all_results[cond_name] = None
             continue
 
-        z_train = data["train"]["embeddings"]
-        y_train = data["train"]["labels"]
+        # In Zero-Shot, we do not train on the train set. We just evaluate.
         z_val   = data["val"]["embeddings"]
         y_val   = data["val"]["labels"]
         z_test  = data["test"]["embeddings"]
         y_test  = data["test"]["labels"]
 
-        print(f"  train={len(z_train)} val={len(z_val)} test={len(z_test)} dim={z_train.shape[1]}")
+        print(f"  val={len(z_val)} test={len(z_test)} dim={z_val.shape[1]}")
 
-        model, best_val_f1 = train_probe(z_train, y_train, z_val, y_val, device)
-        test_f1, report = evaluate_probe(model, z_test, y_test, device)
+        # --- Evaluate Zero-Shot Cosine Similarity ---
+        val_f1, _ = evaluate_zero_shot(z_val, y_val, z_prototypes, device)
+        test_f1, report = evaluate_zero_shot(z_test, y_test, z_prototypes, device)
 
-        print(f"  val_f1={best_val_f1:.4f} | test_f1={test_f1:.4f}")
+        print(f"  val_f1={val_f1:.4f} | test_f1={test_f1:.4f}")
         print(f"\n  Test classification report:")
         for line in report.strip().split("\n"):
             print(f"    {line}")
 
         all_results[cond_name] = {
-            "val_f1":  best_val_f1,
+            "val_f1":  val_f1,
             "test_f1": test_f1,
             "report":  report,
         }
 
-        probe_path = os.path.join(CACHE_DIR, f"probe_{cache_suffix}.pt")
-        torch.save(model.state_dict(), probe_path)
-
     # Summary
     print(f"\n{'='*60}")
-    print("SUMMARY")
+    print("ZERO-SHOT SUMMARY")
     print(f"{'='*60}")
     print(f"{'Condition':<25} {'Val F1':>8} {'Test F1':>9}")
     print("-" * 45)
