@@ -36,6 +36,7 @@ def encode_texts_with_tokens(
     texts: list[str],
     batch_size: int,
     max_length: int,
+    pooling: str,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Encode texts and return (embeddings, input_ids, attention_mask).
@@ -58,7 +59,7 @@ def encode_texts_with_tokens(
         ids  = enc["input_ids"].to(encoder.device)
         mask = enc["attention_mask"].to(encoder.device)
         with torch.no_grad():
-            embeds = encoder.encode_ids(ids, mask)  # (B, H)
+            embeds = encoder.encode_ids(ids, mask, pooling=pooling)  # (B, H)
         all_vecs.append(embeds.cpu())
         all_ids.append(ids.cpu())
         all_masks.append(mask.cpu())
@@ -71,6 +72,7 @@ def main():
     parser.add_argument("--model_name", default=os.environ.get("MODEL_NAME", "bert-base-uncased"))
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--max_length", type=int, default=128)
+    parser.add_argument("--pooling", default=os.environ.get("POOLING", "auto"))
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -104,7 +106,7 @@ def main():
         out_path = os.path.join(CACHE_DIR, f"z_tweet_{split_name}.pt")
         print(f"\nEncoding {split_name} ({len(texts)} samples) ...")
         embs, ids, masks = encode_texts_with_tokens(
-            encoder, texts, args.batch_size, args.max_length
+            encoder, texts, args.batch_size, args.max_length, args.pooling
         )
         torch.save(
             {

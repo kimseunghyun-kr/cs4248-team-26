@@ -1,15 +1,13 @@
 """
 Frozen encoder with latent-space perturbation support.
 
-Architecture correspondence (RN50 ↔ BERT-derivative):
-  CLIP RN50:       frozen ResNet body → perturb intermediate → attnpool + c_proj (1 MHA + 1 linear)
-  BERT-derivative: frozen layers 0–N  → perturb h_layer_N   → layer N+1 (trainable tail)
+Works with encoder-style and decoder-style Hugging Face backbones:
+  - BERT / RoBERTa / FinBERT / DeBERTa / DistilBERT
+  - GPT-2 / GPT-Neo
+  - LLaMA / Mistral / Qwen2 / Gemma-style decoder models
 
-Both tails are single-attention-layer structures. Gradients flow through
-the tail to delta; backbone weights remain frozen.
-
-Works with any HuggingFace AutoModel that exposes transformer layers
-(BERT, RoBERTa, FinBERT, BERTweet, DistilBERT, etc.).
+For encoder-style models, `auto` pooling resolves to CLS.
+For decoder-style models, `auto` pooling resolves to the last non-pad token.
 """
 
 import torch
@@ -46,13 +44,67 @@ class TransformerEncoder(nn.Module):
         self.backbone = AutoModel.from_pretrained(model_name)
         self.backbone.to(device)
         self.hidden_size = self.backbone.config.hidden_size
+        self.model_type = getattr(self.backbone.config, "model_type", "").lower()
+        self.default_pooling = "last" if self._uses_last_token_pooling() else "cls"
         if getattr(self.backbone.config, "pad_token_id", None) is None:
             self.backbone.config.pad_token_id = self.tokenizer.pad_token_id
 
         for p in self.backbone.parameters():
             p.requires_grad_(False)
         self.backbone.eval()
-        print(f"  hidden_size={self.hidden_size} | all backbone params frozen")
+        print(
+            f"  hidden_size={self.hidden_size} | default_pooling={self.default_pooling} "
+            f"| all backbone params frozen"
+        )
+
+    def _uses_last_token_pooling(self) -> bool:
+        decoder_model_types = {
+            "gpt2",
+            "gpt_neo",
+            "gpt_neox",
+            "gptj",
+            "llama",
+            "mistral",
+            "mixtral",
+            "qwen2",
+            "qwen2_moe",
+            "gemma",
+            "gemma2",
+            "falcon",
+            "mpt",
+            "phi",
+            "phi3",
+            "olmo",
+            "stablelm",
+            "starcoder2",
+        }
+        if self.model_type in decoder_model_types:
+            return True
+        if hasattr(self.backbone, "model") and hasattr(self.backbone.model, "embed_tokens"):
+            return True
+        if hasattr(self.backbone, "transformer") and hasattr(self.backbone.transformer, "h"):
+            return True
+        return False
+
+    def _resolve_pooling(self, pooling: str) -> str:
+        if pooling == "auto":
+            return self.default_pooling
+        return pooling
+
+    def _last_token_indices(self, attention_mask: torch.Tensor) -> torch.Tensor:
+        positions = torch.arange(attention_mask.size(1), device=attention_mask.device)
+        positions = positions.unsqueeze(0).expand_as(attention_mask)
+        masked_positions = positions.masked_fill(attention_mask == 0, -1)
+        return masked_positions.max(dim=1).values.clamp_min(0)
+
+    def _get_embedding_module(self):
+        if hasattr(self.backbone, "embeddings"):
+            return self.backbone.embeddings
+        if hasattr(self.backbone, "model") and hasattr(self.backbone.model, "embed_tokens"):
+            return self.backbone.model.embed_tokens
+        if hasattr(self.backbone, "transformer") and hasattr(self.backbone.transformer, "wte"):
+            return self.backbone.transformer.wte
+        return None
 
     # ------------------------------------------------------------------
     # Transformer layer resolution (BERT vs DistilBERT vs others)
@@ -100,22 +152,27 @@ class TransformerEncoder(nn.Module):
             return_tensors="pt",
         )
 
-    def _pool_output(self, outputs, attention_mask: torch.Tensor, pooling: str = "cls") -> torch.Tensor:
+    def _pool_output(self, outputs, attention_mask: torch.Tensor, pooling: str = "auto") -> torch.Tensor:
+        pooling = self._resolve_pooling(pooling)
         if pooling == "pooler" and getattr(outputs, "pooler_output", None) is not None:
             return outputs.pooler_output
         if pooling == "mean":
             mask = attention_mask.unsqueeze(-1).type_as(outputs.last_hidden_state)
             denom = mask.sum(dim=1).clamp_min(1e-6)
             return (outputs.last_hidden_state * mask).sum(dim=1) / denom
+        if pooling == "last":
+            last_indices = self._last_token_indices(attention_mask)
+            batch_indices = torch.arange(outputs.last_hidden_state.size(0), device=outputs.last_hidden_state.device)
+            return outputs.last_hidden_state[batch_indices, last_indices, :]
         if pooling != "cls":
-            raise ValueError(f"Unsupported pooling='{pooling}'. Use 'cls', 'mean', or 'pooler'.")
+            raise ValueError(f"Unsupported pooling='{pooling}'. Use 'auto', 'cls', 'last', 'mean', or 'pooler'.")
         return outputs.last_hidden_state[:, 0, :]
 
     def forward_features(
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
-        pooling: str = "cls",
+        pooling: str = "auto",
         normalize: bool = False,
     ) -> torch.Tensor:
         """Forward through the backbone with gradient enabled."""
@@ -138,8 +195,9 @@ class TransformerEncoder(nn.Module):
         for p in self.backbone.parameters():
             p.requires_grad_(False)
 
-        if train_embeddings and hasattr(self.backbone, "embeddings"):
-            for p in self.backbone.embeddings.parameters():
+        embedding_module = self._get_embedding_module()
+        if train_embeddings and embedding_module is not None:
+            for p in embedding_module.parameters():
                 p.requires_grad_(True)
 
         layers = list(self._get_transformer_layers())
@@ -154,17 +212,17 @@ class TransformerEncoder(nn.Module):
               f"train_embeddings={train_embeddings}")
 
     # ------------------------------------------------------------------
-    # Encode text strings → normalized CLS vectors
+    # Encode text strings → normalized pooled vectors
     # ------------------------------------------------------------------
     @torch.no_grad()
-    def encode_text(self, texts, max_length: int = 128) -> torch.Tensor:
-        """Encode a list of strings → normalized CLS vectors (B × H)."""
+    def encode_text(self, texts, max_length: int = 128, pooling: str = "auto") -> torch.Tensor:
+        """Encode a list of strings → normalized pooled vectors (B × H)."""
         enc = self.tokenize(texts, max_length)
         input_ids = enc["input_ids"].to(self.device)
         attention_mask = enc["attention_mask"].to(self.device)
         out = self.backbone(input_ids=input_ids, attention_mask=attention_mask)
-        cls = out.last_hidden_state[:, 0, :]
-        return F.normalize(cls, dim=-1)
+        pooled = self._pool_output(out, attention_mask, pooling=pooling)
+        return F.normalize(pooled, dim=-1)
 
     # ------------------------------------------------------------------
     # Encode pre-tokenized ids (no perturbation)
@@ -174,13 +232,14 @@ class TransformerEncoder(nn.Module):
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
+        pooling: str = "auto",
     ) -> torch.Tensor:
-        """Encode pre-tokenized ids → normalized CLS vectors (B × H)."""
+        """Encode pre-tokenized ids → normalized pooled vectors (B × H)."""
         input_ids = input_ids.to(self.device)
         attention_mask = attention_mask.to(self.device)
         out = self.backbone(input_ids=input_ids, attention_mask=attention_mask)
-        cls = out.last_hidden_state[:, 0, :]
-        return F.normalize(cls, dim=-1)
+        pooled = self._pool_output(out, attention_mask, pooling=pooling)
+        return F.normalize(pooled, dim=-1)
 
     # ------------------------------------------------------------------
     # Get intermediate features (frozen body, layers 0 to n_layers-1)
@@ -204,7 +263,7 @@ class TransformerEncoder(nn.Module):
         attention_mask = attention_mask.to(self.device)
 
         if n_layers is None:
-            n_layers = self.backbone.config.num_hidden_layers - 1
+            n_layers = len(self._get_transformer_layers()) - 1
 
         with torch.no_grad():
             out = self.backbone(
@@ -257,14 +316,19 @@ class TransformerEncoder(nn.Module):
             attention_mask = attention_mask[:B]
 
         if start_layer is None:
-            start_layer = self.backbone.config.num_hidden_layers - 1
+            start_layer = len(self._get_transformer_layers()) - 1
 
         # 4D attention mask for SDPA
         sdpa_mask = self._prepare_sdpa_mask(attention_mask, hidden_states.dtype)
 
-        # Inject delta at CLS position (index 0) only
+        # Encoder-style models perturb CLS; decoder-style models perturb the
+        # final non-pad token so the downstream pooled representation stays aligned.
         mask = torch.zeros(B, L, H, device=delta.device)
-        mask[:, 0, :] = 1.0
+        if self.default_pooling == "last":
+            last_indices = self._last_token_indices(attention_mask)
+            mask[torch.arange(B, device=delta.device), last_indices, :] = 1.0
+        else:
+            mask[:, 0, :] = 1.0
         delta_full = delta.unsqueeze(1).expand(B, L, H) * mask
         perturbed = hidden_states + delta_full
 
@@ -273,5 +337,9 @@ class TransformerEncoder(nn.Module):
             out = layer_module(hidden_states=perturbed, attention_mask=sdpa_mask)
             perturbed = out[0] if isinstance(out, tuple) else out
 
-        cls = perturbed[:, 0, :]
-        return F.normalize(cls, dim=-1)
+        if self.default_pooling == "last":
+            last_indices = self._last_token_indices(attention_mask)
+            pooled = perturbed[torch.arange(B, device=perturbed.device), last_indices, :]
+        else:
+            pooled = perturbed[:, 0, :]
+        return F.normalize(pooled, dim=-1)

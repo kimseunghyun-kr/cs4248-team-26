@@ -30,6 +30,19 @@ python run_all.py
 
 Default behavior runs the transformer classifier pipeline.
 
+Backbone shortcuts now include both encoder-style and decoder-style models:
+
+- `bert`
+- `finbert`
+- `bertweet`
+- `roberta`
+- `distilbert`
+- `mistral`
+- `tinyllama`
+- `qwen2`
+
+You can also pass any Hugging Face model ID directly with `--model`.
+
 ## What To Run
 
 ### Recommended transformer run
@@ -53,6 +66,15 @@ python run_all.py \
 ```bash
 cd project
 python run_all.py --classifier transformer --model distilbert
+```
+
+### Decoder-style backbone examples
+
+```bash
+cd project
+python run_all.py --classifier transformer --model tinyllama
+python run_all.py --classifier transformer --model qwen2
+python run_all.py --classifier transformer --model mistral --pooling auto
 ```
 
 ### Linear probe baseline
@@ -119,6 +141,7 @@ Outputs:
 - `project/encoder.py`
   - shared encoder abstraction
   - handles tokenizer/model loading, pooling, and selective unfreezing
+  - `auto` pooling uses CLS for encoder-style models and last-token pooling for decoder-style models
   - change this when adjusting backbone behavior
 
 - `project/data/embed.py`

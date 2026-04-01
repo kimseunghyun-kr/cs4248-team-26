@@ -776,7 +776,7 @@ def main():
     parser.add_argument("--warmup_ratio", type=float, default=0.1)
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--unfreeze_layers", type=int, default=4)
-    parser.add_argument("--pooling", default="cls")
+    parser.add_argument("--pooling", default="auto")
     parser.add_argument(
         "--input_mode",
         choices=["text", "text_plus_selected", "text_selected_pair"],

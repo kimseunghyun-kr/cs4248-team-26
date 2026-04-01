@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
 # ---------------------------------------------------------------------------
-# Model registry — shortcut keys for common BERT-derivative backbones
+# Model registry — shortcut keys for common backbones
 # ---------------------------------------------------------------------------
 MODEL_REGISTRY = {
     "bert":       "bert-base-uncased",
@@ -9,6 +9,9 @@ MODEL_REGISTRY = {
     "bertweet":   "vinai/bertweet-base",
     "roberta":    "roberta-base",
     "distilbert": "distilbert-base-uncased",
+    "mistral":    "mistralai/Mistral-7B-v0.1",
+    "tinyllama":  "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+    "qwen2":      "Qwen/Qwen2.5-0.5B",
 }
 
 
@@ -37,7 +40,7 @@ class TransformerClassifierConfig:
     dropout: float = 0.1
     unfreeze_layers: int = 4
     train_embeddings: bool = False
-    pooling: str = "cls"   # "cls" | "mean" | "pooler"
+    pooling: str = "auto"   # "auto" | "cls" | "last" | "mean" | "pooler"
     input_mode: str = "text_plus_selected"  # "text" | "text_plus_selected" | "text_selected_pair"
     use_time_of_tweet: bool = False
     use_age_of_user: bool = False
