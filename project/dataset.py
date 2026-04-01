@@ -84,6 +84,80 @@ def _parse_cleaned_tokens(value):
     return None
 
 
+def records_from_cached_payload(payload: dict) -> List[Dict]:
+    """Reconstruct record-style dicts from a Phase 1 cached payload."""
+    texts = payload.get("texts") or [""] * len(payload["labels"])
+    labels = payload["labels"]
+    if isinstance(labels, torch.Tensor):
+        labels = labels.tolist()
+
+    selected_texts = payload.get("selected_texts") or [None] * len(labels)
+    time_of_tweet = payload.get("time_of_tweet") or [None] * len(labels)
+    age_of_user = payload.get("age_of_user") or [None] * len(labels)
+    country = payload.get("country") or [None] * len(labels)
+    entities = payload.get("entities") or [None] * len(labels)
+    cleaned_tokens = payload.get("cleaned_tokens") or [None] * len(labels)
+
+    records = []
+    for idx, label in enumerate(labels):
+        records.append(
+            {
+                "text": texts[idx],
+                "label": int(label),
+                "selected_text": selected_texts[idx],
+                "time_of_tweet": time_of_tweet[idx],
+                "age_of_user": age_of_user[idx],
+                "country": country[idx],
+                "entity": entities[idx],
+                "cleaned_tokens": cleaned_tokens[idx],
+            }
+        )
+    return records
+
+
+def build_transformer_text_views(
+    records: List[Dict],
+    input_mode: str = "text",
+    use_time_of_tweet: bool = False,
+    use_age_of_user: bool = False,
+    use_country: bool = False,
+) -> tuple[List[str], List[int], List[str] | None]:
+    """Build primary and optional secondary text views for transformer training."""
+    if input_mode not in {"text", "text_plus_selected", "text_selected_pair"}:
+        raise ValueError("input_mode must be 'text', 'text_plus_selected', or 'text_selected_pair'")
+
+    texts: List[str] = []
+    labels: List[int] = []
+    secondary_texts: List[str] | None = [] if input_mode == "text_selected_pair" else None
+
+    for record in records:
+        segments = []
+        if use_time_of_tweet and _normalize_optional_text(record.get("time_of_tweet")):
+            segments.append(f"time of tweet: {record['time_of_tweet']}.")
+        if use_age_of_user and _normalize_optional_text(record.get("age_of_user")):
+            segments.append(f"age of user: {record['age_of_user']}.")
+        if use_country and _normalize_optional_text(record.get("country")):
+            segments.append(f"country: {record['country']}.")
+
+        text = record["text"]
+        selected = _normalize_optional_text(record.get("selected_text"))
+
+        if input_mode == "text_plus_selected" and selected and selected != text:
+            text = f"text: {text} sentiment span: {selected}"
+        elif input_mode == "text_selected_pair":
+            text = f"text: {text}"
+            assert secondary_texts is not None
+            secondary_texts.append(selected or record["text"])
+
+        if segments:
+            text = " ".join(segments + [text])
+
+        texts.append(text)
+        labels.append(int(record["label"]))
+
+    return texts, labels, secondary_texts
+
+
 def _records_from_dataframe(df, source_name: str):
     text_col = _find_first_column(
         df.columns,
@@ -386,11 +460,16 @@ class TextDataset(Dataset):
         labels: List[int],
         tokenizer: PreTrainedTokenizer,
         max_length: int = 128,
+        secondary_texts: List[str] | None = None,
     ):
         self.texts = texts
         self.labels = labels
         self.tokenizer = tokenizer
         self.max_length = max_length
+        self.secondary_texts = secondary_texts
+
+        if self.secondary_texts is not None and len(self.secondary_texts) != len(self.texts):
+            raise ValueError("secondary_texts must have the same length as texts")
 
     def __len__(self):
         return len(self.texts)
@@ -403,15 +482,35 @@ class TextDataset(Dataset):
             padding=False,
             return_tensors=None,
         )
-        return {
+        item = {
             "input_ids": enc["input_ids"],
             "attention_mask": enc["attention_mask"],
             "label": self.labels[idx],
             "text": self.texts[idx],
         }
+        if self.secondary_texts is not None:
+            secondary = self.tokenizer(
+                self.secondary_texts[idx],
+                truncation=True,
+                max_length=self.max_length,
+                padding=False,
+                return_tensors=None,
+            )
+            item["selected_input_ids"] = secondary["input_ids"]
+            item["selected_attention_mask"] = secondary["attention_mask"]
+            item["selected_text"] = self.secondary_texts[idx]
+        return item
 
 
 def collate_fn(batch: List[Dict], pad_token_id: int = 0) -> Dict:
+    def _pad_sequences(sequences, fill_value):
+        max_len = max(len(seq) for seq in sequences)
+        padded = []
+        for seq in sequences:
+            pad_len = max_len - len(seq)
+            padded.append(seq + [fill_value] * pad_len)
+        return torch.tensor(padded, dtype=torch.long)
+
     max_len = max(len(b["input_ids"]) for b in batch)
 
     input_ids_list, attn_list, labels, texts = [], [], [], []
@@ -424,12 +523,25 @@ def collate_fn(batch: List[Dict], pad_token_id: int = 0) -> Dict:
         labels.append(b["label"])
         texts.append(b["text"])
 
-    return {
+    collated = {
         "input_ids": torch.tensor(input_ids_list, dtype=torch.long),
         "attention_mask": torch.tensor(attn_list, dtype=torch.long),
         "labels": torch.tensor(labels, dtype=torch.long),
         "texts": texts,
     }
+
+    if "selected_input_ids" in batch[0]:
+        collated["selected_input_ids"] = _pad_sequences(
+            [b["selected_input_ids"] for b in batch],
+            fill_value=pad_token_id,
+        )
+        collated["selected_attention_mask"] = _pad_sequences(
+            [b["selected_attention_mask"] for b in batch],
+            fill_value=0,
+        )
+        collated["selected_texts"] = [b.get("selected_text", "") for b in batch]
+
+    return collated
 
 
 def make_collate_fn(pad_token_id: int):

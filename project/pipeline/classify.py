@@ -28,7 +28,13 @@ from sklearn.metrics import accuracy_score, classification_report, confusion_mat
 from transformers import AutoTokenizer, get_linear_schedule_with_warmup
 
 from config import TransformerClassifierConfig
-from dataset import load_records
+from dataset import (
+    TextDataset,
+    build_transformer_text_views,
+    load_records,
+    make_collate_fn,
+    records_from_cached_payload,
+)
 from encoder import TransformerEncoder
 from pipeline.clean import materialize_sentiment_boost_conditions
 
@@ -68,50 +74,6 @@ class CachedTokenDataset(Dataset):
             "labels": self.labels[idx],
             "text": self.texts[idx],
         }
-
-
-class TransformerRecordDataset(Dataset):
-    """Tokenizes text records with optional selected-text / metadata features."""
-
-    def __init__(self, records: list[dict], tokenizer, cfg: TransformerClassifierConfig):
-        self.records = records
-        self.tokenizer = tokenizer
-        self.cfg = cfg
-        self.labels = [int(r["label"]) for r in records]
-        self.texts = [build_primary_text(r, cfg) for r in records]
-        self.selected_texts = None
-        if cfg.input_mode == "text_selected_pair":
-            self.selected_texts = [build_selected_view_text(r) for r in records]
-
-    def __len__(self) -> int:
-        return len(self.records)
-
-    def __getitem__(self, idx: int) -> dict:
-        primary = self.tokenizer(
-            self.texts[idx],
-            truncation=True,
-            max_length=self.cfg.max_length,
-            padding=False,
-            return_tensors=None,
-        )
-        item = {
-            "input_ids": primary["input_ids"],
-            "attention_mask": primary["attention_mask"],
-            "labels": self.labels[idx],
-            "text": self.texts[idx],
-        }
-        if self.selected_texts is not None:
-            selected = self.tokenizer(
-                self.selected_texts[idx],
-                truncation=True,
-                max_length=self.cfg.max_length,
-                padding=False,
-                return_tensors=None,
-            )
-            item["selected_input_ids"] = selected["input_ids"]
-            item["selected_attention_mask"] = selected["attention_mask"]
-            item["selected_text"] = self.selected_texts[idx]
-        return item
 
 
 class FocalCrossEntropyLoss(nn.Module):
@@ -306,68 +268,6 @@ def load_embeddings(name: str):
     return results
 
 
-def _normalize_optional_text(value) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text or text.lower() == "nan":
-        return None
-    return text
-
-
-def build_selected_view_text(record: dict) -> str:
-    selected = _normalize_optional_text(record.get("selected_text"))
-    return selected or record["text"]
-
-
-def build_primary_text(record: dict, cfg: TransformerClassifierConfig) -> str:
-    segments = []
-    if cfg.use_time_of_tweet and _normalize_optional_text(record.get("time_of_tweet")):
-        segments.append(f"time of tweet: {record['time_of_tweet']}.")
-    if cfg.use_age_of_user and _normalize_optional_text(record.get("age_of_user")):
-        segments.append(f"age of user: {record['age_of_user']}.")
-    if cfg.use_country and _normalize_optional_text(record.get("country")):
-        segments.append(f"country: {record['country']}.")
-
-    text = record["text"]
-    if cfg.input_mode == "text_plus_selected":
-        selected = _normalize_optional_text(record.get("selected_text"))
-        if selected and selected != text:
-            text = f"text: {text} sentiment span: {selected}"
-    elif cfg.input_mode == "text_selected_pair":
-        text = f"text: {text}"
-
-    if segments:
-        return " ".join(segments + [text])
-    return text
-
-
-def payload_to_records(payload: dict) -> list[dict]:
-    texts = payload.get("texts") or [""] * len(payload["labels"])
-    labels = payload["labels"]
-    if isinstance(labels, torch.Tensor):
-        labels = labels.tolist()
-
-    selected_texts = payload.get("selected_texts") or [None] * len(labels)
-    time_of_tweet = payload.get("time_of_tweet") or [None] * len(labels)
-    age_of_user = payload.get("age_of_user") or [None] * len(labels)
-    country = payload.get("country") or [None] * len(labels)
-
-    records = []
-    for idx, label in enumerate(labels):
-        records.append(
-            {
-                "text": texts[idx],
-                "label": int(label),
-                "selected_text": selected_texts[idx],
-                "time_of_tweet": time_of_tweet[idx],
-                "age_of_user": age_of_user[idx],
-                "country": country[idx],
-            }
-        )
-    return records
-
-
 def _load_cached_raw_split(split: str) -> dict | None:
     path = os.path.join(CACHE_DIR, f"z_tweet_{split}.pt")
     if not os.path.exists(path):
@@ -382,35 +282,6 @@ def collate_cached_batch(batch: list[dict]) -> dict:
         "labels": torch.stack([item["labels"] for item in batch]),
         "texts": [item["text"] for item in batch],
     }
-
-
-def collate_transformer_batch(batch: list[dict], pad_token_id: int) -> dict:
-    def _pad_1d(seqs, fill_value):
-        max_len = max(len(seq) for seq in seqs)
-        out = torch.full((len(seqs), max_len), fill_value=fill_value, dtype=torch.long)
-        for row_idx, seq in enumerate(seqs):
-            out[row_idx, :len(seq)] = torch.tensor(seq, dtype=torch.long)
-        return out
-
-    collated = {
-        "input_ids": _pad_1d([item["input_ids"] for item in batch], pad_token_id),
-        "attention_mask": _pad_1d([item["attention_mask"] for item in batch], 0),
-        "labels": torch.tensor([item["labels"] for item in batch], dtype=torch.long),
-        "texts": [item["text"] for item in batch],
-    }
-
-    if "selected_input_ids" in batch[0]:
-        collated["selected_input_ids"] = _pad_1d(
-            [item["selected_input_ids"] for item in batch],
-            pad_token_id,
-        )
-        collated["selected_attention_mask"] = _pad_1d(
-            [item["selected_attention_mask"] for item in batch],
-            0,
-        )
-        collated["selected_texts"] = [item.get("selected_text", "") for item in batch]
-
-    return collated
 
 
 def resolve_transformer_device() -> str:
@@ -489,21 +360,37 @@ def build_transformer_dataloaders(tokenizer, cfg: TransformerClassifierConfig) -
     else:
         if all(payload is not None for payload in cached_payloads.values()):
             print("Building transformer classifier views from cached Phase 1 records.")
-            train_records = payload_to_records(cached_payloads["train"])
-            val_records = payload_to_records(cached_payloads["val"])
-            test_records = payload_to_records(cached_payloads["test"])
+            train_records = records_from_cached_payload(cached_payloads["train"])
+            val_records = records_from_cached_payload(cached_payloads["val"])
+            test_records = records_from_cached_payload(cached_payloads["test"])
             source = "cache_records"
         else:
             print("Cached Phase 1 splits missing; loading records from dataset.py.")
             train_records, val_records, test_records = load_records()
             source = "dataset_records"
 
+        def _build_dataset(records):
+            texts, labels, secondary_texts = build_transformer_text_views(
+                records,
+                input_mode=cfg.input_mode,
+                use_time_of_tweet=cfg.use_time_of_tweet,
+                use_age_of_user=cfg.use_age_of_user,
+                use_country=cfg.use_country,
+            )
+            return TextDataset(
+                texts,
+                labels,
+                tokenizer,
+                max_length=cfg.max_length,
+                secondary_texts=secondary_texts,
+            )
+
         datasets = {
-            "train": TransformerRecordDataset(train_records, tokenizer, cfg),
-            "val": TransformerRecordDataset(val_records, tokenizer, cfg),
-            "test": TransformerRecordDataset(test_records, tokenizer, cfg),
+            "train": _build_dataset(train_records),
+            "val": _build_dataset(val_records),
+            "test": _build_dataset(test_records),
         }
-        collate_fn = lambda batch: collate_transformer_batch(batch, tokenizer.pad_token_id or 0)
+        collate_fn = make_collate_fn(tokenizer.pad_token_id or 0)
 
     loaders = {
         "train": DataLoader(
