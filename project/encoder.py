@@ -51,16 +51,31 @@ class TransformerEncoder(nn.Module):
         """Resolve the sequential list of transformer layers.
 
         Handles architecture differences:
-          - BERT / RoBERTa / FinBERT: backbone.encoder.layer
-          - DistilBERT:               backbone.transformer.layer
+          - BERT / RoBERTa / FinBERT / DeBERTa: backbone.encoder.layer
+          - DistilBERT:                          backbone.transformer.layer
+          - GPT-2 / GPT-Neo:                     backbone.transformer.h
+          - LLaMA / Qwen2 / Mistral:             backbone.model.layers
+          - CLIP text encoder:                    backbone.text_model.encoder.layers
+        Note: Causal models (GPT-2, LLaMA, Qwen2) need last-token pooling and
+        delta injection at the last non-pad position rather than CLS at pos 0.
         """
         if hasattr(self.backbone, "encoder") and hasattr(self.backbone.encoder, "layer"):
             return self.backbone.encoder.layer
         if hasattr(self.backbone, "transformer") and hasattr(self.backbone.transformer, "layer"):
             return self.backbone.transformer.layer
+        # GPT-2 / GPT-Neo
+        if hasattr(self.backbone, "transformer") and hasattr(self.backbone.transformer, "h"):
+            return self.backbone.transformer.h
+        # LLaMA / Qwen2 / Mistral
+        if hasattr(self.backbone, "model") and hasattr(self.backbone.model, "layers"):
+            return self.backbone.model.layers
+        # CLIP text encoder
+        if hasattr(self.backbone, "text_model") and hasattr(self.backbone.text_model, "encoder"):
+            return self.backbone.text_model.encoder.layers
         raise AttributeError(
             f"Cannot find transformer layers in {type(self.backbone).__name__}. "
-            f"Expected .encoder.layer or .transformer.layer"
+            f"Expected .encoder.layer, .transformer.layer, .transformer.h, "
+            f".model.layers, or .text_model.encoder.layers"
         )
 
     # ------------------------------------------------------------------

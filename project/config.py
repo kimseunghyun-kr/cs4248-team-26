@@ -59,4 +59,9 @@ class CBDCConfig:
     n_bias_dirs: int = 4           # top-K SVD components from I - P_debias
     lambda_reg: float = 1000.0     # regularization: G = lambda * M + I
 
+    # Sentiment-orthogonal PGD constraint (Strategy A)
+    # Projects PGD gradient orthogonal to sentiment prototypes at each step,
+    # preventing confound directions from drifting into sentiment space.
+    sent_orthogonal_pgd: bool = True
+
     device: str = "cpu"

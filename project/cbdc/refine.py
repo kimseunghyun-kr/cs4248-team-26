@@ -228,6 +228,7 @@ def _pgd_bipolar(
     keep_cb: torch.Tensor,          # (N_keep, H) for multi-axis L_s
     encoder: TransformerEncoder,
     cfg: CBDCConfig,
+    sentiment_protos: torch.Tensor | None = None,  # (C, H) sentiment prototypes for orthogonal constraint
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Bipolar PGD on concept prompt representations.
@@ -249,6 +250,14 @@ def _pgd_bipolar(
     bias_anchors = F.normalize(bias_anchors.to(device), dim=-1)
     anti_anchors = F.normalize(anti_anchors.to(device), dim=-1)
     keep_cb = F.normalize(keep_cb.to(device), dim=-1)
+
+    # Precompute orthonormal sentiment basis for gradient projection
+    S_basis = None
+    if sentiment_protos is not None and cfg.sent_orthogonal_pgd:
+        # Orthonormalize via QR to handle near-collinear prototypes
+        S_basis = F.normalize(sentiment_protos.to(device), dim=-1)
+        Q, R = torch.linalg.qr(S_basis.T)  # (H, C)
+        S_basis = Q.T  # (C, H) orthonormal rows
 
     adv_pos_all = []
     adv_neg_all = []
@@ -273,8 +282,10 @@ def _pgd_bipolar(
             loss = L_B * (1.0 - cfg.keep_weight) - L_s * cfg.keep_weight
             loss.backward()
             with torch.no_grad():
-                # Match RN50 text_iccv / simple_pgd: ascend on the PGD objective.
-                delta.data += cfg.step_lr * delta.grad.sign()
+                grad = delta.grad.data
+                if S_basis is not None:
+                    grad = grad - (grad @ S_basis.T) @ S_basis
+                delta.data += cfg.step_lr * grad.sign()
                 delta.data.clamp_(-cfg.epsilon, cfg.epsilon)
         with torch.no_grad():
             z_pos = encoder.encode_with_delta_from_hidden(h_target, attention_mask, delta.detach())
@@ -291,7 +302,10 @@ def _pgd_bipolar(
             loss = L_B * (1.0 - cfg.keep_weight) - L_s * cfg.keep_weight
             loss.backward()
             with torch.no_grad():
-                delta.data += cfg.step_lr * delta.grad.sign()
+                grad = delta.grad.data
+                if S_basis is not None:
+                    grad = grad - (grad @ S_basis.T) @ S_basis
+                delta.data += cfg.step_lr * grad.sign()
                 delta.data.clamp_(-cfg.epsilon, cfg.epsilon)
         with torch.no_grad():
             z_neg = encoder.encode_with_delta_from_hidden(h_target, attention_mask, delta.detach())
@@ -439,6 +453,7 @@ def _compute_direction_snapshot(
     anti_anchors: torch.Tensor,
     keep_cb: torch.Tensor,
     cfg: CBDCConfig,
+    sentiment_protos: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Re-run PGD with the current encoder to obtain an S snapshot."""
     with torch.no_grad():
@@ -458,6 +473,7 @@ def _compute_direction_snapshot(
         keep_cb,
         encoder,
         cfg,
+        sentiment_protos=sentiment_protos,
     )
     return (z_adv_pos - z_adv_neg).detach().cpu()
 
@@ -517,6 +533,14 @@ def text_iccv(
     with torch.no_grad():
         keep_cb = encoder.encode_text(_keep_text).to(device)
 
+    # Compute initial sentiment prototypes for orthogonal PGD constraint
+    sentiment_protos = None
+    if cfg.sent_orthogonal_pgd:
+        with torch.no_grad():
+            init_cls_em = _encode_class_prototypes(encoder, cls_ids, cls_mask, _cls_group_sizes)
+        sentiment_protos = init_cls_em.detach().to(device)
+        print(f"  Sentiment-orthogonal PGD: ON (projecting gradients ⊥ {sentiment_protos.shape[0]} prototypes)")
+
     # Set up trainable tail layer
     layer_tail = encoder._get_transformer_layers()[-1]
     for p in layer_tail.parameters():
@@ -556,6 +580,7 @@ def text_iccv(
             anti_anchors,
             keep_cb,
             encoder, cfg,
+            sentiment_protos=sentiment_protos,
         )
 
         # --- 3. Forward adversarial through layer 11 (frozen) to get S ---
@@ -567,6 +592,10 @@ def text_iccv(
             p.requires_grad_(True)
 
         cls_em = _encode_class_prototypes(encoder, cls_ids, cls_mask, _cls_group_sizes)
+
+        # Update sentiment prototypes for next epoch's PGD constraint
+        if sentiment_protos is not None:
+            sentiment_protos = cls_em.detach().clone()
 
         # --- 5. Class-specific match_loss ---
         match_loss = torch.tensor(0.0, device=device)
@@ -637,6 +666,7 @@ def text_iccv(
         anti_anchors,
         keep_cb,
         cfg,
+        sentiment_protos=sentiment_protos,
     )
 
     # Extract final directions from the best-S snapshot via SVD
