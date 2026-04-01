@@ -20,6 +20,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import csv # <--- Add this at the top of classify.py
 import torch
 import torch.nn.functional as F
 from sklearn.metrics import f1_score, classification_report
@@ -31,27 +32,23 @@ _DEFAULT_CACHE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__
 CACHE_DIR = os.environ.get("CACHE_DIR", _DEFAULT_CACHE)
 
 
-def evaluate_zero_shot(z_tweets, y_true, z_prototypes, device):
+def evaluate_zero_shot(z_tweets, y_true, texts, z_prototypes, device):
     """
-    Perform true zero-shot classification without any learned weights.
-    Calculates cosine similarity between tweets and the 3 sentiment prototypes.
+    Perform true zero-shot classification and track disagreements.
     """
     z_tweets = z_tweets.to(device)
     z_prototypes = z_prototypes.to(device)
 
-    # 1. L2 Normalize to prepare for Cosine Similarity
+    # 1. Calculate Cosine Similarity
     z_norm = F.normalize(z_tweets, dim=-1)
     proto_norm = F.normalize(z_prototypes, dim=-1)
-
-    # 2. Calculate Cosine Similarity (Dot Product of normalized vectors)
-    # Resulting shape: (N_tweets, 3_classes)
     sim = z_norm @ proto_norm.T  
 
-    # 3. The prediction is the prototype with the highest similarity score
+    # 2. Get predictions
     preds = sim.argmax(dim=-1).cpu().numpy()
     labels_np = y_true.numpy()
 
-    # 4. Calculate metrics
+    # 3. Calculate metrics
     f1 = f1_score(labels_np, preds, average="macro")
     report = classification_report(
         labels_np, preds,
@@ -59,7 +56,20 @@ def evaluate_zero_shot(z_tweets, y_true, z_prototypes, device):
         digits=4,
         zero_division=0
     )
-    return f1, report
+
+    # 4. Catch the disagreements
+    disagreements = []
+    if texts is not None:
+        label_map = {0: "negative", 1: "neutral", 2: "positive"}
+        for i in range(len(preds)):
+            if preds[i] != labels_np[i]:
+                disagreements.append({
+                    "text": texts[i],
+                    "true_label": label_map.get(labels_np[i], "unknown"),
+                    "pred_label": label_map.get(preds[i], "unknown")
+                })
+
+    return f1, report, disagreements
 
 
 def load_embeddings(name: str):
@@ -131,14 +141,29 @@ def main():
         y_val   = data["val"]["labels"]
         z_test  = data["test"]["embeddings"]
         y_test  = data["test"]["labels"]
+        
+        # --- NEW: Extract texts if they exist in the cache ---
+        texts_test = data["test"].get("texts", None)
 
         print(f"  val={len(z_val)} test={len(z_test)} dim={z_val.shape[1]}")
 
         # --- Evaluate Zero-Shot Cosine Similarity ---
-        val_f1, _ = evaluate_zero_shot(z_val, y_val, z_prototypes, device)
-        test_f1, report = evaluate_zero_shot(z_test, y_test, z_prototypes, device)
+        # Pass 'None' for validation texts, and 'texts_test' for the test set
+        val_f1, _, _ = evaluate_zero_shot(z_val, y_val, None, z_prototypes, device)
+        test_f1, report, disagreements = evaluate_zero_shot(z_test, y_test, texts_test, z_prototypes, device)
 
         print(f"  val_f1={val_f1:.4f} | test_f1={test_f1:.4f}")
+        
+        # --- NEW: Save disagreements to CSV for manual review ---
+        import csv
+        if disagreements:
+            csv_path = os.path.join(CACHE_DIR, f"disagreements_{cond_name[:2]}.csv")
+            with open(csv_path, mode='w', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=["text", "true_label", "pred_label"])
+                writer.writeheader()
+                writer.writerows(disagreements)
+            print(f"  Saved {len(disagreements)} disagreeing tweets to -> {csv_path}")
+
         print(f"\n  Test classification report:")
         for line in report.strip().split("\n"):
             print(f"    {line}")
