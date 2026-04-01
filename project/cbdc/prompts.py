@@ -34,6 +34,7 @@ import torch.nn.functional as F
 
 _DEFAULT_CACHE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache")
 DEFAULT_CACHE_DIR = os.environ.get("CACHE_DIR", _DEFAULT_CACHE)
+TOPIC_MINER_VERSION = 2
 
 _URL_RE = re.compile(r"https?://\S+|www\.\S+")
 _USER_RE = re.compile(r"@\w+")
@@ -61,6 +62,11 @@ _GENERIC_BANNED = {
 }
 _PLACEHOLDER_TOKENS = {"<url>", "<other_user>", "<user>", "<person>", "<number>", "[unk]", "unk"}
 _CONTRACTION_TAILS = {"'s", "'t", "'m", "'re", "'ve", "'ll", "'d", "s", "t", "m", "re", "ve", "ll", "d"}
+_EMOTICON_RE = re.compile(r"(?i)(?:[:;=8x][-^']?[)(dpo/\\\\]|<3)")
+_LAUGHTER_RE = re.compile(r"(?i)\b(?:lol|lmao|lmfao|rofl|haha|hehe)\b")
+_ALL_CAPS_RE = re.compile(r"\b[A-Z]{3,}\b")
+_ELLIPSIS_RE = re.compile(r"\.\.\.|…")
+_ELONGATED_RE = re.compile(r"(?i)\b\w*([a-z])\1{2,}\w*\b")
 
 
 # ── Factory functions for text_unit-parameterized prompts ─────────────────
@@ -204,6 +210,53 @@ DEFAULT_TOPIC_METADATA = [
     {"topic": topic, "kind": kind} for topic, kind in _CONTENT_TOPICS + _STYLE_TOPICS
 ]
 
+LEGACY_STYLE_BIASES = [
+    "ending with a question mark",
+    "containing multiple question marks",
+    "containing an exclamation mark",
+    "that is very short",
+    "containing internet laughter like lol",
+    "containing an emoticon",
+]
+
+_DEFAULT_CONTENT_PATTERNS = [
+    {"topic": "work", "kind": "content", "aliases": ["work", "working", "job", "office", "shift"]},
+    {"topic": "school", "kind": "content", "aliases": ["school", "class", "classes", "college", "exam", "study", "homework"]},
+    {"topic": "sleep", "kind": "content", "aliases": ["sleep", "slept", "bed", "nap", "naps"]},
+    {"topic": "home", "kind": "content", "aliases": ["home", "house"]},
+    {"topic": "food", "kind": "content", "aliases": ["food", "eat", "eating", "dinner", "lunch", "breakfast", "meal"]},
+    {"topic": "coffee", "kind": "content", "aliases": ["coffee", "latte", "espresso", "starbucks", "caffeine"]},
+    {"topic": "friends", "kind": "content", "aliases": ["friend", "friends", "buddy", "buddies"]},
+    {"topic": "family", "kind": "content", "aliases": ["family", "mom", "mother", "dad", "father", "parents", "sister", "brother"]},
+    {"topic": "people", "kind": "content", "aliases": ["people", "person", "everyone", "somebody", "anyone"]},
+    {"topic": "party", "kind": "content", "aliases": ["party", "partying", "club", "clubbing"]},
+    {"topic": "watching something", "kind": "content", "aliases": ["watching"]},
+    {"topic": "a movie", "kind": "content", "aliases": ["movie", "movies", "film", "films", "cinema"]},
+    {"topic": "a show", "kind": "content", "aliases": ["show", "shows", "episode", "episodes", "season", "series", "tv"]},
+    {"topic": "music", "kind": "content", "aliases": ["music", "song", "songs", "album", "albums", "band", "bands", "concert"]},
+    {"topic": "plans for tomorrow", "kind": "content", "aliases": ["tomorrow"]},
+    {"topic": "the weekend", "kind": "content", "aliases": ["weekend", "saturday", "sunday"]},
+    {"topic": "last night", "kind": "content", "aliases": ["last night"]},
+    {"topic": "today", "kind": "content", "aliases": ["today", "tonight"]},
+    {"topic": "twitter", "kind": "content", "aliases": ["twitter", "tweet", "tweets", "tweeting"]},
+    {"topic": "a phone call", "kind": "content", "aliases": ["phone", "call", "called", "voicemail"]},
+]
+
+_DEFAULT_STYLE_PATTERNS = [
+    {"topic": "emoticons and smiley faces", "kind": "style"},
+    {"topic": "a question", "kind": "style"},
+    {"topic": "a link or URL", "kind": "style"},
+    {"topic": "internet slang like lol or haha", "kind": "style"},
+    {"topic": "very few words", "kind": "style"},
+    {"topic": "many exclamation marks", "kind": "style"},
+    {"topic": "words in all caps", "kind": "style"},
+    {"topic": "first person language", "kind": "style"},
+    {"topic": "trailing off with ellipsis", "kind": "style"},
+    {"topic": "elongated words like sooo or yesss", "kind": "style"},
+    {"topic": "informal conversational language", "kind": "style"},
+    {"topic": "direct and formal language", "kind": "style"},
+]
+
 # ── Financial domain topics (preserved for --text_unit tweet / finance) ───
 FINANCE_TOPICS = [
     "cryptocurrency",
@@ -293,6 +346,17 @@ def _normalize_cleaned_tokens(tokens: Sequence[str] | None) -> list[str]:
             continue
         normalized.append(tok)
     return normalized
+
+
+def _raw_record_tokens(record: dict) -> list[str]:
+    return _tokenize_tweet_text(record["text"])
+
+
+def _topic_alias_match(tokens: set[str], alias: str) -> bool:
+    alias_tokens = [tok for tok in _tokenize_tweet_text(alias) if tok not in _STOPWORDS]
+    if not alias_tokens:
+        return False
+    return all(tok in tokens for tok in alias_tokens)
 
 
 def _tokens_from_record(record: dict) -> list[str]:
@@ -490,6 +554,105 @@ def mine_phrase_topics_from_records(
     return chosen
 
 
+def mine_curated_topic_rows_from_records(
+    records: Sequence[dict],
+    max_topics: int = 32,
+    min_doc_freq: int = 20,
+    max_doc_freq_ratio: float = 0.20,
+) -> list[dict]:
+    """Score the curated TSAD topic/style bank against the actual dataset."""
+    n_docs = len(records)
+    max_doc_freq = max(min_doc_freq + 1, int(max_doc_freq_ratio * n_docs))
+    rows = []
+
+    for spec in _DEFAULT_CONTENT_PATTERNS:
+        counts = [0, 0, 0]
+        total = 0
+        for record in records:
+            token_set = set(_tokens_from_record(record))
+            if any(_topic_alias_match(token_set, alias) for alias in spec["aliases"]):
+                counts[int(record["label"])] += 1
+                total += 1
+        if total < min_doc_freq or total > max_doc_freq:
+            continue
+        entropy = _label_entropy(counts)
+        if entropy < 0.30:
+            continue
+        rows.append(
+            {
+                "topic": spec["topic"],
+                "kind": spec["kind"],
+                "source": "dataset_pattern",
+                "doc_freq": int(total),
+                "label_counts": [int(x) for x in counts],
+                "entropy": float(entropy),
+                "score": float(_score_topic_row(total, counts, specificity_bonus=1.05)),
+            }
+        )
+
+    informal_markers = {"gonna", "wanna", "gotta", "omg", "ugh", "ya", "yall", "dunno"}
+    first_person_markers = {"i", "im", "i'm", "ive", "i've", "me", "my", "mine"}
+    formal_markers = {"please", "regarding", "appreciate", "thank", "thanks", "sincerely"}
+
+    for spec in _DEFAULT_STYLE_PATTERNS:
+        counts = [0, 0, 0]
+        total = 0
+        for record in records:
+            raw_text = str(record["text"])
+            raw_tokens = set(_raw_record_tokens(record))
+
+            if spec["topic"] == "emoticons and smiley faces":
+                matched = bool(_EMOTICON_RE.search(raw_text))
+            elif spec["topic"] == "a question":
+                matched = "?" in raw_text
+            elif spec["topic"] == "a link or URL":
+                matched = bool(_URL_RE.search(raw_text))
+            elif spec["topic"] == "internet slang like lol or haha":
+                matched = bool(_LAUGHTER_RE.search(raw_text))
+            elif spec["topic"] == "very few words":
+                matched = len(_raw_record_tokens(record)) <= 4
+            elif spec["topic"] == "many exclamation marks":
+                matched = raw_text.count("!") >= 2
+            elif spec["topic"] == "words in all caps":
+                matched = bool(_ALL_CAPS_RE.search(raw_text))
+            elif spec["topic"] == "first person language":
+                matched = bool(first_person_markers & raw_tokens)
+            elif spec["topic"] == "trailing off with ellipsis":
+                matched = bool(_ELLIPSIS_RE.search(raw_text))
+            elif spec["topic"] == "elongated words like sooo or yesss":
+                matched = bool(_ELONGATED_RE.search(raw_text))
+            elif spec["topic"] == "informal conversational language":
+                matched = bool(informal_markers & raw_tokens)
+            elif spec["topic"] == "direct and formal language":
+                matched = bool(formal_markers & raw_tokens)
+            else:
+                matched = False
+
+            if matched:
+                counts[int(record["label"])] += 1
+                total += 1
+
+        if total < min_doc_freq or total > max_doc_freq:
+            continue
+        entropy = _label_entropy(counts)
+        if entropy < 0.25:
+            continue
+        rows.append(
+            {
+                "topic": spec["topic"],
+                "kind": spec["kind"],
+                "source": "dataset_pattern",
+                "doc_freq": int(total),
+                "label_counts": [int(x) for x in counts],
+                "entropy": float(entropy),
+                "score": float(_score_topic_row(total, counts, specificity_bonus=1.0)),
+            }
+        )
+
+    rows.sort(key=lambda row: (row["score"], row["doc_freq"]), reverse=True)
+    return rows[:max_topics]
+
+
 def _records_from_cached_train(tokenizer, train_data: dict) -> list[dict]:
     texts = train_data.get("texts")
     if texts is None:
@@ -556,9 +719,10 @@ def _load_records_for_mining(tokenizer, cache_dir: str) -> tuple[list[dict] | No
 def combine_topic_rows(
     entity_rows: Sequence[dict],
     phrase_rows: Sequence[dict],
+    curated_rows: Sequence[dict],
     max_topics: int,
 ) -> list[dict]:
-    """Prefer structured entity topics, then fill with diverse phrase topics."""
+    """Prefer structured entities, then mined phrases, then curated dataset-matched rows."""
     combined = []
     chosen_topics = []
 
@@ -569,13 +733,35 @@ def combine_topic_rows(
         combined.append(row)
         chosen_topics.append(row["topic"])
 
-    for row in phrase_rows:
-        if _is_redundant_phrase(row["topic"], chosen_topics):
-            continue
-        combined.append(row)
-        chosen_topics.append(row["topic"])
-        if len(combined) >= max_topics:
-            break
+    curated_content_rows = [row for row in curated_rows if row.get("kind") != "style"]
+    curated_style_rows = [row for row in curated_rows if row.get("kind") == "style"]
+
+    if len(combined) < max_topics:
+        for row in curated_content_rows:
+            if _is_redundant_phrase(row["topic"], chosen_topics):
+                continue
+            combined.append(row)
+            chosen_topics.append(row["topic"])
+            if len(combined) >= max_topics:
+                break
+
+    if len(combined) < max_topics:
+        for row in phrase_rows:
+            if _is_redundant_phrase(row["topic"], chosen_topics):
+                continue
+            combined.append(row)
+            chosen_topics.append(row["topic"])
+            if len(combined) >= max_topics:
+                break
+
+    if len(combined) < max_topics:
+        for row in curated_style_rows:
+            if _is_redundant_phrase(row["topic"], chosen_topics):
+                continue
+            combined.append(row)
+            chosen_topics.append(row["topic"])
+            if len(combined) >= max_topics:
+                break
 
     if len(combined) < max_topics:
         for row in entity_rows[entity_budget:]:
@@ -586,7 +772,6 @@ def combine_topic_rows(
             if len(combined) >= max_topics:
                 break
 
-    combined.sort(key=lambda row: row["score"], reverse=True)
     return combined[:max_topics]
 
 
@@ -606,10 +791,11 @@ def mine_topic_phrases_from_cache(
     if os.path.exists(out_path) and not force_refresh:
         with open(out_path, "r") as f:
             payload = json.load(f)
+        cached_version = payload.get("miner_version", 0)
         topics = payload.get("topics", [])
         metadata = payload.get("metadata", [])
         using_mined = bool(payload.get("using_mined_topics", False))
-        if topics:
+        if cached_version == TOPIC_MINER_VERSION and topics and (using_mined or metadata):
             return topics[:max_topics], metadata[:max_topics], using_mined
 
     records, record_source = _load_records_for_mining(tokenizer, cache_dir)
@@ -619,6 +805,7 @@ def mine_topic_phrases_from_cache(
         with open(out_path, "w") as f:
             json.dump(
                 {
+                    "miner_version": TOPIC_MINER_VERSION,
                     "using_mined_topics": False,
                     "topics": topics,
                     "metadata": metadata,
@@ -641,7 +828,13 @@ def mine_topic_phrases_from_cache(
         min_doc_freq=min_doc_freq,
         max_doc_freq_ratio=max_doc_freq_ratio,
     )
-    metadata = combine_topic_rows(entity_rows, phrase_rows, max_topics=max_topics)
+    curated_rows = mine_curated_topic_rows_from_records(
+        records,
+        max_topics=max_topics,
+        min_doc_freq=min_doc_freq,
+        max_doc_freq_ratio=max_doc_freq_ratio,
+    )
+    metadata = combine_topic_rows(entity_rows, phrase_rows, curated_rows, max_topics=max_topics)
     topics = [row["topic"] for row in metadata]
 
     using_mined_topics = len(topics) >= min(8, max_topics)
@@ -652,10 +845,15 @@ def mine_topic_phrases_from_cache(
     with open(out_path, "w") as f:
         json.dump(
             {
+                "miner_version": TOPIC_MINER_VERSION,
                 "using_mined_topics": using_mined_topics,
                 "topics": topics,
                 "metadata": metadata,
                 "record_source": record_source,
+                "phrase_topic_count": len(phrase_rows),
+                "entity_topic_count": len(entity_rows),
+                "curated_topic_count": len(curated_rows),
+                "reason": None if using_mined_topics else "insufficient dataset-supported mined topics",
             },
             f,
             indent=2,
@@ -678,17 +876,17 @@ CBDC_STYLE_BIAS_PAIRS = [
         "repeated-question-marks vs standard punctuation",
     ),
     (
-        "An excited {text_unit} with exclamation marks.",
+        "A {text_unit} containing an exclamation mark.",
         "A {text_unit} without exclamation marks.",
         "exclamation-mark vs no-exclamation-mark",
     ),
     (
-        "A very short {text_unit}.",
+        "A {text_unit} that is very short.",
         "A longer and more detailed {text_unit}.",
         "very-short vs longer-detailed",
     ),
     (
-        "A casual {text_unit} containing internet laughter like lol or haha.",
+        "A {text_unit} containing internet laughter like lol.",
         "A {text_unit} without internet laughter.",
         "internet-laughter vs no-laughter",
     ),
@@ -770,6 +968,25 @@ def build_debias_vl_prompt_bank(
     }
 
 
+def build_prompt_bank(
+    topics: Sequence[str],
+    topic_metadata: Sequence[dict] | None = None,
+    using_mined_topics: bool = False,
+    text_unit: str = "text",
+) -> dict:
+    """Backward-compatible prompt-bank builder from the older single-bank file."""
+    merged = build_cbdc_prompt_bank(text_unit=text_unit)
+    merged.update(
+        build_debias_vl_prompt_bank(
+            topics=topics,
+            topic_metadata=topic_metadata,
+            using_mined_topics=using_mined_topics,
+            text_unit=text_unit,
+        )
+    )
+    return merged
+
+
 def build_cbdc_prompt_bank(text_unit: str = "text") -> dict:
     """Build the prompt bank used by the pure CBDC text_iccv stage."""
     pole_a_text = [a.format(text_unit=text_unit) for a, _, _ in CBDC_STYLE_BIAS_PAIRS]
@@ -784,6 +1001,7 @@ def build_cbdc_prompt_bank(text_unit: str = "text") -> dict:
         "bias_pole_a_text": pole_a_text,
         "bias_pole_b_text": pole_b_text,
         "bias_pair_names": pair_names,
+        "legacy_style_biases": list(LEGACY_STYLE_BIASES),
     }
 
 
@@ -801,6 +1019,7 @@ def get_debias_vl_prompt_bank(
     metadata: list[dict] = []
     mining_error = None
     using_mined_topics = False
+    topics = DEFAULT_TOPICS[:max_topics]
 
     if use_mined_topics:
         try:
@@ -819,6 +1038,8 @@ def get_debias_vl_prompt_bank(
         else:
             if not metadata and not using_mined_topics:
                 metadata = DEFAULT_TOPIC_METADATA[:len(topics)]
+            if not using_mined_topics and mining_error is None:
+                mining_error = "insufficient dataset-supported mined topics"
     else:
         topics = DEFAULT_TOPICS[:max_topics]
         metadata = DEFAULT_TOPIC_METADATA[:max_topics]
