@@ -673,15 +673,13 @@ def build_prompt_bank(
     text_unit: str = "text",
 ) -> dict:
     """
-    Builds the CBDC prompt bank, safely mapping integer indices for S_pairs and B_pairs.
+    Builds the CBDC prompt bank, fully populating every key required by refine.py.
     """
     sentiments = ["negative", "neutral", "positive"]
     
     def get_prompt(s, topic, kind):
-        if kind == "style":
-            return f"A {s} {text_unit} {topic}"
-        else:
-            return f"A {s} {text_unit} about {topic}"
+        if kind == "style": return f"A {s} {text_unit} {topic}"
+        else: return f"A {s} {text_unit} about {topic}"
 
     candidate_prompt = []
     spurious_prompt = []
@@ -689,18 +687,15 @@ def build_prompt_bank(
     # 1. Build Spurious Prompts
     for i, topic in enumerate(topics):
         kind = topic_metadata[i].get("kind", "content") if topic_metadata and i < len(topic_metadata) else "content"
-        if kind == "style":
-            spurious_prompt.append(f"A {text_unit} {topic}")
-        else:
-            spurious_prompt.append(f"A {text_unit} about {topic}")
+        if kind == "style": spurious_prompt.append(f"A {text_unit} {topic}")
+        else: spurious_prompt.append(f"A {text_unit} about {topic}")
 
-    # 2. Build Candidate Grid and track Integer Indices for PyTorch
+    # 2. Build Candidate Grid and track Integer Indices for PyTorch debias_vl mapping
     grid_indices = {}
     idx = 0
     for s_idx, s in enumerate(sentiments):
         for t_idx, topic in enumerate(topics):
             kind = topic_metadata[t_idx].get("kind", "content") if topic_metadata and t_idx < len(topic_metadata) else "content"
-            
             candidate_prompt.append(get_prompt(s, topic, kind))
             grid_indices[(s_idx, t_idx)] = idx
             idx += 1
@@ -712,29 +707,31 @@ def build_prompt_bank(
     for s_idx in range(len(sentiments)):
         for t1_idx in range(len(topics)):
             for t2_idx in range(t1_idx + 1, len(topics)):
-                idx1 = grid_indices[(s_idx, t1_idx)]
-                idx2 = grid_indices[(s_idx, t2_idx)]
-                S_pairs.append((idx1, idx2))
+                S_pairs.append((grid_indices[(s_idx, t1_idx)], grid_indices[(s_idx, t2_idx)]))
 
     # 4. Build B_Pairs (Same Topic, Different Sentiment) using INTEGER INDICES
     for t_idx in range(len(topics)):
         for s1_idx in range(len(sentiments)):
             for s2_idx in range(s1_idx + 1, len(sentiments)):
-                idx1 = grid_indices[(s1_idx, t_idx)]
-                idx2 = grid_indices[(s2_idx, t_idx)]
-                B_pairs.append((idx1, idx2))
+                B_pairs.append((grid_indices[(s1_idx, t_idx)], grid_indices[(s2_idx, t_idx)]))
+
+    # Generate Class Groups to calculate sizes
+    cls_groups = make_cls_text_groups(text_unit)
 
     return {
-        "cls_text_groups": make_cls_text_groups(text_unit),
+        # Core Prompts
+        "cls_text_groups": cls_groups,
+        "cls_group_sizes": [len(g) for g in cls_groups], # <--- THE CRITICAL FIX FOR PGD 
         "target_text": make_target_text(text_unit),
         "keep_text": make_keep_text(text_unit),
         "candidate_prompt": candidate_prompt,
         "spurious_prompt": spurious_prompt,
         
-        # Now safely passing integer tuples to prevent Tensor TypeError
+        # Debias_VL Mappings
         "S_pairs": S_pairs,
         "B_pairs": B_pairs,
         
+        # Metadata Logging
         "topics": list(topics),
         "topic_metadata": topic_metadata or [],
         "using_mined_topics": using_mined_topics
@@ -776,7 +773,7 @@ def get_prompt_bank(
 DEFAULT_PROMPT_BANK = get_prompt_bank(text_unit="tweet")
 
 # ---------------------------------------------------------------------------
-# Encoding Helpers (Restored to original to prevent dictionary mismatches)
+# Encoding Helpers (Restored to exact original to prevent dictionary mismatches)
 # ---------------------------------------------------------------------------
 
 def encode_all_prompts(encoder, prompt_bank: dict | None = None) -> dict:
