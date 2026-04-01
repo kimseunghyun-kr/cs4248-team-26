@@ -675,28 +675,56 @@ def build_prompt_bank(
     text_unit: str = "text",
 ) -> dict:
     """
-    Builds the CBDC prompt bank. 
-    Restored original signature so downstream tasks don't break.
+    Builds the CBDC prompt bank, including S_pairs and B_pairs for debias_vl.
     """
     sentiments = ["negative", "neutral", "positive"]
     
+    def get_prompt(s, topic, kind):
+        if kind == "style":
+            return f"A {s} {text_unit} {topic}"
+        else:
+            return f"A {s} {text_unit} about {topic}"
+
     candidate_prompt = []
     spurious_prompt = []
-    
+    S_pairs = []
+    B_pairs = []
+
+    # 1. Base Prompts
     for i, topic in enumerate(topics):
-        # Check metadata to see if it's a "style" or "content" topic to format the grammar
         kind = "content"
         if topic_metadata and i < len(topic_metadata):
             kind = topic_metadata[i].get("kind", "content")
             
         if kind == "style":
             spurious_prompt.append(f"A {text_unit} {topic}")
-            for s in sentiments:
-                candidate_prompt.append(f"A {s} {text_unit} {topic}")
         else:
             spurious_prompt.append(f"A {text_unit} about {topic}")
-            for s in sentiments:
-                candidate_prompt.append(f"A {s} {text_unit} about {topic}")
+            
+        for s in sentiments:
+            candidate_prompt.append(get_prompt(s, topic, kind))
+
+    # 2. S_Pairs (Same Sentiment, Different Topic/Style)
+    for s in sentiments:
+        for i in range(len(topics)):
+            kind_i = topic_metadata[i].get("kind", "content") if topic_metadata and i < len(topic_metadata) else "content"
+            p1 = get_prompt(s, topics[i], kind_i)
+            
+            for j in range(i + 1, len(topics)):
+                kind_j = topic_metadata[j].get("kind", "content") if topic_metadata and j < len(topic_metadata) else "content"
+                p2 = get_prompt(s, topics[j], kind_j)
+                S_pairs.append((p1, p2))
+
+    # 3. B_Pairs (Same Topic/Style, Different Sentiment)
+    for i, topic in enumerate(topics):
+        kind = topic_metadata[i].get("kind", "content") if topic_metadata and i < len(topic_metadata) else "content"
+        
+        for s1_idx in range(len(sentiments)):
+            p1 = get_prompt(sentiments[s1_idx], topic, kind)
+            
+            for s2_idx in range(s1_idx + 1, len(sentiments)):
+                p2 = get_prompt(sentiments[s2_idx], topic, kind)
+                B_pairs.append((p1, p2))
 
     return {
         "cls_text_groups": make_cls_text_groups(text_unit),
@@ -705,7 +733,11 @@ def build_prompt_bank(
         "candidate_prompt": candidate_prompt,
         "spurious_prompt": spurious_prompt,
         
-        # Original metadata keys required by refine.py
+        # Pairs required by refine.py (debias_vl step)
+        "S_pairs": S_pairs,
+        "B_pairs": B_pairs,
+        
+        # Original metadata keys required by refine.py logging
         "topics": list(topics),
         "topic_metadata": topic_metadata or [],
         "using_mined_topics": using_mined_topics
@@ -745,6 +777,7 @@ def get_prompt_bank(
         text_unit=text_unit
     )
 
+
 # Instantiate the default bank
 DEFAULT_PROMPT_BANK = get_prompt_bank(text_unit="tweet")
 
@@ -755,13 +788,29 @@ DEFAULT_PROMPT_BANK = get_prompt_bank(text_unit="tweet")
 def encode_all_prompts(encoder, prompt_bank: dict | None = None) -> dict:
     """Encode every prompt set with the given encoder."""
     bank = prompt_bank or DEFAULT_PROMPT_BANK
-    return {
+    
+    encoded = {
         "cls_cb":       encode_grouped_prompts(encoder, bank["cls_text_groups"]),
         "target_cb":    encoder.encode_text(bank["target_text"]),
         "keep_cb":      encoder.encode_text(bank["keep_text"]),
         "candidate_cb": encoder.encode_text(bank["candidate_prompt"]),
         "spurious_cb":  encoder.encode_text(bank["spurious_prompt"]),
     }
+    
+    # Safely handle encoding of S_pairs and B_pairs if refine.py requests them
+    if "S_pairs" in bank:
+        flat_S = [p for pair in bank["S_pairs"] for p in pair]
+        if flat_S:
+            encoded_S = encoder.encode_text(flat_S)
+            encoded["S_pairs_cb"] = list(zip(encoded_S[0::2], encoded_S[1::2]))
+            
+    if "B_pairs" in bank:
+        flat_B = [p for pair in bank["B_pairs"] for p in pair]
+        if flat_B:
+            encoded_B = encoder.encode_text(flat_B)
+            encoded["B_pairs_cb"] = list(zip(encoded_B[0::2], encoded_B[1::2]))
+            
+    return encoded
 
 def flatten_prompt_groups(prompt_groups: Sequence[Sequence[str]]) -> list[str]:
     """Flatten prompt groups while preserving class order."""
