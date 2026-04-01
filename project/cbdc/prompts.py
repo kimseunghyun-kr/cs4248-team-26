@@ -664,35 +664,53 @@ def mine_topic_phrases_from_cache(
     return topics, metadata, using_mined_topics
 
 
-# prompts.py
+# ---------------------------------------------------------------------------
+# Core Prompt Builders
+# ---------------------------------------------------------------------------
 
-# Replace the function that defines the prompts (or create this dictionary structure)
-def build_prompt_bank(text_unit="tweet"):
+def build_prompt_bank(
+    topics: Sequence[str],
+    topic_metadata: Sequence[dict] | None = None,
+    using_mined_topics: bool = False,
+    text_unit: str = "text",
+) -> dict:
+    """
+    Builds the CBDC prompt bank. 
+    Restored original signature so downstream tasks don't break.
+    """
     sentiments = ["negative", "neutral", "positive"]
     
-    # The 6 exact styles that maximally separate your dataset
-    style_biases = [
-        "ending with a question mark",
-        "containing multiple question marks",
-        "containing an exclamation mark",
-        "that is very short",
-        "containing internet laughter like lol",
-        "containing an emoticon"
-    ]
-
-    target_text = [f"A {s} {text_unit}" for s in sentiments]
-    spurious_prompt = [f"A {text_unit} {style}" for style in style_biases]
+    candidate_prompt = []
+    spurious_prompt = []
     
-    # Cross product for SVD mapping
-    candidate_prompt = [f"A {s} {text_unit} {style}" for s in sentiments for style in style_biases]
+    for i, topic in enumerate(topics):
+        # Check metadata to see if it's a "style" or "content" topic to format the grammar
+        kind = "content"
+        if topic_metadata and i < len(topic_metadata):
+            kind = topic_metadata[i].get("kind", "content")
+            
+        if kind == "style":
+            spurious_prompt.append(f"A {text_unit} {topic}")
+            for s in sentiments:
+                candidate_prompt.append(f"A {s} {text_unit} {topic}")
+        else:
+            spurious_prompt.append(f"A {text_unit} about {topic}")
+            for s in sentiments:
+                candidate_prompt.append(f"A {s} {text_unit} about {topic}")
 
     return {
-        "cls_text_groups": [[f"A {s} {text_unit}"] for s in sentiments],
-        "target_text": target_text,
-        "keep_text": [f"A standard {text_unit}", f"A normal {text_unit}"],
+        "cls_text_groups": make_cls_text_groups(text_unit),
+        "target_text": make_target_text(text_unit),
+        "keep_text": make_keep_text(text_unit),
         "candidate_prompt": candidate_prompt,
-        "spurious_prompt": spurious_prompt
+        "spurious_prompt": spurious_prompt,
+        
+        # Original metadata keys required by refine.py
+        "topics": list(topics),
+        "topic_metadata": topic_metadata or [],
+        "using_mined_topics": using_mined_topics
     }
+
 
 def get_prompt_bank(
     tokenizer=None,
@@ -705,13 +723,34 @@ def get_prompt_bank(
     text_unit: str = "text",
 ) -> dict:
     """
-    Return the active prompt bank.
-    (Mining logic is bypassed since we are hardcoding stylistic features).
+    Return the active prompt bank. 
+    We intercept the pipeline here to feed our high-separation stylistic attributes
+    into the robust build_prompt_bank function.
     """
-    return build_prompt_bank(text_unit=text_unit)
+    # The exact styles that maximally separate the train.csv dataset
+    style_biases = [
+        "ending with a question mark",
+        "containing multiple question marks",
+        "containing an exclamation mark",
+        "that is very short",
+        "containing internet laughter like lol",
+        "containing an emoticon"
+    ]
+    style_metadata = [{"topic": s, "kind": "style"} for s in style_biases]
 
-# Instantiate the default bank using our new function
-DEFAULT_PROMPT_BANK = build_prompt_bank(text_unit="tweet")
+    return build_prompt_bank(
+        topics=style_biases,
+        topic_metadata=style_metadata,
+        using_mined_topics=False,
+        text_unit=text_unit
+    )
+
+# Instantiate the default bank
+DEFAULT_PROMPT_BANK = get_prompt_bank(text_unit="tweet")
+
+# ---------------------------------------------------------------------------
+# Encoding Helpers
+# ---------------------------------------------------------------------------
 
 def encode_all_prompts(encoder, prompt_bank: dict | None = None) -> dict:
     """Encode every prompt set with the given encoder."""
