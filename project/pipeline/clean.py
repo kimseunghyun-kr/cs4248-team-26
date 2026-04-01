@@ -129,7 +129,7 @@ def apply_cleaning(direction: torch.Tensor, direction_name: str) -> None:
         z = data["embeddings"]
         labels = data.get("labels")
 
-        z_clean = amplify_bias(z, direction, alpha=3.0)
+        z_clean = project_out(z, direction, alpha=3.0)
 
         # Report magnitude removed
         if direction.dim() == 2 and direction.shape[0] == direction.shape[1]:
