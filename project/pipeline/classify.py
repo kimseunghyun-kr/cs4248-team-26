@@ -1,20 +1,19 @@
 """
-Phase 4: Classification and evaluation.
+Phase 2: classifier training and evaluation.
 
-Default behavior is unchanged:
-  - train linear probes on cached embeddings for all experiment conditions
-
-Optional transformer mode:
-  - fine-tune a transformer classifier on the raw tokenized train/val/test
-    splits cached by Phase 1 (`data/embed.py`)
+Modes:
+  - linear: train a linear probe on cached Phase 1 embeddings
+  - transformer: fine-tune a transformer classifier on cached tokens or
+    reconstructed dataset records
 
 Run from project/ directory:
-  python pipeline/classify.py
+  python pipeline/classify.py --classifier linear
   python pipeline/classify.py --classifier transformer
 """
 
 import sys
 import os
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import argparse
@@ -23,8 +22,8 @@ from dataclasses import asdict
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset, TensorDataset
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, f1_score
+from torch.utils.data import DataLoader, Dataset, TensorDataset
 from transformers import AutoTokenizer, get_linear_schedule_with_warmup
 
 from config import TransformerClassifierConfig
@@ -36,12 +35,14 @@ from dataset import (
     records_from_cached_payload,
 )
 from encoder import TransformerEncoder
-from pipeline.clean import materialize_sentiment_boost_conditions
 
 
 LABEL_NAMES = ["negative", "neutral", "positive"]
-_DEFAULT_CACHE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache")
+PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_DEFAULT_CACHE = os.path.join(PROJECT_DIR, "cache")
 CACHE_DIR = os.environ.get("CACHE_DIR", _DEFAULT_CACHE)
+LINEAR_RESULTS_FILE = os.environ.get("LINEAR_RESULTS_FILE", "linear_results.pt")
+LINEAR_CKPT_FILE = os.environ.get("LINEAR_CKPT_FILE", "linear_probe.pt")
 TRANSFORMER_RESULTS_FILE = os.environ.get("TRANSFORMER_RESULTS_FILE", "transformer_results.pt")
 TRANSFORMER_CKPT_FILE = os.environ.get("TRANSFORMER_CKPT_FILE", "transformer_classifier.pt")
 
@@ -56,7 +57,7 @@ class LinearProbe(nn.Module):
 
 
 class CachedTokenDataset(Dataset):
-    """Dataset view over Phase 1 cached token IDs / masks."""
+    """Dataset view over Phase 1 cached token IDs and masks."""
 
     def __init__(self, payload: dict):
         self.input_ids = payload["input_ids"]
@@ -206,20 +207,53 @@ class TransformerClassifier(nn.Module):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
 
-def train_probe(z_train, y_train, z_val, y_val, device,
-                epochs=50, lr=1e-3, batch_size=256, weight_decay=1e-4):
+def summarize_predictions(labels: list[int], preds: list[int]) -> dict:
+    report_text = classification_report(
+        labels,
+        preds,
+        labels=[0, 1, 2],
+        target_names=LABEL_NAMES,
+        digits=4,
+        zero_division=0,
+    )
+    report_dict = classification_report(
+        labels,
+        preds,
+        labels=[0, 1, 2],
+        target_names=LABEL_NAMES,
+        output_dict=True,
+        zero_division=0,
+    )
+    return {
+        "macro_f1": f1_score(labels, preds, average="macro"),
+        "accuracy": accuracy_score(labels, preds),
+        "report": report_text,
+        "report_dict": report_dict,
+        "confusion_matrix": confusion_matrix(labels, preds, labels=[0, 1, 2]).tolist(),
+    }
+
+
+def train_probe(
+    z_train,
+    y_train,
+    z_val,
+    y_val,
+    device,
+    epochs: int = 50,
+    lr: float = 1e-3,
+    batch_size: int = 256,
+    weight_decay: float = 1e-4,
+):
     in_dim = z_train.shape[1]
     model = LinearProbe(in_dim=in_dim, n_classes=3).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     crit = nn.CrossEntropyLoss()
-
-    loader = DataLoader(TensorDataset(z_train, y_train),
-                        batch_size=batch_size, shuffle=True)
+    loader = DataLoader(TensorDataset(z_train, y_train), batch_size=batch_size, shuffle=True)
 
     best_val_f1 = 0.0
     best_state = None
 
-    for epoch in range(epochs):
+    for _ in range(epochs):
         model.train()
         for z_b, y_b in loader:
             z_b, y_b = z_b.to(device), y_b.to(device)
@@ -229,8 +263,8 @@ def train_probe(z_train, y_train, z_val, y_val, device,
 
         model.eval()
         with torch.no_grad():
-            preds = model(z_val.to(device)).argmax(dim=-1).cpu().numpy()
-        val_f1 = f1_score(y_val.numpy(), preds, average="macro")
+            preds = model(z_val.to(device)).argmax(dim=-1).cpu().tolist()
+        val_f1 = f1_score(y_val.tolist(), preds, average="macro")
 
         if val_f1 > best_val_f1:
             best_val_f1 = val_f1
@@ -241,38 +275,28 @@ def train_probe(z_train, y_train, z_val, y_val, device,
     return model, best_val_f1
 
 
-def evaluate_probe(model, z, y, device):
+def evaluate_probe(model, z, y, device) -> dict:
     model.eval()
     with torch.no_grad():
-        preds = model(z.to(device)).argmax(dim=-1).cpu().numpy()
-    labels_np = y.numpy()
-    f1 = f1_score(labels_np, preds, average="macro")
-    report = classification_report(
-        labels_np, preds,
-        target_names=LABEL_NAMES,
-        digits=4,
-    )
-    return f1, report
+        preds = model(z.to(device)).argmax(dim=-1).cpu().tolist()
+    return summarize_predictions(y.tolist(), preds)
 
 
-def load_embeddings(name: str):
-    results = {}
-    for split in ["train", "val", "test"]:
-        if name == "raw":
-            path = os.path.join(CACHE_DIR, f"z_tweet_{split}.pt")
-        else:
-            path = os.path.join(CACHE_DIR, f"z_tweet_{split}_{name}.pt")
-        if not os.path.exists(path):
-            return None
-        results[split] = torch.load(path, map_location="cpu")
-    return results
-
-
-def _load_cached_raw_split(split: str) -> dict | None:
+def load_cached_split(split: str) -> dict | None:
     path = os.path.join(CACHE_DIR, f"z_tweet_{split}.pt")
     if not os.path.exists(path):
         return None
     return torch.load(path, map_location="cpu")
+
+
+def load_cached_embedding_splits() -> dict | None:
+    payloads = {}
+    for split in ["train", "val", "test"]:
+        payload = load_cached_split(split)
+        if payload is None:
+            return None
+        payloads[split] = payload
+    return payloads
 
 
 def collate_cached_batch(batch: list[dict]) -> dict:
@@ -344,10 +368,7 @@ def should_use_cached_tokens(cfg: TransformerClassifierConfig) -> bool:
 
 
 def build_transformer_dataloaders(tokenizer, cfg: TransformerClassifierConfig) -> tuple[dict, str]:
-    cached_payloads = {
-        split: _load_cached_raw_split(split)
-        for split in ["train", "val", "test"]
-    }
+    cached_payloads = {split: load_cached_split(split) for split in ["train", "val", "test"]}
 
     if should_use_cached_tokens(cfg) and all(payload is not None for payload in cached_payloads.values()):
         print("Loading transformer classifier data from cached Phase 1 token splits.")
@@ -369,7 +390,7 @@ def build_transformer_dataloaders(tokenizer, cfg: TransformerClassifierConfig) -
             train_records, val_records, test_records = load_records()
             source = "dataset_records"
 
-        def _build_dataset(records):
+        def build_dataset(records):
             texts, labels, secondary_texts = build_transformer_text_views(
                 records,
                 input_mode=cfg.input_mode,
@@ -386,9 +407,9 @@ def build_transformer_dataloaders(tokenizer, cfg: TransformerClassifierConfig) -
             )
 
         datasets = {
-            "train": _build_dataset(train_records),
-            "val": _build_dataset(val_records),
-            "test": _build_dataset(test_records),
+            "train": build_dataset(train_records),
+            "val": build_dataset(val_records),
+            "test": build_dataset(test_records),
         }
         collate_fn = make_collate_fn(tokenizer.pad_token_id or 0)
 
@@ -463,8 +484,8 @@ def train_transformer_epoch(
         logits = model(
             batch["input_ids"].to(device),
             batch["attention_mask"].to(device),
-            selected_input_ids=None if "selected_input_ids" not in batch else batch["selected_input_ids"].to(device),
-            selected_attention_mask=None if "selected_attention_mask" not in batch else batch["selected_attention_mask"].to(device),
+            selected_input_ids=batch.get("selected_input_ids").to(device) if "selected_input_ids" in batch else None,
+            selected_attention_mask=batch.get("selected_attention_mask").to(device) if "selected_attention_mask" in batch else None,
         )
         labels = batch["labels"].to(device)
         loss = criterion(logits, labels)
@@ -479,11 +500,9 @@ def train_transformer_epoch(
         all_preds.extend(logits.argmax(dim=-1).detach().cpu().tolist())
         all_labels.extend(labels.detach().cpu().tolist())
 
-    return {
-        "loss": total_loss / max(1, len(loader)),
-        "macro_f1": f1_score(all_labels, all_preds, average="macro"),
-        "accuracy": accuracy_score(all_labels, all_preds),
-    }
+    metrics = summarize_predictions(all_labels, all_preds)
+    metrics["loss"] = total_loss / max(1, len(loader))
+    return metrics
 
 
 def evaluate_transformer_classifier(
@@ -502,8 +521,8 @@ def evaluate_transformer_classifier(
             logits = model(
                 batch["input_ids"].to(device),
                 batch["attention_mask"].to(device),
-                selected_input_ids=None if "selected_input_ids" not in batch else batch["selected_input_ids"].to(device),
-                selected_attention_mask=None if "selected_attention_mask" not in batch else batch["selected_attention_mask"].to(device),
+                selected_input_ids=batch.get("selected_input_ids").to(device) if "selected_input_ids" in batch else None,
+                selected_attention_mask=batch.get("selected_attention_mask").to(device) if "selected_attention_mask" in batch else None,
             )
             labels = batch["labels"].to(device)
             loss = criterion(logits, labels)
@@ -512,111 +531,62 @@ def evaluate_transformer_classifier(
             all_preds.extend(logits.argmax(dim=-1).cpu().tolist())
             all_labels.extend(labels.cpu().tolist())
 
-    report_text = classification_report(
-        all_labels,
-        all_preds,
-        labels=[0, 1, 2],
-        target_names=LABEL_NAMES,
-        digits=4,
-        zero_division=0,
-    )
-    report_dict = classification_report(
-        all_labels,
-        all_preds,
-        labels=[0, 1, 2],
-        target_names=LABEL_NAMES,
-        output_dict=True,
-        zero_division=0,
-    )
-    return {
-        "loss": total_loss / max(1, len(loader)),
-        "macro_f1": f1_score(all_labels, all_preds, average="macro"),
-        "accuracy": accuracy_score(all_labels, all_preds),
-        "report": report_text,
-        "report_dict": report_dict,
-        "confusion_matrix": confusion_matrix(all_labels, all_preds, labels=[0, 1, 2]).tolist(),
-    }
+    metrics = summarize_predictions(all_labels, all_preds)
+    metrics["loss"] = total_loss / max(1, len(loader))
+    return metrics
 
 
-# Condition name → cache suffix
-CONDITIONS = {
-    "B1 (raw)":            "raw",
-    "D1 (debias_vl)":      "clean_debias_vl",
-    "D2 (CBDC)":           "cbdc",
-    "D3 (CBDC+proj)":      "clean_cbdc_proj",
-    "D4 (raw+sent-boost)": "clean_raw_sentiment_boost",
-    "D5 (CBDC+sent-boost)": "clean_cbdc_sentiment_boost",
-    "C (label-guided)":    "clean_label_guided",
-}
-
-BOOST_SUFFIXES = {
-    "clean_raw_sentiment_boost",
-    "clean_cbdc_sentiment_boost",
-}
-
-
-def run_linear_probe_experiments():
+def run_linear_probe_experiment():
     os.makedirs(CACHE_DIR, exist_ok=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
 
-    all_results = {}
+    payloads = load_cached_embedding_splits()
+    if payloads is None:
+        raise FileNotFoundError(
+            "Cached embeddings not found. Run data/embed.py first so z_tweet_{train,val,test}.pt exist."
+        )
 
-    for cond_name, cache_suffix in CONDITIONS.items():
-        print(f"\n{'='*60}")
-        print(f"Condition: {cond_name}")
-        print(f"{'='*60}")
+    z_train = payloads["train"]["embeddings"]
+    y_train = payloads["train"]["labels"]
+    z_val = payloads["val"]["embeddings"]
+    y_val = payloads["val"]["labels"]
+    z_test = payloads["test"]["embeddings"]
+    y_test = payloads["test"]["labels"]
 
-        data = load_embeddings(cache_suffix)
-        if data is None and cache_suffix in BOOST_SUFFIXES:
-            print("  missing boost embeddings; attempting to materialize them from Phase 2 artifacts ...")
-            materialize_sentiment_boost_conditions(alpha=2.0)
-            data = load_embeddings(cache_suffix)
-        if data is None:
-            print(f"  [skip] Embeddings not found for '{cache_suffix}'")
-            all_results[cond_name] = None
-            continue
+    print(f"Loaded cached embeddings: train={len(z_train)} val={len(z_val)} test={len(z_test)} "
+          f"dim={z_train.shape[1]}")
 
-        z_train = data["train"]["embeddings"]
-        y_train = data["train"]["labels"]
-        z_val   = data["val"]["embeddings"]
-        y_val   = data["val"]["labels"]
-        z_test  = data["test"]["embeddings"]
-        y_test  = data["test"]["labels"]
+    model, best_val_f1 = train_probe(z_train, y_train, z_val, y_val, device)
+    train_metrics = evaluate_probe(model, z_train, y_train, device)
+    val_metrics = evaluate_probe(model, z_val, y_val, device)
+    test_metrics = evaluate_probe(model, z_test, y_test, device)
 
-        print(f"  train={len(z_train)} val={len(z_val)} test={len(z_test)} dim={z_train.shape[1]}")
+    print(f"Best val macro-F1: {best_val_f1:.4f}")
+    print(f"Test macro-F1: {test_metrics['macro_f1']:.4f} | accuracy={test_metrics['accuracy']:.4f}")
+    print("\nTest classification report:")
+    for line in test_metrics["report"].strip().split("\n"):
+        print(f"  {line}")
 
-        model, best_val_f1 = train_probe(z_train, y_train, z_val, y_val, device)
-        test_f1, report = evaluate_probe(model, z_test, y_test, device)
+    ckpt_path = os.path.join(CACHE_DIR, LINEAR_CKPT_FILE)
+    torch.save(model.state_dict(), ckpt_path)
 
-        print(f"  val_f1={best_val_f1:.4f} | test_f1={test_f1:.4f}")
-        print(f"\n  Test classification report:")
-        for line in report.strip().split("\n"):
-            print(f"    {line}")
+    results = {
+        "mode": "linear",
+        "cache_dir": CACHE_DIR,
+        "data_source": "cache_embeddings",
+        "embedding_dim": int(z_train.shape[1]),
+        "best_val_f1": best_val_f1,
+        "checkpoint_path": ckpt_path,
+        "train": train_metrics,
+        "val": val_metrics,
+        "test": test_metrics,
+    }
 
-        all_results[cond_name] = {
-            "val_f1":  best_val_f1,
-            "test_f1": test_f1,
-            "report":  report,
-        }
-
-        probe_path = os.path.join(CACHE_DIR, f"probe_{cache_suffix}.pt")
-        torch.save(model.state_dict(), probe_path)
-
-    print(f"\n{'='*60}")
-    print("SUMMARY")
-    print(f"{'='*60}")
-    print(f"{'Condition':<25} {'Val F1':>8} {'Test F1':>9}")
-    print("-" * 45)
-    for cond_name, res in all_results.items():
-        if res is None:
-            print(f"{cond_name:<25} {'N/A':>8} {'N/A':>9}")
-        else:
-            print(f"{cond_name:<25} {res['val_f1']:>8.4f} {res['test_f1']:>9.4f}")
-
-    out_path = os.path.join(CACHE_DIR, "results.pt")
-    torch.save(all_results, out_path)
-    print(f"\nResults saved -> {out_path}")
+    results_path = os.path.join(CACHE_DIR, LINEAR_RESULTS_FILE)
+    torch.save(results, results_path)
+    print(f"\nLinear results saved -> {results_path}")
+    print(f"Linear probe checkpoint -> {ckpt_path}")
 
 
 def run_transformer_experiment(args):
@@ -671,8 +641,10 @@ def run_transformer_experiment(args):
 
     loaders, data_source = build_transformer_dataloaders(encoder.tokenizer, cfg)
     print(f"Data source: {data_source}")
-    print(f"Split sizes: train={len(loaders['train'].dataset)} | "
-          f"val={len(loaders['val'].dataset)} | test={len(loaders['test'].dataset)}")
+    print(
+        f"Split sizes: train={len(loaders['train'].dataset)} | "
+        f"val={len(loaders['val'].dataset)} | test={len(loaders['test'].dataset)}"
+    )
 
     model = TransformerClassifier(
         encoder=encoder,
@@ -704,7 +676,6 @@ def run_transformer_experiment(args):
     )
 
     best_val_f1 = float("-inf")
-    best_epoch = 0
     patience_used = 0
     history = []
     ckpt_path = os.path.join(CACHE_DIR, TRANSFORMER_CKPT_FILE)
@@ -733,19 +704,20 @@ def run_transformer_experiment(args):
             }
         )
 
-        print(f"Epoch {epoch}/{cfg.n_epochs}: "
-              f"train_loss={train_metrics['loss']:.4f} train_f1={train_metrics['macro_f1']:.4f} "
-              f"val_loss={val_metrics['loss']:.4f} val_f1={val_metrics['macro_f1']:.4f}")
+        print(
+            f"Epoch {epoch}/{cfg.n_epochs}: "
+            f"train_loss={train_metrics['loss']:.4f} train_f1={train_metrics['macro_f1']:.4f} "
+            f"val_loss={val_metrics['loss']:.4f} val_f1={val_metrics['macro_f1']:.4f}"
+        )
 
         if val_metrics["macro_f1"] > best_val_f1:
             best_val_f1 = val_metrics["macro_f1"]
-            best_epoch = epoch
             patience_used = 0
             torch.save(
                 {
                     "model_state_dict": model.state_dict(),
                     "config": asdict(cfg),
-                    "best_epoch": best_epoch,
+                    "best_epoch": epoch,
                     "best_val_f1": best_val_f1,
                     "model_name": args.model_name,
                     "tokenizer_name": tokenizer_name,
@@ -779,8 +751,10 @@ def run_transformer_experiment(args):
     for split in ["train", "val", "test"]:
         metrics = evaluate_transformer_classifier(model, loaders[split], criterion, device)
         results[split] = metrics
-        print(f"Best checkpoint {split}: loss={metrics['loss']:.4f} "
-              f"macro_f1={metrics['macro_f1']:.4f} acc={metrics['accuracy']:.4f}")
+        print(
+            f"Best checkpoint {split}: loss={metrics['loss']:.4f} "
+            f"macro_f1={metrics['macro_f1']:.4f} acc={metrics['accuracy']:.4f}"
+        )
 
     results_path = os.path.join(CACHE_DIR, TRANSFORMER_RESULTS_FILE)
     torch.save(results, results_path)
@@ -789,9 +763,8 @@ def run_transformer_experiment(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Classifier training + evaluation.")
-    parser.add_argument("--classifier", choices=["linear", "transformer"], default="linear",
-                        help="Classifier mode. 'linear' preserves the original Phase 4 behavior.")
+    parser = argparse.ArgumentParser(description="Classifier training and evaluation.")
+    parser.add_argument("--classifier", choices=["linear", "transformer"], default="linear")
     parser.add_argument("--model_name", default=os.environ.get("MODEL_NAME", "bert-base-uncased"))
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--eval_batch_size", type=int, default=64)
@@ -804,8 +777,11 @@ def main():
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--unfreeze_layers", type=int, default=4)
     parser.add_argument("--pooling", default="cls")
-    parser.add_argument("--input_mode", choices=["text", "text_plus_selected", "text_selected_pair"],
-                        default="text_plus_selected")
+    parser.add_argument(
+        "--input_mode",
+        choices=["text", "text_plus_selected", "text_selected_pair"],
+        default="text_plus_selected",
+    )
     parser.add_argument("--head_type", choices=["linear", "mlp"], default="mlp")
     parser.add_argument("--hidden_dim", type=int, default=0)
     parser.add_argument("--loss_name", choices=["cross_entropy", "focal"], default="cross_entropy")
@@ -823,7 +799,7 @@ def main():
     if args.classifier == "transformer":
         run_transformer_experiment(args)
     else:
-        run_linear_probe_experiments()
+        run_linear_probe_experiment()
 
 
 if __name__ == "__main__":
