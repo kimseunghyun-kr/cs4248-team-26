@@ -83,6 +83,14 @@ class TransformerClassifierConfig:
     unfreeze_layers: int = 4
     train_embeddings: bool = False
     pooling: str = "cls"   # "cls" | "mean" | "pooler"
+    input_mode: str = "text_plus_selected"  # "text" | "text_plus_selected" | "text_selected_pair"
+    use_time_of_tweet: bool = False
+    use_age_of_user: bool = False
+    use_country: bool = False
+    loss_name: str = "cross_entropy"  # "cross_entropy" | "focal"
+    focal_gamma: float = 1.5
+    head_type: str = "mlp"  # "linear" | "mlp"
+    hidden_dim: int = 0
     patience: int = 2
     label_smoothing: float = 0.0
     use_class_weights: bool = True

@@ -72,6 +72,8 @@ Common variants:
 ```bash
 python run_transformer.py --model distilbert --epochs 3 --unfreeze_layers 2
 python run_transformer.py --model finbert --max_length 160
+python run_transformer.py --model distilbert --input_mode text_selected_pair --head_type mlp --loss_name focal
+python run_transformer.py --model distilbert --use_time_of_tweet --use_age_of_user
 python run_transformer.py --only_phase 2
 python run_transformer.py --start_phase 2
 ```
@@ -301,7 +303,12 @@ These are the safest knobs to change without restructuring the repo.
 - weight decay
 - transformer unfreezing depth with `--unfreeze_layers`
 - transformer pooling with `--pooling`
+- transformer input construction with `--input_mode`
+- classifier head choice with `--head_type`
+- focal-vs-cross-entropy choice with `--loss_name`
+- focal strength with `--focal_gamma`
 - whether to train embeddings in transformer mode
+- whether to add `Time of Tweet`, `Age of User`, and `Country` to the classifier input
 - text-unit wording for prompts with `--text_unit`
 - whether to disable sentiment-orthogonal PGD with `--no_sent_orthogonal_pgd`
 
@@ -429,6 +436,25 @@ Usually the files to inspect are:
 - `project/run_transformer.py`
 - `project/pipeline/classify.py`
 - `project/encoder.py`
+
+Useful knobs for the current `train.csv` setup:
+
+- `--input_mode text_plus_selected`
+  - concatenates the tweet text with `selected_text`
+
+- `--input_mode text_selected_pair`
+  - encodes the full tweet and `selected_text` separately, then fuses them in the classifier head
+
+- `--use_time_of_tweet`
+- `--use_age_of_user`
+- `--use_country`
+  - inject structured columns into the model input as natural-language prefixes
+
+- `--head_type mlp`
+  - uses a stronger MLP head instead of a bare linear layer
+
+- `--loss_name focal`
+  - helps the classifier focus more on harder or ambiguous examples
 
 ## Environment Variables
 

@@ -22,12 +22,13 @@ from dataclasses import asdict
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, f1_score
 from transformers import AutoTokenizer, get_linear_schedule_with_warmup
 
 from config import TransformerClassifierConfig
-from dataset import TextDataset, load_records, make_collate_fn
+from dataset import load_records
 from encoder import TransformerEncoder
 from pipeline.clean import materialize_sentiment_boost_conditions
 
@@ -69,8 +70,116 @@ class CachedTokenDataset(Dataset):
         }
 
 
+class TransformerRecordDataset(Dataset):
+    """Tokenizes text records with optional selected-text / metadata features."""
+
+    def __init__(self, records: list[dict], tokenizer, cfg: TransformerClassifierConfig):
+        self.records = records
+        self.tokenizer = tokenizer
+        self.cfg = cfg
+        self.labels = [int(r["label"]) for r in records]
+        self.texts = [build_primary_text(r, cfg) for r in records]
+        self.selected_texts = None
+        if cfg.input_mode == "text_selected_pair":
+            self.selected_texts = [build_selected_view_text(r) for r in records]
+
+    def __len__(self) -> int:
+        return len(self.records)
+
+    def __getitem__(self, idx: int) -> dict:
+        primary = self.tokenizer(
+            self.texts[idx],
+            truncation=True,
+            max_length=self.cfg.max_length,
+            padding=False,
+            return_tensors=None,
+        )
+        item = {
+            "input_ids": primary["input_ids"],
+            "attention_mask": primary["attention_mask"],
+            "labels": self.labels[idx],
+            "text": self.texts[idx],
+        }
+        if self.selected_texts is not None:
+            selected = self.tokenizer(
+                self.selected_texts[idx],
+                truncation=True,
+                max_length=self.cfg.max_length,
+                padding=False,
+                return_tensors=None,
+            )
+            item["selected_input_ids"] = selected["input_ids"]
+            item["selected_attention_mask"] = selected["attention_mask"]
+            item["selected_text"] = self.selected_texts[idx]
+        return item
+
+
+class FocalCrossEntropyLoss(nn.Module):
+    """Focal cross-entropy for harder 3-way sentiment examples."""
+
+    def __init__(
+        self,
+        weight: torch.Tensor | None = None,
+        gamma: float = 1.5,
+        label_smoothing: float = 0.0,
+    ):
+        super().__init__()
+        self.weight = weight
+        self.gamma = gamma
+        self.label_smoothing = label_smoothing
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        ce = F.cross_entropy(
+            logits,
+            targets,
+            weight=self.weight,
+            reduction="none",
+            label_smoothing=self.label_smoothing,
+        )
+        probs = F.softmax(logits, dim=-1)
+        pt = probs.gather(1, targets.unsqueeze(1)).squeeze(1).clamp_min(1e-8)
+        loss = ((1.0 - pt) ** self.gamma) * ce
+        return loss.mean()
+
+
+class ClassificationHead(nn.Module):
+    """Classifier head with optional MLP projection."""
+
+    def __init__(
+        self,
+        in_dim: int,
+        num_labels: int,
+        dropout: float = 0.1,
+        head_type: str = "mlp",
+        hidden_dim: int = 0,
+    ):
+        super().__init__()
+        if head_type not in {"linear", "mlp"}:
+            raise ValueError("head_type must be 'linear' or 'mlp'")
+
+        if hidden_dim <= 0:
+            hidden_dim = in_dim
+
+        layers = [nn.LayerNorm(in_dim)]
+        if head_type == "linear":
+            layers.extend([nn.Dropout(dropout), nn.Linear(in_dim, num_labels)])
+        else:
+            layers.extend(
+                [
+                    nn.Linear(in_dim, hidden_dim),
+                    nn.GELU(),
+                    nn.Dropout(dropout),
+                    nn.Linear(hidden_dim, num_labels),
+                ]
+            )
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        return self.net(features)
+
+
 class TransformerClassifier(nn.Module):
-    """Thin classifier head on top of the shared TransformerEncoder."""
+    """Classifier head on top of the shared TransformerEncoder."""
 
     def __init__(
         self,
@@ -80,26 +189,56 @@ class TransformerClassifier(nn.Module):
         pooling: str = "cls",
         unfreeze_layers: int = 4,
         train_embeddings: bool = False,
+        input_mode: str = "text_plus_selected",
+        head_type: str = "mlp",
+        hidden_dim: int = 0,
     ):
         super().__init__()
         self.encoder = encoder
         self.pooling = pooling
-        self.dropout = nn.Dropout(dropout)
-        self.classifier = nn.Linear(encoder.hidden_size, num_labels)
+        self.input_mode = input_mode
+        feature_dim = encoder.hidden_size * (4 if input_mode == "text_selected_pair" else 1)
+        self.classifier = ClassificationHead(
+            in_dim=feature_dim,
+            num_labels=num_labels,
+            dropout=dropout,
+            head_type=head_type,
+            hidden_dim=hidden_dim,
+        )
 
         self.encoder.set_trainable_layers(
             n_layers=unfreeze_layers,
             train_embeddings=train_embeddings,
         )
 
-    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-        features = self.encoder.forward_features(
+    def _encode_view(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+        return self.encoder.forward_features(
             input_ids=input_ids,
             attention_mask=attention_mask,
             pooling=self.pooling,
             normalize=False,
         )
-        return self.classifier(self.dropout(features))
+
+    def _fuse_pair_features(self, primary: torch.Tensor, secondary: torch.Tensor) -> torch.Tensor:
+        return torch.cat(
+            [primary, secondary, torch.abs(primary - secondary), primary * secondary],
+            dim=-1,
+        )
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        selected_input_ids: torch.Tensor | None = None,
+        selected_attention_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        primary = self._encode_view(input_ids, attention_mask)
+        if self.input_mode == "text_selected_pair" and selected_input_ids is not None:
+            secondary = self._encode_view(selected_input_ids, selected_attention_mask)
+            features = self._fuse_pair_features(primary, secondary)
+        else:
+            features = primary
+        return self.classifier(features)
 
     def num_trainable_parameters(self) -> int:
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
@@ -167,6 +306,68 @@ def load_embeddings(name: str):
     return results
 
 
+def _normalize_optional_text(value) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() == "nan":
+        return None
+    return text
+
+
+def build_selected_view_text(record: dict) -> str:
+    selected = _normalize_optional_text(record.get("selected_text"))
+    return selected or record["text"]
+
+
+def build_primary_text(record: dict, cfg: TransformerClassifierConfig) -> str:
+    segments = []
+    if cfg.use_time_of_tweet and _normalize_optional_text(record.get("time_of_tweet")):
+        segments.append(f"time of tweet: {record['time_of_tweet']}.")
+    if cfg.use_age_of_user and _normalize_optional_text(record.get("age_of_user")):
+        segments.append(f"age of user: {record['age_of_user']}.")
+    if cfg.use_country and _normalize_optional_text(record.get("country")):
+        segments.append(f"country: {record['country']}.")
+
+    text = record["text"]
+    if cfg.input_mode == "text_plus_selected":
+        selected = _normalize_optional_text(record.get("selected_text"))
+        if selected and selected != text:
+            text = f"text: {text} sentiment span: {selected}"
+    elif cfg.input_mode == "text_selected_pair":
+        text = f"text: {text}"
+
+    if segments:
+        return " ".join(segments + [text])
+    return text
+
+
+def payload_to_records(payload: dict) -> list[dict]:
+    texts = payload.get("texts") or [""] * len(payload["labels"])
+    labels = payload["labels"]
+    if isinstance(labels, torch.Tensor):
+        labels = labels.tolist()
+
+    selected_texts = payload.get("selected_texts") or [None] * len(labels)
+    time_of_tweet = payload.get("time_of_tweet") or [None] * len(labels)
+    age_of_user = payload.get("age_of_user") or [None] * len(labels)
+    country = payload.get("country") or [None] * len(labels)
+
+    records = []
+    for idx, label in enumerate(labels):
+        records.append(
+            {
+                "text": texts[idx],
+                "label": int(label),
+                "selected_text": selected_texts[idx],
+                "time_of_tweet": time_of_tweet[idx],
+                "age_of_user": age_of_user[idx],
+                "country": country[idx],
+            }
+        )
+    return records
+
+
 def _load_cached_raw_split(split: str) -> dict | None:
     path = os.path.join(CACHE_DIR, f"z_tweet_{split}.pt")
     if not os.path.exists(path):
@@ -181,6 +382,35 @@ def collate_cached_batch(batch: list[dict]) -> dict:
         "labels": torch.stack([item["labels"] for item in batch]),
         "texts": [item["text"] for item in batch],
     }
+
+
+def collate_transformer_batch(batch: list[dict], pad_token_id: int) -> dict:
+    def _pad_1d(seqs, fill_value):
+        max_len = max(len(seq) for seq in seqs)
+        out = torch.full((len(seqs), max_len), fill_value=fill_value, dtype=torch.long)
+        for row_idx, seq in enumerate(seqs):
+            out[row_idx, :len(seq)] = torch.tensor(seq, dtype=torch.long)
+        return out
+
+    collated = {
+        "input_ids": _pad_1d([item["input_ids"] for item in batch], pad_token_id),
+        "attention_mask": _pad_1d([item["attention_mask"] for item in batch], 0),
+        "labels": torch.tensor([item["labels"] for item in batch], dtype=torch.long),
+        "texts": [item["text"] for item in batch],
+    }
+
+    if "selected_input_ids" in batch[0]:
+        collated["selected_input_ids"] = _pad_1d(
+            [item["selected_input_ids"] for item in batch],
+            pad_token_id,
+        )
+        collated["selected_attention_mask"] = _pad_1d(
+            [item["selected_attention_mask"] for item in batch],
+            0,
+        )
+        collated["selected_texts"] = [item.get("selected_text", "") for item in batch]
+
+    return collated
 
 
 def resolve_transformer_device() -> str:
@@ -233,45 +463,47 @@ def build_transformer_optimizer(
     return torch.optim.AdamW(param_groups)
 
 
+def should_use_cached_tokens(cfg: TransformerClassifierConfig) -> bool:
+    return (
+        cfg.input_mode == "text"
+        and not cfg.use_time_of_tweet
+        and not cfg.use_age_of_user
+        and not cfg.use_country
+    )
+
+
 def build_transformer_dataloaders(tokenizer, cfg: TransformerClassifierConfig) -> tuple[dict, str]:
     cached_payloads = {
         split: _load_cached_raw_split(split)
         for split in ["train", "val", "test"]
     }
 
-    if all(payload is not None for payload in cached_payloads.values()):
-        print("Loading transformer classifier data from cached Phase 1 splits.")
+    if should_use_cached_tokens(cfg) and all(payload is not None for payload in cached_payloads.values()):
+        print("Loading transformer classifier data from cached Phase 1 token splits.")
         datasets = {
             split: CachedTokenDataset(payload)
             for split, payload in cached_payloads.items()
         }
         collate_fn = collate_cached_batch
-        source = "cache"
+        source = "cache_tokens"
     else:
-        print("Cached raw splits missing; falling back to dataset.py tokenization.")
-        train_records, val_records, test_records = load_records()
+        if all(payload is not None for payload in cached_payloads.values()):
+            print("Building transformer classifier views from cached Phase 1 records.")
+            train_records = payload_to_records(cached_payloads["train"])
+            val_records = payload_to_records(cached_payloads["val"])
+            test_records = payload_to_records(cached_payloads["test"])
+            source = "cache_records"
+        else:
+            print("Cached Phase 1 splits missing; loading records from dataset.py.")
+            train_records, val_records, test_records = load_records()
+            source = "dataset_records"
+
         datasets = {
-            "train": TextDataset(
-                [r["text"] for r in train_records],
-                [r["label"] for r in train_records],
-                tokenizer,
-                max_length=cfg.max_length,
-            ),
-            "val": TextDataset(
-                [r["text"] for r in val_records],
-                [r["label"] for r in val_records],
-                tokenizer,
-                max_length=cfg.max_length,
-            ),
-            "test": TextDataset(
-                [r["text"] for r in test_records],
-                [r["label"] for r in test_records],
-                tokenizer,
-                max_length=cfg.max_length,
-            ),
+            "train": TransformerRecordDataset(train_records, tokenizer, cfg),
+            "val": TransformerRecordDataset(val_records, tokenizer, cfg),
+            "test": TransformerRecordDataset(test_records, tokenizer, cfg),
         }
-        collate_fn = make_collate_fn(tokenizer.pad_token_id or 0)
-        source = "dataset"
+        collate_fn = lambda batch: collate_transformer_batch(batch, tokenizer.pad_token_id or 0)
 
     loaders = {
         "train": DataLoader(
@@ -312,10 +544,17 @@ def build_transformer_loss(train_labels: torch.Tensor, cfg: TransformerClassifie
         class_weights = class_weights.to(device)
         print(f"Class weights: {[round(x, 4) for x in class_weights.cpu().tolist()]}")
 
-    criterion = nn.CrossEntropyLoss(
-        weight=class_weights,
-        label_smoothing=cfg.label_smoothing,
-    )
+    if cfg.loss_name == "focal":
+        criterion = FocalCrossEntropyLoss(
+            weight=class_weights,
+            gamma=cfg.focal_gamma,
+            label_smoothing=cfg.label_smoothing,
+        )
+    else:
+        criterion = nn.CrossEntropyLoss(
+            weight=class_weights,
+            label_smoothing=cfg.label_smoothing,
+        )
     return criterion, class_weights
 
 
@@ -337,6 +576,8 @@ def train_transformer_epoch(
         logits = model(
             batch["input_ids"].to(device),
             batch["attention_mask"].to(device),
+            selected_input_ids=None if "selected_input_ids" not in batch else batch["selected_input_ids"].to(device),
+            selected_attention_mask=None if "selected_attention_mask" not in batch else batch["selected_attention_mask"].to(device),
         )
         labels = batch["labels"].to(device)
         loss = criterion(logits, labels)
@@ -374,6 +615,8 @@ def evaluate_transformer_classifier(
             logits = model(
                 batch["input_ids"].to(device),
                 batch["attention_mask"].to(device),
+                selected_input_ids=None if "selected_input_ids" not in batch else batch["selected_input_ids"].to(device),
+                selected_attention_mask=None if "selected_attention_mask" not in batch else batch["selected_attention_mask"].to(device),
             )
             labels = batch["labels"].to(device)
             loss = criterion(logits, labels)
@@ -505,6 +748,14 @@ def run_transformer_experiment(args):
         unfreeze_layers=args.unfreeze_layers,
         train_embeddings=args.train_embeddings,
         pooling=args.pooling,
+        input_mode=args.input_mode,
+        use_time_of_tweet=args.use_time_of_tweet,
+        use_age_of_user=args.use_age_of_user,
+        use_country=args.use_country,
+        loss_name=args.loss_name,
+        focal_gamma=args.focal_gamma,
+        head_type=args.head_type,
+        hidden_dim=args.hidden_dim,
         patience=args.patience,
         label_smoothing=args.label_smoothing,
         use_class_weights=not args.no_class_weights,
@@ -515,6 +766,9 @@ def run_transformer_experiment(args):
     print(f"Device: {device}")
     print(f"Cache dir: {CACHE_DIR}")
     print(f"Transformer model: {args.model_name}")
+    print(f"Input mode: {cfg.input_mode}")
+    print(f"Head: {cfg.head_type}")
+    print(f"Loss: {cfg.loss_name}")
 
     tokenizer = None
     tokenizer_name = os.environ.get("TOKENIZER_NAME")
@@ -540,6 +794,9 @@ def run_transformer_experiment(args):
         pooling=cfg.pooling,
         unfreeze_layers=cfg.unfreeze_layers,
         train_embeddings=cfg.train_embeddings,
+        input_mode=cfg.input_mode,
+        head_type=cfg.head_type,
+        hidden_dim=cfg.hidden_dim,
     ).to(device)
     print(f"Trainable parameters: {model.num_trainable_parameters():,}")
 
@@ -660,10 +917,19 @@ def main():
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--unfreeze_layers", type=int, default=4)
     parser.add_argument("--pooling", default="cls")
+    parser.add_argument("--input_mode", choices=["text", "text_plus_selected", "text_selected_pair"],
+                        default="text_plus_selected")
+    parser.add_argument("--head_type", choices=["linear", "mlp"], default="mlp")
+    parser.add_argument("--hidden_dim", type=int, default=0)
+    parser.add_argument("--loss_name", choices=["cross_entropy", "focal"], default="cross_entropy")
+    parser.add_argument("--focal_gamma", type=float, default=1.5)
     parser.add_argument("--patience", type=int, default=2)
     parser.add_argument("--label_smoothing", type=float, default=0.0)
     parser.add_argument("--grad_clip_norm", type=float, default=1.0)
     parser.add_argument("--train_embeddings", action="store_true")
+    parser.add_argument("--use_time_of_tweet", action="store_true")
+    parser.add_argument("--use_age_of_user", action="store_true")
+    parser.add_argument("--use_country", action="store_true")
     parser.add_argument("--no_class_weights", action="store_true")
     args = parser.parse_args()
 

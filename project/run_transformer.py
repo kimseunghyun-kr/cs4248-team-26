@@ -70,10 +70,19 @@ def main():
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--unfreeze_layers", type=int, default=4)
     parser.add_argument("--pooling", default="cls")
+    parser.add_argument("--input_mode", choices=["text", "text_plus_selected", "text_selected_pair"],
+                        default="text_plus_selected")
+    parser.add_argument("--head_type", choices=["linear", "mlp"], default="mlp")
+    parser.add_argument("--hidden_dim", type=int, default=0)
+    parser.add_argument("--loss_name", choices=["cross_entropy", "focal"], default="cross_entropy")
+    parser.add_argument("--focal_gamma", type=float, default=1.5)
     parser.add_argument("--patience", type=int, default=2)
     parser.add_argument("--label_smoothing", type=float, default=0.0)
     parser.add_argument("--grad_clip_norm", type=float, default=1.0)
     parser.add_argument("--train_embeddings", action="store_true")
+    parser.add_argument("--use_time_of_tweet", action="store_true")
+    parser.add_argument("--use_age_of_user", action="store_true")
+    parser.add_argument("--use_country", action="store_true")
     parser.add_argument("--no_class_weights", action="store_true")
     args = parser.parse_args()
 
@@ -109,6 +118,11 @@ def main():
             "--dropout", str(args.dropout),
             "--unfreeze_layers", str(args.unfreeze_layers),
             "--pooling", str(args.pooling),
+            "--input_mode", str(args.input_mode),
+            "--head_type", str(args.head_type),
+            "--hidden_dim", str(args.hidden_dim),
+            "--loss_name", str(args.loss_name),
+            "--focal_gamma", str(args.focal_gamma),
             "--patience", str(args.patience),
             "--label_smoothing", str(args.label_smoothing),
             "--grad_clip_norm", str(args.grad_clip_norm),
@@ -119,6 +133,12 @@ def main():
     }
     if args.train_embeddings:
         phase_args[2].append("--train_embeddings")
+    if args.use_time_of_tweet:
+        phase_args[2].append("--use_time_of_tweet")
+    if args.use_age_of_user:
+        phase_args[2].append("--use_age_of_user")
+    if args.use_country:
+        phase_args[2].append("--use_country")
     if args.no_class_weights:
         phase_args[2].append("--no_class_weights")
 
@@ -141,6 +161,9 @@ def main():
     print(f"Epochs:        {args.epochs}")
     print(f"Unfreeze last: {args.unfreeze_layers} layer(s)")
     print(f"Pooling:       {args.pooling}")
+    print(f"Input mode:    {args.input_mode}")
+    print(f"Head:          {args.head_type}")
+    print(f"Loss:          {args.loss_name}")
     print(f"Running phases: {[p[0] for p in phases]}")
 
     total_start = time.time()
