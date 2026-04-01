@@ -4,11 +4,11 @@ from dataclasses import dataclass
 # Model registry — shortcut keys for common BERT-derivative backbones
 # ---------------------------------------------------------------------------
 MODEL_REGISTRY = {
-    "bert":       "bert-base-uncased",
+    "bert":       "bert-base-cased",       # <--- changed to cased
     "finbert":    "ProsusAI/finbert",
-    "bertweet":   "vinai/bertweet-base",
+    "bertweet":   "vinai/bertweet-base",   # <--- Highly recommended to run with this
     "roberta":    "roberta-base",
-    "distilbert": "distilbert-base-uncased",
+    "distilbert": "distilbert-base-cased", # <--- changed to cased
 }
 
 

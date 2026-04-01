@@ -129,7 +129,7 @@ def apply_cleaning(direction: torch.Tensor, direction_name: str) -> None:
         z = data["embeddings"]
         labels = data.get("labels")
 
-        z_clean = project_out(z, direction)
+        z_clean = amplify_bias(z, direction, alpha=3.0)
 
         # Report magnitude removed
         if direction.dim() == 2 and direction.shape[0] == direction.shape[1]:
@@ -241,6 +241,31 @@ def main():
     materialize_sentiment_boost_conditions(alpha=2.0)
 
     print("\nCleaning complete.")
+
+# clean.py
+
+# 1. ADD this function right below project_out()
+def amplify_bias(z: torch.Tensor, direction: torch.Tensor, alpha: float = 3.0) -> torch.Tensor:
+    """
+    Amplifies the confound component to stretch the dataset along stylistic axes.
+    alpha=3.0 applies a heavy multiplier to the bias direction.
+    """
+    if direction.dim() == 2 and direction.shape[0] == direction.shape[1]:
+        # Full debias_vl matrix 
+        return F.normalize(z @ direction.T, dim=-1) # Fallback to standard projection for full matrix
+    
+    if direction.dim() == 2:
+        # Subspace projection (K, H)
+        proj = (z @ direction.T) @ direction
+        return F.normalize(z + (alpha * proj), dim=-1)
+        
+    elif direction.dim() == 1:
+        # Single vector (H,)
+        d = F.normalize(direction, dim=-1)
+        proj = (z @ d).unsqueeze(-1) * d
+        return F.normalize(z + (alpha * proj), dim=-1)
+        
+    return z
 
 
 if __name__ == "__main__":

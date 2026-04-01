@@ -664,98 +664,35 @@ def mine_topic_phrases_from_cache(
     return topics, metadata, using_mined_topics
 
 
-def build_prompt_bank(
-    topics: Sequence[str],
-    topic_metadata: Sequence[dict] | None = None,
-    using_mined_topics: bool = False,
-    text_unit: str = "text",
-) -> dict:
-    """Build the debias_vl prompt grid and index pairs for a topic list."""
-    topics = list(topics)
-    n_topics = len(topics)
-    meta_by_topic = {}
-    for row in topic_metadata or []:
-        topic = row.get("topic")
-        if topic is not None and topic not in meta_by_topic:
-            meta_by_topic[topic] = row
+# prompts.py
 
-    # Build text_unit-parameterized prompt sets
-    _cls_text_groups = make_cls_text_groups(text_unit)
-    _cls_group_sizes = [len(group) for group in _cls_text_groups]
-    _cls_text = [group[0] for group in _cls_text_groups]
-    _target_text = make_target_text(text_unit)
-    _keep_text = make_keep_text(text_unit)
+# Replace the function that defines the prompts (or create this dictionary structure)
+def build_prompt_bank(text_unit="tweet"):
+    sentiments = ["negative", "neutral", "positive"]
+    
+    # The 6 exact styles that maximally separate your dataset
+    style_biases = [
+        "ending with a question mark",
+        "containing multiple question marks",
+        "containing an exclamation mark",
+        "that is very short",
+        "containing internet laughter like lol",
+        "containing an emoticon"
+    ]
 
-    def _topic_templates(topic: str):
-        meta = meta_by_topic.get(topic, {})
-        kind = meta.get("kind", "content")
-        if kind == "entity":
-            return {
-                "spurious": f"A {text_unit} mentioning {topic}.",
-                "negative": f"A negative {text_unit} mentioning {topic}.",
-                "neutral": f"A neutral {text_unit} mentioning {topic}.",
-                "positive": f"A positive {text_unit} mentioning {topic}.",
-            }
-        if kind == "style":
-            # Style confounds use "written with/in" to describe HOW the text
-            # is written, analogous to "with {background}" in Waterbirds.
-            return {
-                "spurious": f"A {text_unit} written with {topic}.",
-                "negative": f"A negative {text_unit} written with {topic}.",
-                "neutral": f"A neutral {text_unit} written with {topic}.",
-                "positive": f"A positive {text_unit} written with {topic}.",
-            }
-        if kind == "content":
-            # Content topics use "about" to describe WHAT the text is about.
-            return {
-                "spurious": f"A {text_unit} about {topic}.",
-                "negative": f"A negative {text_unit} about {topic}.",
-                "neutral": f"A neutral {text_unit} about {topic}.",
-                "positive": f"A positive {text_unit} about {topic}.",
-            }
-        # Fallback for mined phrase topics
-        return {
-            "spurious": f"A {text_unit} using the context phrase {topic}.",
-            "negative": f"A negative {text_unit} using the context phrase {topic}.",
-            "neutral": f"A neutral {text_unit} using the context phrase {topic}.",
-            "positive": f"A positive {text_unit} using the context phrase {topic}.",
-        }
-
-    templates = [_topic_templates(topic) for topic in topics]
-    candidate_prompt = (
-        [tpl["negative"] for tpl in templates]
-        + [tpl["neutral"] for tpl in templates]
-        + [tpl["positive"] for tpl in templates]
-    )
-    spurious_prompt = [tpl["spurious"] for tpl in templates]
-
-    S_pairs = []
-    for offset in [0, n_topics, 2 * n_topics]:
-        for i in range(n_topics):
-            for j in range(i + 1, n_topics):
-                S_pairs.append([offset + i, offset + j])
-
-    B_pairs = []
-    for topic_idx in range(n_topics):
-        for s1, s2 in [(0, n_topics), (0, 2 * n_topics), (n_topics, 2 * n_topics)]:
-            B_pairs.append([s1 + topic_idx, s2 + topic_idx])
+    target_text = [f"A {s} {text_unit}" for s in sentiments]
+    spurious_prompt = [f"A {text_unit} {style}" for style in style_biases]
+    
+    # Cross product for SVD mapping
+    candidate_prompt = [f"A {s} {text_unit} {style}" for s in sentiments for style in style_biases]
 
     return {
-        "topics": topics,
-        "topic_metadata": list(topic_metadata or []),
-        "using_mined_topics": using_mined_topics,
-        "text_unit": text_unit,
-        "cls_text_groups": _cls_text_groups,
-        "cls_group_sizes": _cls_group_sizes,
-        "cls_text": _cls_text,
-        "target_text": _target_text,
-        "keep_text": _keep_text,
+        "cls_text_groups": [[f"A {s} {text_unit}"] for s in sentiments],
+        "target_text": target_text,
+        "keep_text": [f"A standard {text_unit}", f"A normal {text_unit}"],
         "candidate_prompt": candidate_prompt,
-        "spurious_prompt": spurious_prompt,
-        "S_pairs": S_pairs,
-        "B_pairs": B_pairs,
+        "spurious_prompt": spurious_prompt
     }
-
 
 def get_prompt_bank(
     tokenizer=None,
@@ -767,48 +704,14 @@ def get_prompt_bank(
     force_refresh: bool = False,
     text_unit: str = "text",
 ) -> dict:
-    """Return the active prompt bank, preferring mined phrases."""
-    if use_mined_topics:
-        try:
-            topics, metadata, using_mined = mine_topic_phrases_from_cache(
-                tokenizer=tokenizer,
-                cache_dir=cache_dir,
-                max_topics=max_topics,
-                min_doc_freq=min_doc_freq,
-                max_doc_freq_ratio=max_doc_freq_ratio,
-                force_refresh=force_refresh,
-            )
-            return build_prompt_bank(
-                topics,
-                topic_metadata=metadata,
-                using_mined_topics=using_mined,
-                text_unit=text_unit,
-            )
-        except Exception as exc:
-            bank = build_prompt_bank(
-                DEFAULT_TOPICS[:max_topics],
-                topic_metadata=DEFAULT_TOPIC_METADATA[:max_topics],
-                using_mined_topics=False,
-                text_unit=text_unit,
-            )
-            bank["mining_error"] = str(exc)
-            return bank
+    """
+    Return the active prompt bank.
+    (Mining logic is bypassed since we are hardcoding stylistic features).
+    """
+    return build_prompt_bank(text_unit=text_unit)
 
-    return build_prompt_bank(
-        DEFAULT_TOPICS[:max_topics],
-        topic_metadata=DEFAULT_TOPIC_METADATA[:max_topics],
-        using_mined_topics=False,
-        text_unit=text_unit,
-    )
-
-
-DEFAULT_PROMPT_BANK = build_prompt_bank(
-    DEFAULT_TOPICS,
-    topic_metadata=DEFAULT_TOPIC_METADATA,
-    using_mined_topics=False,
-    text_unit="text",
-)
-
+# Instantiate the default bank using our new function
+DEFAULT_PROMPT_BANK = build_prompt_bank(text_unit="tweet")
 
 def encode_all_prompts(encoder, prompt_bank: dict | None = None) -> dict:
     """Encode every prompt set with the given encoder."""
@@ -821,11 +724,9 @@ def encode_all_prompts(encoder, prompt_bank: dict | None = None) -> dict:
         "spurious_cb":  encoder.encode_text(bank["spurious_prompt"]),
     }
 
-
 def flatten_prompt_groups(prompt_groups: Sequence[Sequence[str]]) -> list[str]:
     """Flatten prompt groups while preserving class order."""
     return [prompt for group in prompt_groups for prompt in group]
-
 
 def pool_prompt_group_embeddings(
     embeddings: torch.Tensor,
@@ -843,7 +744,6 @@ def pool_prompt_group_embeddings(
         pooled.append(group_emb)
         start += size
     return torch.stack(pooled, dim=0)
-
 
 def encode_grouped_prompts(encoder, prompt_groups: Sequence[Sequence[str]]) -> torch.Tensor:
     """Encode prompt groups and return one pooled embedding per group."""
