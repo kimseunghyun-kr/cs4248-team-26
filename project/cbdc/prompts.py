@@ -666,79 +666,128 @@ def mine_topic_phrases_from_cache(
 # Core Prompt Builders
 # ---------------------------------------------------------------------------
 
-def build_prompt_bank(
+CBDC_STYLE_BIAS_PAIRS = [
+    (
+        "A {text_unit} ending with a question mark.",
+        "A {text_unit} written as a statement.",
+        "question-mark vs statement",
+    ),
+    (
+        "A {text_unit} containing multiple question marks.",
+        "A {text_unit} with standard punctuation.",
+        "repeated-question-marks vs standard punctuation",
+    ),
+    (
+        "An excited {text_unit} with exclamation marks.",
+        "A {text_unit} without exclamation marks.",
+        "exclamation-mark vs no-exclamation-mark",
+    ),
+    (
+        "A very short {text_unit}.",
+        "A longer and more detailed {text_unit}.",
+        "very-short vs longer-detailed",
+    ),
+    (
+        "A casual {text_unit} containing internet laughter like lol or haha.",
+        "A {text_unit} without internet laughter.",
+        "internet-laughter vs no-laughter",
+    ),
+    (
+        "A {text_unit} containing an emoticon or smiley face.",
+        "A {text_unit} without any emoticon.",
+        "emoticon vs no-emoticon",
+    ),
+]
+
+
+def _build_debias_candidate_and_pairs(
+    topics: Sequence[str],
+    topic_metadata: Sequence[dict] | None,
+    text_unit: str,
+) -> tuple[list[str], list[str], list[tuple[int, int]], list[tuple[int, int]]]:
+    sentiments = ["negative", "neutral", "positive"]
+    candidate_prompt = []
+    spurious_prompt = []
+    grid_indices = {}
+
+    def get_prompt(sentiment: str, topic: str, kind: str) -> str:
+        if kind == "style":
+            return f"A {sentiment} {text_unit} {topic}"
+        return f"A {sentiment} {text_unit} about {topic}"
+
+    for idx, topic in enumerate(topics):
+        kind = topic_metadata[idx].get("kind", "content") if topic_metadata and idx < len(topic_metadata) else "content"
+        if kind == "style":
+            spurious_prompt.append(f"A {text_unit} {topic}")
+        else:
+            spurious_prompt.append(f"A {text_unit} about {topic}")
+
+    flat_idx = 0
+    for s_idx, sentiment in enumerate(sentiments):
+        for t_idx, topic in enumerate(topics):
+            kind = topic_metadata[t_idx].get("kind", "content") if topic_metadata and t_idx < len(topic_metadata) else "content"
+            candidate_prompt.append(get_prompt(sentiment, topic, kind))
+            grid_indices[(s_idx, t_idx)] = flat_idx
+            flat_idx += 1
+
+    same_sentiment_pairs = []
+    same_topic_pairs = []
+    for s_idx in range(len(sentiments)):
+        for t1_idx in range(len(topics)):
+            for t2_idx in range(t1_idx + 1, len(topics)):
+                same_sentiment_pairs.append((grid_indices[(s_idx, t1_idx)], grid_indices[(s_idx, t2_idx)]))
+
+    for t_idx in range(len(topics)):
+        for s1_idx in range(len(sentiments)):
+            for s2_idx in range(s1_idx + 1, len(sentiments)):
+                same_topic_pairs.append((grid_indices[(s1_idx, t_idx)], grid_indices[(s2_idx, t_idx)]))
+
+    return candidate_prompt, spurious_prompt, same_sentiment_pairs, same_topic_pairs
+
+
+def build_debias_vl_prompt_bank(
     topics: Sequence[str],
     topic_metadata: Sequence[dict] | None = None,
     using_mined_topics: bool = False,
     text_unit: str = "text",
+    mining_error: str | None = None,
 ) -> dict:
-    """
-    Builds the CBDC prompt bank, fully populating every key required by refine.py.
-    """
-    sentiments = ["negative", "neutral", "positive"]
-    
-    def get_prompt(s, topic, kind):
-        if kind == "style": return f"A {s} {text_unit} {topic}"
-        else: return f"A {s} {text_unit} about {topic}"
-
-    candidate_prompt = []
-    spurious_prompt = []
-    
-    # 1. Build Spurious Prompts
-    for i, topic in enumerate(topics):
-        kind = topic_metadata[i].get("kind", "content") if topic_metadata and i < len(topic_metadata) else "content"
-        if kind == "style": spurious_prompt.append(f"A {text_unit} {topic}")
-        else: spurious_prompt.append(f"A {text_unit} about {topic}")
-
-    # 2. Build Candidate Grid and track Integer Indices for PyTorch debias_vl mapping
-    grid_indices = {}
-    idx = 0
-    for s_idx, s in enumerate(sentiments):
-        for t_idx, topic in enumerate(topics):
-            kind = topic_metadata[t_idx].get("kind", "content") if topic_metadata and t_idx < len(topic_metadata) else "content"
-            candidate_prompt.append(get_prompt(s, topic, kind))
-            grid_indices[(s_idx, t_idx)] = idx
-            idx += 1
-
-    S_pairs = []
-    B_pairs = []
-
-    # 3. Build S_Pairs (Same Sentiment, Different Topic) using INTEGER INDICES
-    for s_idx in range(len(sentiments)):
-        for t1_idx in range(len(topics)):
-            for t2_idx in range(t1_idx + 1, len(topics)):
-                S_pairs.append((grid_indices[(s_idx, t1_idx)], grid_indices[(s_idx, t2_idx)]))
-
-    # 4. Build B_Pairs (Same Topic, Different Sentiment) using INTEGER INDICES
-    for t_idx in range(len(topics)):
-        for s1_idx in range(len(sentiments)):
-            for s2_idx in range(s1_idx + 1, len(sentiments)):
-                B_pairs.append((grid_indices[(s1_idx, t_idx)], grid_indices[(s2_idx, t_idx)]))
-
-    # Generate Class Groups to calculate sizes
-    cls_groups = make_cls_text_groups(text_unit)
-
+    """Build the prompt bank used by the debias_vl discovery stage."""
+    candidate_prompt, spurious_prompt, s_pairs, b_pairs = _build_debias_candidate_and_pairs(
+        topics,
+        topic_metadata,
+        text_unit,
+    )
     return {
-        # Core Prompts
-        "cls_text_groups": cls_groups,
-        "cls_group_sizes": [len(g) for g in cls_groups], # <--- THE CRITICAL FIX FOR PGD 
-        "target_text": make_target_text(text_unit),
-        "keep_text": make_keep_text(text_unit),
         "candidate_prompt": candidate_prompt,
         "spurious_prompt": spurious_prompt,
-        
-        # Debias_VL Mappings
-        "S_pairs": S_pairs,
-        "B_pairs": B_pairs,
-        
-        # Metadata Logging
+        "S_pairs": s_pairs,
+        "B_pairs": b_pairs,
         "topics": list(topics),
-        "topic_metadata": topic_metadata or [],
-        "using_mined_topics": using_mined_topics
+        "topic_metadata": list(topic_metadata or []),
+        "using_mined_topics": using_mined_topics,
+        "mining_error": mining_error,
     }
 
 
-def get_prompt_bank(
+def build_cbdc_prompt_bank(text_unit: str = "text") -> dict:
+    """Build the prompt bank used by the pure CBDC text_iccv stage."""
+    pole_a_text = [a.format(text_unit=text_unit) for a, _, _ in CBDC_STYLE_BIAS_PAIRS]
+    pole_b_text = [b.format(text_unit=text_unit) for _, b, _ in CBDC_STYLE_BIAS_PAIRS]
+    pair_names = [name for _, _, name in CBDC_STYLE_BIAS_PAIRS]
+    cls_groups = make_cls_text_groups(text_unit)
+    return {
+        "cls_text_groups": cls_groups,
+        "cls_group_sizes": [len(group) for group in cls_groups],
+        "target_text": make_target_text(text_unit),
+        "keep_text": make_keep_text(text_unit),
+        "bias_pole_a_text": pole_a_text,
+        "bias_pole_b_text": pole_b_text,
+        "bias_pair_names": pair_names,
+    }
+
+
+def get_debias_vl_prompt_bank(
     tokenizer=None,
     cache_dir: str | None = None,
     use_mined_topics: bool = True,
@@ -748,44 +797,100 @@ def get_prompt_bank(
     force_refresh: bool = False,
     text_unit: str = "text",
 ) -> dict:
-    """
-    Return the active prompt bank. Intercepts pipeline to feed custom styles.
-    """
-    style_biases = [
-        "ending with a question mark",
-        "containing multiple question marks",
-        "containing an exclamation mark",
-        "that is very short",
-        "containing internet laughter like lol",
-        "containing an emoticon"
-    ]
-    style_metadata = [{"topic": s, "kind": "style"} for s in style_biases]
+    """Return the active debias_vl topic bank."""
+    metadata: list[dict] = []
+    mining_error = None
+    using_mined_topics = False
 
-    return build_prompt_bank(
-        topics=style_biases,
-        topic_metadata=style_metadata,
-        using_mined_topics=False,
-        text_unit=text_unit
+    if use_mined_topics:
+        try:
+            topics, metadata, using_mined_topics = mine_topic_phrases_from_cache(
+                tokenizer,
+                cache_dir=cache_dir,
+                max_topics=max_topics,
+                min_doc_freq=min_doc_freq,
+                max_doc_freq_ratio=max_doc_freq_ratio,
+                force_refresh=force_refresh,
+            )
+        except Exception as exc:
+            topics = DEFAULT_TOPICS[:max_topics]
+            metadata = DEFAULT_TOPIC_METADATA[:max_topics]
+            mining_error = str(exc)
+        else:
+            if not metadata and not using_mined_topics:
+                metadata = DEFAULT_TOPIC_METADATA[:len(topics)]
+    else:
+        topics = DEFAULT_TOPICS[:max_topics]
+        metadata = DEFAULT_TOPIC_METADATA[:max_topics]
+
+    return build_debias_vl_prompt_bank(
+        topics=topics,
+        topic_metadata=metadata,
+        using_mined_topics=using_mined_topics,
+        text_unit=text_unit,
+        mining_error=mining_error,
     )
 
 
-# Instantiate the default bank
-DEFAULT_PROMPT_BANK = get_prompt_bank(text_unit="tweet")
+def get_cbdc_prompt_bank(text_unit: str = "text") -> dict:
+    """Return the fixed prompt-only CBDC bank."""
+    return build_cbdc_prompt_bank(text_unit=text_unit)
 
-# ---------------------------------------------------------------------------
-# Encoding Helpers (Restored to exact original to prevent dictionary mismatches)
-# ---------------------------------------------------------------------------
+
+def get_combined_prompt_bank(
+    tokenizer=None,
+    cache_dir: str | None = None,
+    use_mined_topics: bool = True,
+    max_topics: int = 32,
+    min_doc_freq: int = 20,
+    max_doc_freq_ratio: float = 0.20,
+    force_refresh: bool = False,
+    text_unit: str = "text",
+) -> dict:
+    """Return the combined bank used by the debias_vl->CBDC method."""
+    debias_bank = get_debias_vl_prompt_bank(
+        tokenizer=tokenizer,
+        cache_dir=cache_dir,
+        use_mined_topics=use_mined_topics,
+        max_topics=max_topics,
+        min_doc_freq=min_doc_freq,
+        max_doc_freq_ratio=max_doc_freq_ratio,
+        force_refresh=force_refresh,
+        text_unit=text_unit,
+    )
+    cbdc_bank = get_cbdc_prompt_bank(text_unit=text_unit)
+    merged = dict(cbdc_bank)
+    merged.update(debias_bank)
+    return merged
+
+
+def get_prompt_bank(*args, **kwargs) -> dict:
+    """Backward-compatible alias for the combined D3 prompt bank."""
+    return get_combined_prompt_bank(*args, **kwargs)
+
+
+DEFAULT_PROMPT_BANK = get_combined_prompt_bank(text_unit="tweet")
+
 
 def encode_all_prompts(encoder, prompt_bank: dict | None = None) -> dict:
-    """Encode every prompt set with the given encoder."""
+    """Encode prompt-bank fields that are present in the provided bank."""
     bank = prompt_bank or DEFAULT_PROMPT_BANK
-    return {
-        "cls_cb":       encode_grouped_prompts(encoder, bank["cls_text_groups"]),
-        "target_cb":    encoder.encode_text(bank["target_text"]),
-        "keep_cb":      encoder.encode_text(bank["keep_text"]),
-        "candidate_cb": encoder.encode_text(bank["candidate_prompt"]),
-        "spurious_cb":  encoder.encode_text(bank["spurious_prompt"]),
-    }
+    encoded = {}
+    if "cls_text_groups" in bank:
+        encoded["cls_cb"] = encode_grouped_prompts(encoder, bank["cls_text_groups"])
+    if "target_text" in bank:
+        encoded["target_cb"] = encoder.encode_text(bank["target_text"])
+    if "keep_text" in bank:
+        encoded["keep_cb"] = encoder.encode_text(bank["keep_text"])
+    if "candidate_prompt" in bank:
+        encoded["candidate_cb"] = encoder.encode_text(bank["candidate_prompt"])
+    if "spurious_prompt" in bank:
+        encoded["spurious_cb"] = encoder.encode_text(bank["spurious_prompt"])
+    if "bias_pole_a_text" in bank:
+        encoded["bias_pole_a_cb"] = encoder.encode_text(bank["bias_pole_a_text"])
+    if "bias_pole_b_text" in bank:
+        encoded["bias_pole_b_cb"] = encoder.encode_text(bank["bias_pole_b_text"])
+    return encoded
 
 def flatten_prompt_groups(prompt_groups: Sequence[Sequence[str]]) -> list[str]:
     """Flatten prompt groups while preserving class order."""

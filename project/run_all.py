@@ -1,19 +1,18 @@
 """
-End-to-end orchestrator for the CBDC sentiment debiasing pipeline.
+End-to-end orchestrator for the supervised B1 / D1 / D2 / D3 pipeline.
 
 Pipeline:
   1. data/embed.py       — encode text, cache embeddings
-  2. cbdc/refine.py      — debias_vl map discovery + CBDC text_iccv training
-  3. pipeline/clean.py   — orthogonal projection (all conditions)
-  4. pipeline/classify.py — linear probe training + evaluation
-  5. pipeline/evaluate.py — full evaluation report
+  2. cbdc/refine.py      — materialize D1, D2, D3 artifacts
+  3. pipeline/classify.py — supervised linear-probe evaluation
+  4. pipeline/evaluate.py — full evaluation report
 
 Usage:
   python run_all.py                            # run all phases with BERT
   python run_all.py --model finbert --text_unit tweet  # financial tweets mode
   python run_all.py --start_phase 2            # resume from phase 2
-  python run_all.py --only_phase 4             # run only evaluation
-  python run_all.py --skip_cbdc                # skip CBDC (baseline only)
+  python run_all.py --only_phase 3             # run only supervised evaluation
+  python run_all.py --skip_cbdc                # skip phase 2 (baseline-only evaluation)
   python run_all.py --model roberta-base       # arbitrary HuggingFace model
   python run_all.py --tokenizer custom-tok     # custom tokenizer
 """
@@ -31,10 +30,9 @@ from config import MODEL_REGISTRY, get_model_name, model_slug
 
 PHASES = [
     (1, "data/embed.py",          "Embedding extraction"),
-    (2, "cbdc/refine.py",         "debias_vl + CBDC text_iccv training"),
-    (3, "pipeline/clean.py",      "Orthogonal projection"),
-    (4, "pipeline/classify.py",   "Linear probe training + eval"),
-    (5, "pipeline/evaluate.py",   "Full evaluation report"),
+    (2, "cbdc/refine.py",         "Materialize D1 / D2 / D3"),
+    (3, "pipeline/classify.py",   "Supervised linear-probe evaluation"),
+    (4, "pipeline/evaluate.py",   "Full evaluation report"),
 ]
 
 
@@ -63,9 +61,9 @@ def run_phase(script_path: str, description: str, extra_env: dict) -> bool:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run CBDC sentiment debiasing pipeline.")
+    parser = argparse.ArgumentParser(description="Run the supervised B1 / D1 / D2 / D3 pipeline.")
     parser.add_argument("--start_phase", type=int, default=1,
-                        help="Resume from this phase (1-5).")
+                        help="Resume from this phase (1-4).")
     parser.add_argument("--only_phase", type=int, default=None,
                         help="Run only this phase.")
     parser.add_argument("--model", default="bert",
@@ -77,7 +75,7 @@ def main():
     parser.add_argument("--text_unit", default="text",
                         help="Text unit for prompts: 'text', 'tweet', 'review', etc.")
     parser.add_argument("--skip_cbdc", action="store_true",
-                        help="Skip Phase 2 (CBDC training). Runs baseline-only evaluation.")
+                        help="Skip Phase 2 materialization and run baseline-only evaluation.")
     parser.add_argument("--no_sent_orthogonal_pgd", action="store_true",
                         help="Disable sentiment-orthogonal PGD gradient projection (ablation).")
     args = parser.parse_args()
@@ -121,7 +119,7 @@ def main():
     if args.no_sent_orthogonal_pgd:
         print(f"Sent-ortho PGD: OFF (ablation)")
     if args.skip_cbdc:
-        print(f"CBDC:          SKIPPED (baseline only)")
+        print(f"Phase 2:       SKIPPED (baseline only)")
 
     total_start = time.time()
     for num, script, desc in phases:

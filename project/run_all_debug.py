@@ -1,5 +1,5 @@
 """
-End-to-end orchestrator for the CBDC sentiment debiasing pipeline (debug variant).
+End-to-end orchestrator for the supervised B1 / D1 / D2 / D3 pipeline (debug variant).
 """
 
 import sys
@@ -16,10 +16,9 @@ from config import MODEL_REGISTRY, get_model_name, model_slug
 
 PHASES = [
     (1, "data.embed", "Embedding extraction"),
-    (2, "cbdc.refine", "debias_vl + CBDC text_iccv training"),
-    (3, "pipeline.clean", "Orthogonal projection"),
-    (4, "pipeline.classify", "Linear probe training + eval"),
-    (5, "pipeline.evaluate", "Full evaluation report"),
+    (2, "cbdc.refine", "Materialize D1 / D2 / D3"),
+    (3, "pipeline.classify", "Supervised linear-probe evaluation"),
+    (4, "pipeline.evaluate", "Full evaluation report"),
 ]
 
 
@@ -78,9 +77,9 @@ def run_phase_inprocess(module_name: str, description: str, extra_env: dict) -> 
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run CBDC sentiment debiasing pipeline (debug).")
+    parser = argparse.ArgumentParser(description="Run the supervised B1 / D1 / D2 / D3 pipeline (debug).")
     parser.add_argument("--start_phase", type=int, default=1,
-                        help="Resume from this phase (1-5).")
+                        help="Resume from this phase (1-4).")
     parser.add_argument("--only_phase", type=int, default=None,
                         help="Run only this phase.")
     parser.add_argument("--model", default="bert",
@@ -91,7 +90,7 @@ def main():
     parser.add_argument("--text_unit", default="text",
                         help="Text unit for prompts: 'text', 'tweet', 'review', etc.")
     parser.add_argument("--skip_cbdc", action="store_true",
-                        help="Skip Phase 2 (CBDC training). Runs baseline-only evaluation.")
+                        help="Skip Phase 2 materialization and run baseline-only evaluation.")
     parser.add_argument("--inprocess", action="store_true",
                         help="Run phases in-process for PyCharm debugging.")
     args = parser.parse_args()
@@ -132,7 +131,7 @@ def main():
     print(f"Running phases: {[p[0] for p in phases]}")
     print(f"In-process:     {args.inprocess}")
     if args.skip_cbdc:
-        print(f"CBDC:           SKIPPED (baseline only)")
+        print(f"Phase 2:        SKIPPED (baseline only)")
 
     total_start = time.time()
 
