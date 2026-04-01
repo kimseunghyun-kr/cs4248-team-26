@@ -760,6 +760,8 @@ def main():
     parser.add_argument("--pole_phrases_per_side", type=int, default=4)
     parser.add_argument("--refresh_mined_topics", action="store_true",
                         help="Ignore cached mined_topics.json and mine the topic bank again.")
+    parser.add_argument("--no_sent_orthogonal_pgd", action="store_true",
+                        help="Disable sentiment-orthogonal PGD gradient projection (ablation).")
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -786,6 +788,7 @@ def main():
         pole_phrases_per_side=args.pole_phrases_per_side,
         n_bias_dirs=args.n_bias_dirs,
         lambda_reg=args.lambda_reg,
+        sent_orthogonal_pgd=not (args.no_sent_orthogonal_pgd or os.environ.get("NO_SENT_ORTHOGONAL_PGD") == "1"),
         device=device,
     )
 

@@ -78,6 +78,8 @@ def main():
                         help="Text unit for prompts: 'text', 'tweet', 'review', etc.")
     parser.add_argument("--skip_cbdc", action="store_true",
                         help="Skip Phase 2 (CBDC training). Runs baseline-only evaluation.")
+    parser.add_argument("--no_sent_orthogonal_pgd", action="store_true",
+                        help="Disable sentiment-orthogonal PGD gradient projection (ablation).")
     args = parser.parse_args()
 
     hf_model_name = get_model_name(args.model)
@@ -90,6 +92,8 @@ def main():
     }
     if args.tokenizer:
         extra_env["TOKENIZER_NAME"] = args.tokenizer
+    if args.no_sent_orthogonal_pgd:
+        extra_env["NO_SENT_ORTHOGONAL_PGD"] = "1"
 
     if args.only_phase is not None:
         phases = [p for p in PHASES if p[0] == args.only_phase]
@@ -114,6 +118,8 @@ def main():
     print(f"Text unit:     {args.text_unit}")
     print(f"Cache dir:     {cache_dir}")
     print(f"Running phases: {[p[0] for p in phases]}")
+    if args.no_sent_orthogonal_pgd:
+        print(f"Sent-ortho PGD: OFF (ablation)")
     if args.skip_cbdc:
         print(f"CBDC:          SKIPPED (baseline only)")
 

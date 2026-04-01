@@ -99,58 +99,109 @@ def make_target_text(text_unit: str = "text") -> list[str]:
 
 
 def make_keep_text(text_unit: str = "text") -> list[str]:
-    """Neutral concept prompts for L_s preservation."""
+    """Neutral concept prompts for L_s preservation.
+
+    These should represent generic tweet content that is sentiment-neutral,
+    matching the actual register and topics of the TSAD dataset.
+    """
     return [
-        "A discussion about recent events.",
-        "Commentary on an entity or topic.",
-        "An observation about a product or service.",
-        "A remark about public reaction online.",
-        "Thoughts on a recent update or announcement.",
-        "A perspective on a trending topic.",
-        f"A note about {text_unit} discussion.",
-        "An analysis of public response.",
-        "A comment on community reactions.",
-        "A report on recent online conversation.",
-        "An overview of a popular topic.",
-        "A summary of recent public discussion.",
+        f"Someone sharing a personal update.",
+        f"A casual remark about daily life.",
+        f"A short message to a friend.",
+        f"Someone talking about their day.",
+        f"A comment about plans for later.",
+        f"A brief observation about something.",
+        f"Someone mentioning what they are doing.",
+        f"A quick update about the weekend.",
+        f"A message about something that happened.",
+        f"Someone replying to another person.",
+        f"A {text_unit} about an everyday topic.",
+        f"A conversational {text_unit} online.",
     ]
 
 
 
-# ── Domain-agnostic default topics ────────────────────────────────────────
-DEFAULT_TOPICS = [
-    "technology",
-    "entertainment",
-    "sports",
-    "politics",
-    "health",
-    "education",
-    "travel",
-    "food",
-    "the environment",
-    "science",
-    "fashion",
-    "music",
-    "gaming",
-    "business",
-    "social media",
-    "weather",
-    "transportation",
-    "housing",
-    "energy",
-    "culture",
-    "art",
-    "relationships",
-    "work",
-    "news",
-    "community",
-    "digital privacy",
-    "artificial intelligence",
-    "climate change",
-    "public safety",
-    "economics",
-    "media",
-    "innovation",
+# ── Data-grounded default topics ───────────────────────────────────────────
+#
+# Design rationale (following debias_vl / CBDC paper):
+#   In Waterbirds, spurious topics are actual confound attributes in the data
+#   (land/water background). In CelebA, they are gender. The topics must
+#   capture attributes that (a) actually appear in the corpus and (b) are
+#   balanced across sentiment classes (high label entropy).
+#
+#   Analysis of TSAD tweets (27,480 samples) reveals two confound types:
+#
+#   1. CONTENT TOPICS — what tweets are about. These are personal/daily-life
+#      themes (work, school, friends, movies), not news categories. Selected
+#      by: frequency > 80, label entropy > 0.93 across neg/neu/pos.
+#
+#   2. STYLE CONFOUNDS — how tweets are written. These are the strongest
+#      spurious correlations in the data:
+#        - Positive emoticons (:) :D) → 56% positive (entropy 0.88)
+#        - Ending with question mark → 59% neutral (entropy 0.87)
+#        - Containing a URL/link → 47% neutral (entropy 0.94)
+#        - Very short (≤4 words) → 52% neutral (entropy 0.93)
+#        - Internet laughter (lol, haha) → skews positive (entropy 0.93)
+#      These are analogous to "background texture" in Waterbirds: features
+#      that co-occur with labels but are not causally related to sentiment.
+#
+#   The prompt template uses "about {topic}" for content topics and
+#   "written with/in {style}" for style confounds, following the pattern
+#   of debias_vl's per-attribute template specialization.
+
+# Content topics: balanced across sentiment, frequent in TSAD tweets
+_CONTENT_TOPICS = [
+    # Daily routine (entropy 0.93-0.99, freq 100-1100)
+    ("work", "content"),
+    ("school", "content"),
+    ("sleep", "content"),
+    ("home", "content"),
+    ("food", "content"),
+    ("coffee", "content"),
+    # Social / personal (entropy 0.94-1.00, freq 100-360)
+    ("friends", "content"),
+    ("family", "content"),
+    ("people", "content"),
+    ("party", "content"),
+    # Media / entertainment (entropy 0.93-0.97, freq 100-340)
+    ("watching something", "content"),
+    ("a movie", "content"),
+    ("a show", "content"),
+    ("music", "content"),
+    # Time / plans (entropy 0.94-0.99, freq 200-510)
+    ("plans for tomorrow", "content"),
+    ("the weekend", "content"),
+    ("last night", "content"),
+    ("today", "content"),
+    # Communication (entropy 0.94-0.99, freq 150-530)
+    ("twitter", "content"),
+    ("a phone call", "content"),
+]
+
+# Style confounds: writing patterns correlated with sentiment
+_STYLE_TOPICS = [
+    # Strong confounds (entropy < 0.93)
+    ("emoticons and smiley faces", "style"),         # 56% positive
+    ("a question", "style"),                          # 59% neutral
+    ("a link or URL", "style"),                       # 47% neutral
+    ("internet slang like lol or haha", "style"),     # skews pos/neu
+    ("very few words", "style"),                      # 52% neutral
+    # Moderate confounds (entropy 0.93-0.97)
+    ("many exclamation marks", "style"),              # 45% positive
+    ("words in all caps", "style"),                   # balanced but distinctive
+    ("first person language", "style"),               # 44% negative
+    ("trailing off with ellipsis", "style"),          # balanced
+    ("elongated words like sooo or yesss", "style"),  # balanced
+    ("informal conversational language", "style"),    # general register
+    ("direct and formal language", "style"),          # contrast register
+]
+
+# Combined default list — content first, then style confounds
+DEFAULT_TOPICS = [t[0] for t in _CONTENT_TOPICS + _STYLE_TOPICS]
+
+# Metadata for template selection (content vs style)
+DEFAULT_TOPIC_METADATA = [
+    {"topic": topic, "kind": kind} for topic, kind in _CONTENT_TOPICS + _STYLE_TOPICS
 ]
 
 # ── Financial domain topics (preserved for --text_unit tweet / finance) ───
@@ -637,7 +688,7 @@ def build_prompt_bank(
 
     def _topic_templates(topic: str):
         meta = meta_by_topic.get(topic, {})
-        kind = meta.get("kind", "phrase")
+        kind = meta.get("kind", "content")
         if kind == "entity":
             return {
                 "spurious": f"A {text_unit} mentioning {topic}.",
@@ -645,6 +696,24 @@ def build_prompt_bank(
                 "neutral": f"A neutral {text_unit} mentioning {topic}.",
                 "positive": f"A positive {text_unit} mentioning {topic}.",
             }
+        if kind == "style":
+            # Style confounds use "written with/in" to describe HOW the text
+            # is written, analogous to "with {background}" in Waterbirds.
+            return {
+                "spurious": f"A {text_unit} written with {topic}.",
+                "negative": f"A negative {text_unit} written with {topic}.",
+                "neutral": f"A neutral {text_unit} written with {topic}.",
+                "positive": f"A positive {text_unit} written with {topic}.",
+            }
+        if kind == "content":
+            # Content topics use "about" to describe WHAT the text is about.
+            return {
+                "spurious": f"A {text_unit} about {topic}.",
+                "negative": f"A negative {text_unit} about {topic}.",
+                "neutral": f"A neutral {text_unit} about {topic}.",
+                "positive": f"A positive {text_unit} about {topic}.",
+            }
+        # Fallback for mined phrase topics
         return {
             "spurious": f"A {text_unit} using the context phrase {topic}.",
             "negative": f"A negative {text_unit} using the context phrase {topic}.",
@@ -718,6 +787,7 @@ def get_prompt_bank(
         except Exception as exc:
             bank = build_prompt_bank(
                 DEFAULT_TOPICS[:max_topics],
+                topic_metadata=DEFAULT_TOPIC_METADATA[:max_topics],
                 using_mined_topics=False,
                 text_unit=text_unit,
             )
@@ -726,12 +796,18 @@ def get_prompt_bank(
 
     return build_prompt_bank(
         DEFAULT_TOPICS[:max_topics],
+        topic_metadata=DEFAULT_TOPIC_METADATA[:max_topics],
         using_mined_topics=False,
         text_unit=text_unit,
     )
 
 
-DEFAULT_PROMPT_BANK = build_prompt_bank(DEFAULT_TOPICS, using_mined_topics=False, text_unit="text")
+DEFAULT_PROMPT_BANK = build_prompt_bank(
+    DEFAULT_TOPICS,
+    topic_metadata=DEFAULT_TOPIC_METADATA,
+    using_mined_topics=False,
+    text_unit="text",
+)
 
 
 def encode_all_prompts(encoder, prompt_bank: dict | None = None) -> dict:
