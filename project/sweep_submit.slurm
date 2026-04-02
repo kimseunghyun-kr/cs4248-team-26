@@ -42,6 +42,8 @@ trap 'on_error $LINENO' ERR
 
 diag_env() {
     echo "[diag] PATH=${PATH}" >&2
+    echo "[diag] uname -a=$(uname -a 2>/dev/null || echo N/A)" >&2
+    echo "[diag] uname -m=$(uname -m 2>/dev/null || echo N/A)" >&2
     echo "[diag] which bash=$(command -v bash 2>/dev/null || echo N/A)" >&2
     echo "[diag] which python=$(command -v python 2>/dev/null || echo N/A)" >&2
     echo "[diag] which python3=$(command -v python3 2>/dev/null || echo N/A)" >&2
@@ -57,6 +59,8 @@ diag_env() {
     [ -e "${CONDA_ROOT}/bin/conda" ] && ls -l "${CONDA_ROOT}/bin/conda" >&2 || true
     [ -e "${CONDA_ROOT}/bin/python" ] && ls -l "${CONDA_ROOT}/bin/python" >&2 || true
     [ -e "${CONDA_PROFILE}" ] && ls -l "${CONDA_PROFILE}" >&2 || true
+    [ -e "/usr/bin/python3" ] && file "/usr/bin/python3" >&2 || true
+    [ -e "/usr/bin/python3" ] && ls -l "/usr/bin/python3" >&2 || true
 }
 
 probe_conda_wrapper() {
@@ -94,6 +98,32 @@ probe_conda_wrapper() {
         echo "[diag] ${CONDA_ROOT}/bin/conda is not executable" >&2
     fi
     echo "[diag] --- wrapper conda probe end ---" >&2
+}
+
+choose_wrapper_python() {
+    local candidate=""
+    local resolved=""
+
+    for candidate in /usr/bin/python3 /usr/local/bin/python3 /bin/python3 /usr/bin/python; do
+        if [ -x "${candidate}" ]; then
+            echo "${candidate}"
+            return 0
+        fi
+    done
+
+    resolved="$(PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin command -v python3 2>/dev/null || true)"
+    if [ -n "${resolved}" ] && [[ "${resolved}" != "${CONDA_ROOT}"* ]]; then
+        echo "${resolved}"
+        return 0
+    fi
+
+    resolved="$(PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin command -v python 2>/dev/null || true)"
+    if [ -n "${resolved}" ] && [[ "${resolved}" != "${CONDA_ROOT}"* ]]; then
+        echo "${resolved}"
+        return 0
+    fi
+
+    return 1
 }
 
 if ! cd "${PROJECT_DIR}"; then
@@ -150,16 +180,13 @@ else
     echo "[warn] wrapper will fall back to system python for matrix generation/log parsing only" >&2
     diag_env
     probe_conda_wrapper
-    if command -v python3 >/dev/null 2>&1; then
-        export PYTHON_BIN="python3"
-    elif command -v python >/dev/null 2>&1; then
-        export PYTHON_BIN="python"
-    else
+    if ! PYTHON_BIN="$(choose_wrapper_python)"; then
         echo "[ERROR] No fallback python interpreter available for sweep wrapper." >&2
         exit 1
     fi
+    export PYTHON_BIN
     echo "Conda env: unavailable for wrapper"
-    echo "Python:    $(command -v "${PYTHON_BIN}")"
+    echo "Python:    ${PYTHON_BIN}"
     "${PYTHON_BIN}" -V || true
 fi
 
