@@ -866,33 +866,33 @@ def mine_topic_phrases_from_cache(
 
 CBDC_STYLE_BIAS_PAIRS = [
     (
-        "A {text_unit} ending with a question mark.",
-        "A {text_unit} written as a statement.",
+        "A {text_unit} ending with ???",
+        "A {text_unit} ending with a plain period.",
         "question-mark vs statement",
     ),
     (
-        "A {text_unit} containing multiple question marks.",
-        "A {text_unit} with standard punctuation.",
+        "A {text_unit} with repeated question marks like ???",
+        "A {text_unit} with standard punctuation like .",
         "repeated-question-marks vs standard punctuation",
     ),
     (
-        "A {text_unit} containing an exclamation mark.",
-        "A {text_unit} without exclamation marks.",
+        "A {text_unit} with lots of exclamation marks!!!",
+        "A {text_unit} with ordinary punctuation.",
         "exclamation-mark vs no-exclamation-mark",
     ),
     (
-        "A {text_unit} that is very short.",
-        "A longer and more detailed {text_unit}.",
+        "A very short {text_unit} like ok",
+        "A longer {text_unit} with more detail and context.",
         "very-short vs longer-detailed",
     ),
     (
-        "A {text_unit} containing internet laughter like lol.",
-        "A {text_unit} without internet laughter.",
+        "A {text_unit} containing lol haha lmao",
+        "A {text_unit} with no laughter words.",
         "internet-laughter vs no-laughter",
     ),
     (
-        "A {text_unit} containing an emoticon or smiley face.",
-        "A {text_unit} without any emoticon.",
+        "A {text_unit} containing emoticons like :) :D <3",
+        "A {text_unit} with no emoticons.",
         "emoticon vs no-emoticon",
     ),
 ]
