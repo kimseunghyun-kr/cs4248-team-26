@@ -1,7 +1,1 @@
 job_id	run_name	job_name	spec
-538654	bert_linear	sweep-bert_linear	RUN_NAME=bert_linear CLASSIFIER=linear MODEL=bert START_PHASE=1
-538655	bert_ft_l2	sweep-bert_ft_l2	RUN_NAME=bert_ft_l2 CLASSIFIER=transformer MODEL=bert START_PHASE=2 INPUT_MODE=text UNFREEZE_LAYERS=2 HEAD_TYPE=mlp LOSS_NAME=cross_entropy
-538697	bert_ft_l4	sweep-bert_ft_l4	RUN_NAME=bert_ft_l4 CLASSIFIER=transformer MODEL=bert START_PHASE=2 INPUT_MODE=text UNFREEZE_LAYERS=4 HEAD_TYPE=mlp LOSS_NAME=cross_entropy
-538698	bert_ft_focal	sweep-bert_ft_focal	RUN_NAME=bert_ft_focal CLASSIFIER=transformer MODEL=bert START_PHASE=2 INPUT_MODE=text UNFREEZE_LAYERS=2 HEAD_TYPE=mlp LOSS_NAME=focal
-538726	roberta_ft_l2	sweep-roberta_ft_l2	RUN_NAME=roberta_ft_l2 CLASSIFIER=transformer MODEL=roberta START_PHASE=1 INPUT_MODE=text UNFREEZE_LAYERS=2 HEAD_TYPE=mlp LOSS_NAME=cross_entropy
-538727	bertweet_ft_l2	sweep-bertweet_ft_l2	RUN_NAME=bertweet_ft_l2 CLASSIFIER=transformer MODEL=bertweet START_PHASE=1 INPUT_MODE=text UNFREEZE_LAYERS=2 HEAD_TYPE=mlp LOSS_NAME=cross_entropy

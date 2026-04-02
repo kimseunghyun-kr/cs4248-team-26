@@ -53,6 +53,17 @@ echo "Time:     $(date)"
 echo "Project:  ${PROJECT_DIR}"
 echo "Workdir:  $(pwd)"
 
+ENV_NAME="${ENV_NAME:-cbdc}"
+if command -v conda >/dev/null 2>&1; then
+    source "$(conda info --base)/etc/profile.d/conda.sh"
+    conda activate "${ENV_NAME}"
+    export PYTHON_BIN="$(command -v python)"
+    echo "Conda env: ${ENV_NAME}"
+    echo "Python:    ${PYTHON_BIN}"
+else
+    echo "[WARN] conda not found; relying on PATH python." >&2
+fi
+
 if ! command -v bash >/dev/null 2>&1; then
     echo "[ERROR] bash is not available in PATH." >&2
     exit 1

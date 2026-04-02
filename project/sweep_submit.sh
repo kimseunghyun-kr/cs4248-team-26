@@ -110,6 +110,32 @@ mkdir -p "${SWEEP_DIR}"
 
 declare -a RUN_MATRIX=()
 
+resolve_python_bin() {
+  if [ -n "${PYTHON_BIN:-}" ] && [ -x "${PYTHON_BIN}" ]; then
+    if "${PYTHON_BIN}" -c 'import sys; print(sys.executable)' >/dev/null 2>&1; then
+      echo "${PYTHON_BIN}"
+      return 0
+    fi
+  fi
+
+  local candidate resolved
+  for candidate in python3 python; do
+    if ! resolved="$(command -v "${candidate}" 2>/dev/null)"; then
+      continue
+    fi
+    if [ -n "${resolved}" ] && "${resolved}" -c 'import sys; print(sys.executable)' >/dev/null 2>&1; then
+      echo "${resolved}"
+      return 0
+    fi
+  done
+
+  echo "[ERROR] No usable Python interpreter found for sweep_submit.sh." >&2
+  echo "[ERROR] Tried PYTHON_BIN='${PYTHON_BIN:-}', then python3, then python." >&2
+  exit 1
+}
+
+PYTHON_BIN_RESOLVED="$(resolve_python_bin)"
+
 generate_preset_matrix() {
   local preset="$1"
   local generated
@@ -117,7 +143,7 @@ generate_preset_matrix() {
     SWEEP_PRESET_VALUE="${preset}" \
     INCLUDE_SELECTED_INPUTS="${INCLUDE_SELECTED_INPUTS}" \
     INCLUDE_LLM_MODELS="${INCLUDE_LLM_MODELS}" \
-    python - <<'PY'
+    "${PYTHON_BIN_RESOLVED}" - <<'PY'
 import itertools
 import os
 
@@ -392,7 +418,7 @@ monitor_jobs() {
 }
 
 analyze_logs() {
-  python - "${RESULTS_DIR}" "${SWEEP_DIR}" "${TOP_K}" "${MANIFEST_FILE}" <<'PY'
+  "${PYTHON_BIN_RESOLVED}" - "${RESULTS_DIR}" "${SWEEP_DIR}" "${TOP_K}" "${MANIFEST_FILE}" <<'PY'
 import csv
 import glob
 import math
