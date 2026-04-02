@@ -2,11 +2,11 @@
 #SBATCH --job-name=sentiment-sweep
 #SBATCH --output=results/slurm_sweep_%j.log
 #SBATCH --error=results/slurm_sweep_%j.err
-#SBATCH --time=24:00:00
+#SBATCH --time=12:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=2
-#SBATCH --mem=8G
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=48G
 
 # 1. Load Conda WITHOUT strict mode (This is what the diagnostic proved works)
 source /home/k/kimsh/miniconda3/bin/activate cbdc
