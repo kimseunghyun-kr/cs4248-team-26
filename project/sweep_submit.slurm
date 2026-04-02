@@ -40,6 +40,62 @@ on_error() {
 }
 trap 'on_error $LINENO' ERR
 
+diag_env() {
+    echo "[diag] PATH=${PATH}" >&2
+    echo "[diag] which bash=$(command -v bash 2>/dev/null || echo N/A)" >&2
+    echo "[diag] which python=$(command -v python 2>/dev/null || echo N/A)" >&2
+    echo "[diag] which python3=$(command -v python3 2>/dev/null || echo N/A)" >&2
+    echo "[diag] which conda=$(command -v conda 2>/dev/null || echo N/A)" >&2
+    echo "[diag] CONDA_ROOT=${CONDA_ROOT:-}" >&2
+    echo "[diag] CONDA_PROFILE=${CONDA_PROFILE:-}" >&2
+    if command -v file >/dev/null 2>&1; then
+        [ -e "${CONDA_ROOT}/bin/python" ] && file "${CONDA_ROOT}/bin/python" >&2 || true
+        [ -e "${CONDA_ROOT}/bin/conda" ] && file "${CONDA_ROOT}/bin/conda" >&2 || true
+        [ -e "${CONDA_PROFILE}" ] && file "${CONDA_PROFILE}" >&2 || true
+    fi
+    [ -e "${CONDA_ROOT}/bin/conda" ] && head -1 "${CONDA_ROOT}/bin/conda" >&2 || true
+    [ -e "${CONDA_ROOT}/bin/conda" ] && ls -l "${CONDA_ROOT}/bin/conda" >&2 || true
+    [ -e "${CONDA_ROOT}/bin/python" ] && ls -l "${CONDA_ROOT}/bin/python" >&2 || true
+    [ -e "${CONDA_PROFILE}" ] && ls -l "${CONDA_PROFILE}" >&2 || true
+}
+
+probe_conda_wrapper() {
+    local probe_rc=0
+    echo "[diag] --- wrapper conda probe begin ---" >&2
+    if [ -x "${CONDA_ROOT}/bin/python" ]; then
+        trap - ERR
+        set +e
+        "${CONDA_ROOT}/bin/python" -V >&2
+        probe_rc=$?
+        set -euo pipefail
+        trap 'on_error $LINENO' ERR
+        echo "[diag] ${CONDA_ROOT}/bin/python -V rc=${probe_rc}" >&2
+    else
+        echo "[diag] ${CONDA_ROOT}/bin/python is not executable" >&2
+    fi
+
+    if [ -x "${CONDA_ROOT}/bin/conda" ]; then
+        trap - ERR
+        set +e
+        "${CONDA_ROOT}/bin/conda" --help >/dev/null
+        probe_rc=$?
+        set -euo pipefail
+        trap 'on_error $LINENO' ERR
+        echo "[diag] ${CONDA_ROOT}/bin/conda --help rc=${probe_rc}" >&2
+
+        trap - ERR
+        set +e
+        "${CONDA_ROOT}/bin/conda" shell.bash hook >/dev/null
+        probe_rc=$?
+        set -euo pipefail
+        trap 'on_error $LINENO' ERR
+        echo "[diag] ${CONDA_ROOT}/bin/conda shell.bash hook rc=${probe_rc}" >&2
+    else
+        echo "[diag] ${CONDA_ROOT}/bin/conda is not executable" >&2
+    fi
+    echo "[diag] --- wrapper conda probe end ---" >&2
+}
+
 if ! cd "${PROJECT_DIR}"; then
     echo "[ERROR] Unable to cd into project directory: ${PROJECT_DIR}" >&2
     exit 1
@@ -52,31 +108,66 @@ echo "Node:     $(hostname)"
 echo "Time:     $(date)"
 echo "Project:  ${PROJECT_DIR}"
 echo "Workdir:  $(pwd)"
+echo "Args:     $*"
 
 ENV_NAME="${ENV_NAME:-cbdc}"
-if [ -f "${HOME}/.bashrc" ]; then
+CONDA_ROOT="${CONDA_ROOT:-/home/k/kimsh/miniconda3}"
+CONDA_PROFILE="${CONDA_PROFILE:-${CONDA_ROOT}/etc/profile.d/conda.sh}"
+
+echo "[step] sweep wrapper: preparing conda env '${ENV_NAME}'"
+echo "[step] sweep wrapper: CONDA_PROFILE=${CONDA_PROFILE}"
+
+if [ -f "${CONDA_PROFILE}" ]; then
     trap - ERR
     set +e +u
     # shellcheck disable=SC1090
-    source "${HOME}/.bashrc"
+    source "${CONDA_PROFILE}"
+    source_rc=$?
+    set -euo pipefail
+    trap 'on_error $LINENO' ERR
+else
+    source_rc=1
+fi
+
+activate_rc=1
+if [ "${source_rc}" -eq 0 ] && command -v conda >/dev/null 2>&1; then
+    echo "[step] sweep wrapper: sourced conda profile successfully"
+    trap - ERR
+    set +e
+    conda activate "${ENV_NAME}"
+    activate_rc=$?
     set -euo pipefail
     trap 'on_error $LINENO' ERR
 fi
-if ! command -v conda >/dev/null 2>&1; then
-    echo "[ERROR] 'conda' is unavailable after sourcing ~/.bashrc" >&2
-    exit 1
+
+if [ "${source_rc}" -eq 0 ] && [ "${activate_rc}" -eq 0 ]; then
+    export PYTHON_BIN="python"
+    echo "Conda env: ${ENV_NAME}"
+    echo "Python:    $(command -v python)"
+else
+    echo "[warn] sweep wrapper could not activate conda env '${ENV_NAME}'" >&2
+    echo "[warn] source_rc=${source_rc} activate_rc=${activate_rc}" >&2
+    echo "[warn] wrapper will fall back to system python for matrix generation/log parsing only" >&2
+    diag_env
+    probe_conda_wrapper
+    if command -v python3 >/dev/null 2>&1; then
+        export PYTHON_BIN="python3"
+    elif command -v python >/dev/null 2>&1; then
+        export PYTHON_BIN="python"
+    else
+        echo "[ERROR] No fallback python interpreter available for sweep wrapper." >&2
+        exit 1
+    fi
+    echo "Conda env: unavailable for wrapper"
+    echo "Python:    $(command -v "${PYTHON_BIN}")"
+    "${PYTHON_BIN}" -V || true
 fi
-if ! conda activate "${ENV_NAME}"; then
-    echo "[ERROR] Failed to activate conda env '${ENV_NAME}'" >&2
-    exit 1
-fi
-export PYTHON_BIN="python"
-echo "Conda env: ${ENV_NAME}"
-echo "Python:    $(command -v python)"
 
 if ! command -v bash >/dev/null 2>&1; then
     echo "[ERROR] bash is not available in PATH." >&2
+    diag_env
     exit 1
 fi
 
+echo "[step] sweep wrapper: executing sweep_submit.sh $*"
 exec bash "${PROJECT_DIR}/sweep_submit.sh" "$@"

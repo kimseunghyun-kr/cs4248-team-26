@@ -45,6 +45,7 @@ Matrix format:
 
 Built-in presets:
   starter    Small sanity sweep.
+  report6h   Curated report-ready sweep sized for roughly a half-day run.
   full       Broad practical sweep across models, unfreeze depth, head, loss, and metadata.
   exhaustive Larger combinatorial sweep; intended for long overnight runs.
 
@@ -117,6 +118,18 @@ if [ -z "${PYTHON_BIN_RESOLVED}" ]; then
   exit 1
 fi
 
+echo "[sweep] project_dir=${PROJECT_DIR}"
+echo "[sweep] results_dir=${RESULTS_DIR}"
+echo "[sweep] sweep_dir=${SWEEP_DIR}"
+echo "[sweep] slurm_file=${SLURM_FILE}"
+echo "[sweep] preset=${SWEEP_PRESET}"
+echo "[sweep] matrix_file=${MATRIX_FILE:-<builtin>}"
+echo "[sweep] include_selected_inputs=${INCLUDE_SELECTED_INPUTS}"
+echo "[sweep] include_llm_models=${INCLUDE_LLM_MODELS}"
+echo "[sweep] user=${SBATCH_USER} queue_limit=${QUEUE_LIMIT} poll_seconds=${POLL_SECONDS}"
+echo "[sweep] python_bin=${PYTHON_BIN_RESOLVED}"
+"${PYTHON_BIN_RESOLVED}" -V || true
+
 generate_preset_matrix() {
   local preset="$1"
   local generated
@@ -170,6 +183,32 @@ def build_run_name(model, input_mode, unfreeze, head, loss, meta_name, lr_name=N
         pieces.append(pooling)
     return "_".join(pieces)
 
+def emit_transformer(
+    model,
+    *,
+    input_mode="text",
+    unfreeze=4,
+    head="mlp",
+    loss="cross_entropy",
+    meta_name="none",
+    lr_name="std",
+    pooling="auto",
+):
+    spec = {
+        "RUN_NAME": build_run_name(model, input_mode, unfreeze, head, loss, meta_name, lr_name, pooling),
+        "CLASSIFIER": "transformer",
+        "MODEL": model,
+        "START_PHASE": "1",
+        "INPUT_MODE": input_mode,
+        "UNFREEZE_LAYERS": str(unfreeze),
+        "HEAD_TYPE": head,
+        "LOSS_NAME": loss,
+        "POOLING": pooling,
+    }
+    spec.update(lr_presets[lr_name])
+    spec.update(meta_presets[meta_name])
+    emit(spec)
+
 def add_linear_runs():
     for model in models:
         emit({
@@ -219,6 +258,66 @@ elif preset == "full":
         metadata_names=["none", "all"],
         input_modes=["text"],
     )
+elif preset == "report6h":
+    top_models = ["bert", "bertweet", "finbert"]
+    llm_report_models = ["qwen2", "tinyllama"]
+    report_models = practical_models + llm_report_models
+
+    # 1. Linear baselines across all report backbones.
+    for model in report_models:
+        emit({
+            "RUN_NAME": f"{model}_linear",
+            "CLASSIFIER": "linear",
+            "MODEL": model,
+            "START_PHASE": "1",
+        })
+
+    # 2. Strong default transformer comparison across all report backbones.
+    for model in report_models:
+        emit_transformer(model)
+
+    # 3. Unfreeze-depth study for the three strongest conventional backbones.
+    for model in top_models:
+        for unfreeze in [0, 2, 12]:
+            emit_transformer(model, unfreeze=unfreeze)
+
+    # 4. Head ablation on top_models.
+    for model in top_models:
+        emit_transformer(model, head="linear")
+
+    # 5. Focal-loss ablation on top_models.
+    for model in top_models:
+        emit_transformer(model, loss="focal")
+
+    # 6. Lower-LR ablation on top_models.
+    for model in top_models:
+        emit_transformer(model, lr_name="low")
+
+    # 7. Metadata-all study on top_models.
+    for model in top_models:
+        emit_transformer(model, meta_name="all")
+
+    # 8. Single metadata studies on bert + finbert.
+    for model in ["bert", "finbert"]:
+        for meta_name in ["time", "age", "country"]:
+            emit_transformer(model, meta_name=meta_name)
+
+    # 9. Pooling comparison on top_models.
+    for model in top_models:
+        emit_transformer(model, pooling="mean")
+
+    # 10. Lower-LR + all-metadata combo on bert + finbert.
+    for model in ["bert", "finbert"]:
+        emit_transformer(model, meta_name="all", lr_name="low")
+
+    # 11. Lightweight comparison bundle for qwen2 and tinyllama.
+    for model in llm_report_models:
+        for unfreeze in [0, 2, 12]:
+            emit_transformer(model, unfreeze=unfreeze)
+        emit_transformer(model, head="linear")
+        emit_transformer(model, loss="focal")
+        emit_transformer(model, lr_name="low")
+        emit_transformer(model, pooling="mean")
 elif preset == "exhaustive":
     add_linear_runs()
     input_modes = ["text"]

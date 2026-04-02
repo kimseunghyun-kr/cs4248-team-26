@@ -42,21 +42,108 @@ else
     echo "GPU: N/A"
 fi
 
+diag_env() {
+    echo "[diag] PATH=${PATH}" >&2
+    echo "[diag] which bash=$(command -v bash 2>/dev/null || echo N/A)" >&2
+    echo "[diag] which python=$(command -v python 2>/dev/null || echo N/A)" >&2
+    echo "[diag] which conda=$(command -v conda 2>/dev/null || echo N/A)" >&2
+    echo "[diag] CONDA_ROOT=${CONDA_ROOT:-}" >&2
+    echo "[diag] CONDA_PROFILE=${CONDA_PROFILE:-}" >&2
+    if command -v file >/dev/null 2>&1; then
+        [ -e "${CONDA_ROOT}/bin/python" ] && file "${CONDA_ROOT}/bin/python" >&2 || true
+        [ -e "${CONDA_ROOT}/bin/conda" ] && file "${CONDA_ROOT}/bin/conda" >&2 || true
+        [ -e "${CONDA_PROFILE}" ] && file "${CONDA_PROFILE}" >&2 || true
+    fi
+    [ -e "${CONDA_ROOT}/bin/conda" ] && head -1 "${CONDA_ROOT}/bin/conda" >&2 || true
+    [ -e "${CONDA_ROOT}/bin/conda" ] && ls -l "${CONDA_ROOT}/bin/conda" >&2 || true
+    [ -e "${CONDA_ROOT}/bin/python" ] && ls -l "${CONDA_ROOT}/bin/python" >&2 || true
+    [ -e "${CONDA_PROFILE}" ] && ls -l "${CONDA_PROFILE}" >&2 || true
+}
+
+probe_conda_local() {
+    local probe_rc=0
+    echo "[diag] --- local conda probe begin ---" >&2
+    if [ -x "${CONDA_ROOT}/bin/python" ]; then
+        trap - ERR
+        set +e
+        "${CONDA_ROOT}/bin/python" -V >&2
+        probe_rc=$?
+        set -euo pipefail
+        trap 'on_error $LINENO' ERR
+        echo "[diag] ${CONDA_ROOT}/bin/python -V rc=${probe_rc}" >&2
+    else
+        echo "[diag] ${CONDA_ROOT}/bin/python is not executable" >&2
+    fi
+
+    if [ -x "${CONDA_ROOT}/bin/conda" ]; then
+        trap - ERR
+        set +e
+        "${CONDA_ROOT}/bin/conda" --help >/dev/null
+        probe_rc=$?
+        set -euo pipefail
+        trap 'on_error $LINENO' ERR
+        echo "[diag] ${CONDA_ROOT}/bin/conda --help rc=${probe_rc}" >&2
+
+        trap - ERR
+        set +e
+        "${CONDA_ROOT}/bin/conda" shell.bash hook >/dev/null
+        probe_rc=$?
+        set -euo pipefail
+        trap 'on_error $LINENO' ERR
+        echo "[diag] ${CONDA_ROOT}/bin/conda shell.bash hook rc=${probe_rc}" >&2
+    else
+        echo "[diag] ${CONDA_ROOT}/bin/conda is not executable" >&2
+    fi
+    echo "[diag] --- local conda probe end ---" >&2
+}
+
 ENV_NAME="${ENV_NAME:-cbdc}"
-if [ -f "${HOME}/.bashrc" ]; then
-    trap - ERR
-    set +e +u
-    # shellcheck disable=SC1090
-    source "${HOME}/.bashrc"
-    set -euo pipefail
-    trap 'on_error $LINENO' ERR
-fi
-if ! command -v conda >/dev/null 2>&1; then
-    echo "[ERROR] 'conda' is unavailable after sourcing ~/.bashrc" >&2
+CONDA_ROOT="${CONDA_ROOT:-/home/k/kimsh/miniconda3}"
+CONDA_PROFILE="${CONDA_PROFILE:-${CONDA_ROOT}/etc/profile.d/conda.sh}"
+
+echo "[step] local runner: preparing conda env '${ENV_NAME}'"
+echo "[step] local runner: CONDA_PROFILE=${CONDA_PROFILE}"
+
+if [ ! -f "${CONDA_PROFILE}" ]; then
+    echo "[ERROR] Cannot find conda profile: ${CONDA_PROFILE}" >&2
+    diag_env
+    probe_conda_local
     exit 1
 fi
-if ! conda activate "${ENV_NAME}"; then
-    echo "[ERROR] Failed to activate conda env '${ENV_NAME}'" >&2
+
+trap - ERR
+set +e +u
+# shellcheck disable=SC1090
+source "${CONDA_PROFILE}"
+source_rc=$?
+set -euo pipefail
+trap 'on_error $LINENO' ERR
+
+if [ "${source_rc}" -ne 0 ]; then
+    echo "[ERROR] Sourcing conda profile failed with rc=${source_rc}" >&2
+    diag_env
+    probe_conda_local
+    exit 1
+fi
+
+if ! command -v conda >/dev/null 2>&1; then
+    echo "[ERROR] 'conda' command unavailable after sourcing ${CONDA_PROFILE}" >&2
+    diag_env
+    probe_conda_local
+    exit 1
+fi
+
+trap - ERR
+set +e
+conda activate "${ENV_NAME}"
+activate_rc=$?
+set -euo pipefail
+trap 'on_error $LINENO' ERR
+
+if [ "${activate_rc}" -ne 0 ]; then
+    echo "[ERROR] conda activate '${ENV_NAME}' failed with rc=${activate_rc}" >&2
+    diag_env
+    probe_conda_local
     exit 1
 fi
 PYTHON_BIN="python"
