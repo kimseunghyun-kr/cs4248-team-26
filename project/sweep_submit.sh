@@ -110,13 +110,10 @@ mkdir -p "${SWEEP_DIR}"
 
 declare -a RUN_MATRIX=()
 
-PYTHON_BIN_RESOLVED="${PYTHON_BIN:-}"
-if [ -z "${PYTHON_BIN_RESOLVED}" ]; then
-  PYTHON_BIN_RESOLVED="$(command -v python 2>/dev/null || command -v python3 2>/dev/null || true)"
-fi
+PYTHON_BIN_RESOLVED="${PYTHON_BIN:-python}"
 if [ -z "${PYTHON_BIN_RESOLVED}" ]; then
   echo "[ERROR] No Python interpreter found for sweep_submit.sh." >&2
-  echo "[ERROR] Activate your env first, or export PYTHON_BIN=/path/to/python." >&2
+  echo "[ERROR] Activate your env first, or export PYTHON_BIN=python." >&2
   exit 1
 fi
 
