@@ -67,10 +67,12 @@ echo "Workdir: $(pwd)"
 ENV_NAME="${ENV_NAME:-cbdc}"
 if [ -f "${HOME}/.bashrc" ]; then
     # Some user bashrc files assume interactive shells; avoid nounset blowups.
+    trap - ERR
     set +e +u
     # shellcheck disable=SC1090
     source "${HOME}/.bashrc"
     set -euo pipefail
+    trap 'on_error $LINENO' ERR
 fi
 if ! command -v conda >/dev/null 2>&1; then
     echo "[ERROR] 'conda' is unavailable after sourcing ~/.bashrc" >&2
