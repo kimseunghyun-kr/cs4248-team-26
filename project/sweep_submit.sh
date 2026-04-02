@@ -110,31 +110,15 @@ mkdir -p "${SWEEP_DIR}"
 
 declare -a RUN_MATRIX=()
 
-resolve_python_bin() {
-  if [ -n "${PYTHON_BIN:-}" ] && [ -x "${PYTHON_BIN}" ]; then
-    if "${PYTHON_BIN}" -c 'import sys; print(sys.executable)' >/dev/null 2>&1; then
-      echo "${PYTHON_BIN}"
-      return 0
-    fi
-  fi
-
-  local candidate resolved
-  for candidate in python3 python; do
-    if ! resolved="$(command -v "${candidate}" 2>/dev/null)"; then
-      continue
-    fi
-    if [ -n "${resolved}" ] && "${resolved}" -c 'import sys; print(sys.executable)' >/dev/null 2>&1; then
-      echo "${resolved}"
-      return 0
-    fi
-  done
-
-  echo "[ERROR] No usable Python interpreter found for sweep_submit.sh." >&2
-  echo "[ERROR] Tried PYTHON_BIN='${PYTHON_BIN:-}', then python3, then python." >&2
+PYTHON_BIN_RESOLVED="${PYTHON_BIN:-}"
+if [ -z "${PYTHON_BIN_RESOLVED}" ]; then
+  PYTHON_BIN_RESOLVED="$(command -v python 2>/dev/null || command -v python3 2>/dev/null || true)"
+fi
+if [ -z "${PYTHON_BIN_RESOLVED}" ]; then
+  echo "[ERROR] No Python interpreter found for sweep_submit.sh." >&2
+  echo "[ERROR] Activate your env first, or export PYTHON_BIN=/path/to/python." >&2
   exit 1
-}
-
-PYTHON_BIN_RESOLVED="$(resolve_python_bin)"
+fi
 
 generate_preset_matrix() {
   local preset="$1"
