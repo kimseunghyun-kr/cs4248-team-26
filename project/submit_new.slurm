@@ -22,8 +22,24 @@
 
 set -euo pipefail
 
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RESOLVED_PROJECT_DIR=""
+for candidate in "${PROJECT_DIR:-}" "${SLURM_SUBMIT_DIR:-}" "${SCRIPT_DIR}" "$(pwd)"; do
+    if [ -n "${candidate}" ] && [ -f "${candidate}/run_all.py" ] && [ -f "${candidate}/submit_new.slurm" ]; then
+        RESOLVED_PROJECT_DIR="${candidate}"
+        break
+    fi
+done
+PROJECT_DIR="${RESOLVED_PROJECT_DIR}"
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+
+if [ -z "${PROJECT_DIR}" ]; then
+    echo "[ERROR] Could not resolve project directory." >&2
+    echo "[ERROR] SLURM_SUBMIT_DIR=${SLURM_SUBMIT_DIR:-}" >&2
+    echo "[ERROR] SCRIPT_DIR=${SCRIPT_DIR}" >&2
+    echo "[ERROR] cwd=$(pwd)" >&2
+    exit 1
+fi
 
 on_error() {
     local exit_code="$?"
