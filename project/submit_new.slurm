@@ -27,7 +27,7 @@ echo "Node:    $(hostname)"
 echo "Time:    $(date)"
 echo "GPU:     $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || echo 'N/A')"
 
-ENV_NAME="${ENV_NAME:-sentiment}"
+ENV_NAME="${ENV_NAME:-cbdc}"
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "${ENV_NAME}"
 
