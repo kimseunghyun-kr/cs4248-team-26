@@ -12,8 +12,28 @@
 
 set -euo pipefail
 
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+
+on_error() {
+    local exit_code="$?"
+    local line_no="${1:-unknown}"
+    echo "[ERROR] ${SCRIPT_NAME} failed at line ${line_no}: ${BASH_COMMAND}" >&2
+    echo "[ERROR] cwd=$(pwd)" >&2
+    echo "[ERROR] project_dir=${PROJECT_DIR}" >&2
+    exit "${exit_code}"
+}
+trap 'on_error $LINENO' ERR
+
+if ! cd "${PROJECT_DIR}"; then
+    echo "[ERROR] Unable to cd into project directory: ${PROJECT_DIR}" >&2
+    exit 1
+fi
+
 echo "Host: $(hostname)"
 echo "Time: $(date)"
+echo "Project: ${PROJECT_DIR}"
+echo "Workdir: $(pwd)"
 
 if command -v nvidia-smi &> /dev/null; then
     echo "GPU:"
@@ -42,7 +62,7 @@ export TRANSFORMERS_CACHE=./cache
 export HF_HOME=./cache
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
 
-mkdir -p results checkpoints cache
+mkdir -p "${PROJECT_DIR}/results" "${PROJECT_DIR}/checkpoints" "${PROJECT_DIR}/cache"
 
 RUN_NAME="${RUN_NAME:-}"
 CLASSIFIER="${CLASSIFIER:-transformer}"

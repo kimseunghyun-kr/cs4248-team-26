@@ -266,6 +266,10 @@ extract_token_value() {
 }
 
 active_job_count() {
+  if ! command -v squeue >/dev/null 2>&1; then
+    echo "[ERROR] squeue is not available in PATH." >&2
+    exit 1
+  fi
   local count
   count="$(squeue -u "${SBATCH_USER}" -h 2>/dev/null | wc -l | tr -d ' ')"
   echo "${count:-0}"
@@ -311,10 +315,17 @@ submit_run() {
     spec="RUN_NAME=${run_name} ${spec}"
   fi
 
-  wait_for_slot
-
   local job_name="${JOB_NAME_PREFIX}-${run_name}"
-  local cmd=(sbatch --job-name "${job_name}" --export "ALL,${spec}" "${SLURM_FILE}")
+  local slurm_path="${SLURM_FILE}"
+  if [[ "${slurm_path}" != /* ]]; then
+    slurm_path="${PROJECT_DIR}/${SLURM_FILE}"
+  fi
+  if [ ! -f "${slurm_path}" ]; then
+    echo "[submit][ERROR] SLURM file not found: ${slurm_path}" >&2
+    exit 1
+  fi
+
+  local cmd=(sbatch --chdir "${PROJECT_DIR}" --job-name "${job_name}" --export "ALL,${spec}" "${slurm_path}")
 
   echo
   echo "[submit] ${run_name}"
@@ -325,8 +336,20 @@ submit_run() {
     return 0
   fi
 
+  wait_for_slot
+
+  if ! command -v sbatch >/dev/null 2>&1; then
+    echo "[submit][ERROR] sbatch is not available in PATH." >&2
+    exit 1
+  fi
+
   local out
-  out="$("${cmd[@]}")"
+  if ! out="$("${cmd[@]}" 2>&1)"; then
+    echo "[submit][ERROR] sbatch failed for run '${run_name}'" >&2
+    echo "[submit][ERROR] spec: ${spec}" >&2
+    echo "${out}" >&2
+    exit 1
+  fi
   echo "[submit] ${out}"
 
   local job_id

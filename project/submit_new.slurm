@@ -22,10 +22,31 @@
 
 set -euo pipefail
 
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+
+on_error() {
+    local exit_code="$?"
+    local line_no="${1:-unknown}"
+    echo "[ERROR] ${SCRIPT_NAME} failed at line ${line_no}: ${BASH_COMMAND}" >&2
+    echo "[ERROR] cwd=$(pwd)" >&2
+    echo "[ERROR] project_dir=${PROJECT_DIR}" >&2
+    echo "[ERROR] slurm_job_id=${SLURM_JOB_ID:-unknown}" >&2
+    exit "${exit_code}"
+}
+trap 'on_error $LINENO' ERR
+
+if ! cd "${PROJECT_DIR}"; then
+    echo "[ERROR] Unable to cd into project directory: ${PROJECT_DIR}" >&2
+    exit 1
+fi
+
 echo "Job ID:  ${SLURM_JOB_ID}"
 echo "Node:    $(hostname)"
 echo "Time:    $(date)"
 echo "GPU:     $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || echo 'N/A')"
+echo "Project: ${PROJECT_DIR}"
+echo "Workdir: $(pwd)"
 
 ENV_NAME="${ENV_NAME:-cbdc}"
 source "$(conda info --base)/etc/profile.d/conda.sh"
@@ -37,7 +58,7 @@ echo "Packages ready."
 python -c "import torch; print('torch', torch.__version__, '| cuda:', torch.cuda.is_available())"
 python -c "import transformers; print('transformers', transformers.__version__)"
 
-mkdir -p results checkpoints cache
+mkdir -p "${PROJECT_DIR}/results" "${PROJECT_DIR}/checkpoints" "${PROJECT_DIR}/cache"
 export PYTHONUNBUFFERED=1
 
 RUN_NAME="${RUN_NAME:-}"
