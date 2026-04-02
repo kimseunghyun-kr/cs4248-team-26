@@ -25,6 +25,56 @@ on_error() {
 }
 trap 'on_error $LINENO' ERR
 
+find_conda_sh() {
+    if [ -n "${CONDA_SH:-}" ] && [ -f "${CONDA_SH}" ]; then
+        echo "${CONDA_SH}"
+        return 0
+    fi
+    if [ -n "${CONDA_EXE:-}" ]; then
+        local conda_base
+        conda_base="$(cd "$(dirname "${CONDA_EXE}")/.." 2>/dev/null && pwd || true)"
+        if [ -n "${conda_base}" ] && [ -f "${conda_base}/etc/profile.d/conda.sh" ]; then
+            echo "${conda_base}/etc/profile.d/conda.sh"
+            return 0
+        fi
+    fi
+    local candidate
+    for candidate in \
+        "${HOME}/miniconda3/etc/profile.d/conda.sh" \
+        "${HOME}/anaconda3/etc/profile.d/conda.sh" \
+        "/home/k/kimsh/miniconda3/etc/profile.d/conda.sh" \
+        "/home/k/kimsh/anaconda3/etc/profile.d/conda.sh"
+    do
+        if [ -f "${candidate}" ]; then
+            echo "${candidate}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+activate_conda_env() {
+    local env_name="$1"
+    local conda_sh
+    conda_sh="$(find_conda_sh || true)"
+    if [ -z "${conda_sh}" ]; then
+        echo "[ERROR] Could not locate conda.sh." >&2
+        echo "[ERROR] Set CONDA_SH explicitly or run from an environment with CONDA_EXE set." >&2
+        return 1
+    fi
+    # shellcheck disable=SC1090
+    source "${conda_sh}"
+    if ! command -v conda >/dev/null 2>&1; then
+        echo "[ERROR] 'conda' is unavailable after sourcing ${conda_sh}" >&2
+        return 1
+    fi
+    if ! conda activate "${env_name}"; then
+        echo "[ERROR] Failed to activate conda env '${env_name}'" >&2
+        return 1
+    fi
+    return 0
+}
+
 if ! cd "${PROJECT_DIR}"; then
     echo "[ERROR] Unable to cd into project directory: ${PROJECT_DIR}" >&2
     exit 1
@@ -43,14 +93,16 @@ else
 fi
 
 ENV_NAME="${ENV_NAME:-sentiment}"
-source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate "${ENV_NAME}"
+activate_conda_env "${ENV_NAME}"
+PYTHON_BIN="$(command -v python)"
+echo "Conda env: ${ENV_NAME}"
+echo "Python:    ${PYTHON_BIN}"
 
-pip install -q "kagglehub[pandas-datasets]>=0.3.0" 2>/dev/null || true
+"${PYTHON_BIN}" -m pip install -q "kagglehub[pandas-datasets]>=0.3.0" 2>/dev/null || true
 
 echo "Packages ready."
 
-python - <<EOF
+"${PYTHON_BIN}" - <<EOF
 import torch
 import transformers
 print("torch", torch.__version__, "| cuda:", torch.cuda.is_available())
@@ -101,7 +153,7 @@ if [ -n "${RUN_NAME}" ]; then
 fi
 
 CMD=(
-  python -u run_all.py
+  "${PYTHON_BIN}" -u run_all.py
   --classifier "${CLASSIFIER}"
   --model "${MODEL}"
   --max_length "${MAX_LENGTH}"

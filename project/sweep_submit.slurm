@@ -53,15 +53,11 @@ echo "Time:     $(date)"
 echo "Project:  ${PROJECT_DIR}"
 echo "Workdir:  $(pwd)"
 
-ENV_NAME="${ENV_NAME:-cbdc}"
-if command -v conda >/dev/null 2>&1; then
-    source "$(conda info --base)/etc/profile.d/conda.sh"
-    conda activate "${ENV_NAME}"
-    export PYTHON_BIN="$(command -v python)"
-    echo "Conda env: ${ENV_NAME}"
-    echo "Python:    ${PYTHON_BIN}"
+PYTHON_HELPER="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
+if [ -n "${PYTHON_HELPER}" ]; then
+    echo "Python helper: ${PYTHON_HELPER}"
 else
-    echo "[WARN] conda not found; relying on PATH python." >&2
+    echo "[WARN] No python/python3 currently on PATH; sweep_submit.sh will try its own resolver." >&2
 fi
 
 if ! command -v bash >/dev/null 2>&1; then
