@@ -1,0 +1,1 @@
+job_id,run_name,status,classifier,model,model_name,input_mode,unfreeze_layers,head_type,loss_name,epochs,pooling,encoder_lr,classifier_lr,val_macro_f1,test_loss,test_macro_f1,test_accuracy,best_epoch,start_phase,use_time_of_tweet,use_age_of_user,use_country,label,log_path,command
