@@ -29,6 +29,9 @@ LOCAL_TWEET_FILES = [
     "train.csv",
     "tweet_data.csv",
 ]
+LOCAL_TEST_FILES = [
+    "test.csv",
+]
 
 
 def _find_first_column(columns, candidates):
@@ -239,6 +242,47 @@ def _split_records(records):
     return tr, va, te
 
 
+def _split_train_val(records, val_size: float = 0.15):
+    from sklearn.model_selection import train_test_split
+
+    labels = [r["label"] for r in records]
+    tr, va = train_test_split(
+        records, test_size=val_size, random_state=42, stratify=labels
+    )
+    print(f"  split -> train={len(tr)} | val={len(va)}")
+    return tr, va
+
+
+def _read_csv_with_encodings(path: str):
+    import pandas as pd
+
+    df = None
+    used_encoding = None
+    for encoding in ["utf-8", "latin-1", "cp1252"]:
+        try:
+            df = pd.read_csv(path, encoding=encoding)
+            used_encoding = encoding
+            print(f"  Loaded with encoding={encoding}")
+            break
+        except Exception as enc_err:
+            err_str = str(enc_err).lower()
+            if "codec" in err_str or "decode" in err_str or "utf" in err_str:
+                print(f"  encoding={encoding} failed, trying next ...")
+                continue
+            raise
+    if df is None:
+        raise RuntimeError(f"All encodings failed for {path}")
+    return df, used_encoding
+
+
+def _maybe_find_local_test_csv():
+    for name in LOCAL_TEST_FILES:
+        path = os.path.join(LOCAL_DATA_DIR, name)
+        if os.path.exists(path):
+            return path
+    return None
+
+
 
 def _find_local_csv():
     for name in LOCAL_TWEET_FILES:
@@ -300,24 +344,20 @@ def load_records(
         local_path = _find_local_csv()
         if local_path is not None:
             try:
-                import pandas as pd
                 print(f"Loading local dataset from '{local_path}' ...")
-                df = None
-                for encoding in ["utf-8", "latin-1", "cp1252"]:
-                    try:
-                        df = pd.read_csv(local_path, encoding=encoding)
-                        print(f"  Loaded with encoding={encoding}")
-                        break
-                    except Exception as enc_err:
-                        err_str = str(enc_err).lower()
-                        if "codec" in err_str or "decode" in err_str or "utf" in err_str:
-                            print(f"  encoding={encoding} failed, trying next ...")
-                            continue
-                        raise
-                if df is None:
-                    raise RuntimeError("All encodings failed for local CSV")
-                records = _records_from_dataframe(df, source_name="Local dataset")
-                return _split_records(records)
+                train_df, _ = _read_csv_with_encodings(local_path)
+                train_records = _records_from_dataframe(train_df, source_name="Local train dataset")
+
+                local_test_path = _maybe_find_local_test_csv()
+                if local_test_path is not None and os.path.abspath(local_test_path) != os.path.abspath(local_path):
+                    print(f"Loading local test dataset from '{local_test_path}' ...")
+                    test_df, _ = _read_csv_with_encodings(local_test_path)
+                    test_records = _records_from_dataframe(test_df, source_name="Local test dataset")
+                    train_records, val_records = _split_train_val(train_records)
+                    print(f"  using fixed test split from '{os.path.basename(local_test_path)}'")
+                    return train_records, val_records, test_records
+
+                return _split_records(train_records)
             except Exception as e:
                 print(f"  Local dataset load failed: {e}")
         if source == "local":
@@ -329,27 +369,40 @@ def load_records(
             import kagglehub
             from kagglehub import KaggleDatasetAdapter
             print("Loading TSAD from Kaggle (abhi8923shriv/sentiment-analysis-dataset) ...")
-            df = None
-            for encoding in ["utf-8", "latin-1", "cp1252"]:
-                try:
-                    df = kagglehub.load_dataset(
-                        KaggleDatasetAdapter.PANDAS,
-                        "abhi8923shriv/sentiment-analysis-dataset",
-                        "train.csv",
-                        pandas_kwargs={"encoding": encoding},
-                    )
-                    print(f"  Loaded with encoding={encoding}")
-                    break
-                except Exception as enc_err:
-                    err_str = str(enc_err).lower()
-                    if "codec" in err_str or "decode" in err_str or "utf" in err_str:
-                        print(f"  encoding={encoding} failed, trying next ...")
-                        continue
-                    raise  # non-encoding error — propagate immediately
-            if df is None:
-                raise RuntimeError("All encodings failed for TSAD CSV")
-            records = _records_from_dataframe(df, source_name="TSAD")
-            return _split_records(records)
+
+            def _load_kaggle_csv(filename: str):
+                df = None
+                for encoding in ["utf-8", "latin-1", "cp1252"]:
+                    try:
+                        df = kagglehub.load_dataset(
+                            KaggleDatasetAdapter.PANDAS,
+                            "abhi8923shriv/sentiment-analysis-dataset",
+                            filename,
+                            pandas_kwargs={"encoding": encoding},
+                        )
+                        print(f"  {filename}: loaded with encoding={encoding}")
+                        return df
+                    except Exception as enc_err:
+                        err_str = str(enc_err).lower()
+                        if "codec" in err_str or "decode" in err_str or "utf" in err_str:
+                            print(f"  {filename}: encoding={encoding} failed, trying next ...")
+                            continue
+                        raise
+                raise RuntimeError(f"All encodings failed for Kaggle {filename}")
+
+            train_df = _load_kaggle_csv("train.csv")
+            train_records = _records_from_dataframe(train_df, source_name="Kaggle train dataset")
+
+            try:
+                test_df = _load_kaggle_csv("test.csv")
+                test_records = _records_from_dataframe(test_df, source_name="Kaggle test dataset")
+                train_records, val_records = _split_train_val(train_records)
+                print("  using fixed Kaggle test split from 'test.csv'")
+                return train_records, val_records, test_records
+            except Exception as test_err:
+                print(f"  Kaggle test.csv unavailable or unusable: {test_err}")
+
+            return _split_records(train_records)
         except Exception as e:
             print(f"  Kaggle load failed: {e}")
         if source == "kaggle":
