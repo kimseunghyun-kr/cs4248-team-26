@@ -51,7 +51,7 @@ if [ -n "${ONLY_PHASE}" ]; then
     python -u run_all.py --only_phase "${ONLY_PHASE}"
 else
     echo "Running phases from ${START_PHASE}"
-    python -u run_all.py --start_phase "${START_PHASE}"
+    python -u run_all.py --model "roberta" --start_phase "${START_PHASE}"
 fi
 
 echo "Done. $(date)"
