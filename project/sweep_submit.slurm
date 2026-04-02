@@ -53,21 +53,54 @@ echo "Time:     $(date)"
 echo "Project:  ${PROJECT_DIR}"
 echo "Workdir:  $(pwd)"
 
+activate_conda_for_sweep() {
+    local env_name="$1"
+    local candidate
+
+    if [ -f "${HOME}/.bashrc" ]; then
+        trap - ERR
+        set +e +u
+        # shellcheck disable=SC1090
+        source "${HOME}/.bashrc"
+        local bashrc_rc=$?
+        set -euo pipefail
+        trap 'on_error $LINENO' ERR
+        if [ "${bashrc_rc}" -eq 0 ] && command -v conda >/dev/null 2>&1 && conda activate "${env_name}" >/dev/null 2>&1; then
+            return 0
+        fi
+        echo "[warn] ~/.bashrc did not fully initialize conda; trying conda.sh fallback" >&2
+    fi
+
+    for candidate in \
+        "${HOME}/miniconda3/etc/profile.d/conda.sh" \
+        "${HOME}/anaconda3/etc/profile.d/conda.sh" \
+        "/home/k/kimsh/miniconda3/etc/profile.d/conda.sh" \
+        "/home/k/kimsh/anaconda3/etc/profile.d/conda.sh"
+    do
+        if [ ! -f "${candidate}" ]; then
+            continue
+        fi
+        trap - ERR
+        set +e +u
+        # shellcheck disable=SC1090
+        source "${candidate}"
+        local conda_sh_rc=$?
+        set -euo pipefail
+        trap 'on_error $LINENO' ERR
+        if [ "${conda_sh_rc}" -ne 0 ]; then
+            continue
+        fi
+        if command -v conda >/dev/null 2>&1 && conda activate "${env_name}" >/dev/null 2>&1; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 ENV_NAME="${ENV_NAME:-cbdc}"
-if [ -f "${HOME}/.bashrc" ]; then
-    trap - ERR
-    set +e +u
-    # shellcheck disable=SC1090
-    source "${HOME}/.bashrc"
-    set -euo pipefail
-    trap 'on_error $LINENO' ERR
-fi
-if ! command -v conda >/dev/null 2>&1; then
-    echo "[ERROR] 'conda' is unavailable after sourcing ~/.bashrc" >&2
-    exit 1
-fi
-if ! conda activate "${ENV_NAME}"; then
-    echo "[ERROR] Failed to activate conda env '${ENV_NAME}'" >&2
+if ! activate_conda_for_sweep "${ENV_NAME}"; then
+    echo "[ERROR] Failed to activate conda env '${ENV_NAME}' for sweep wrapper." >&2
     exit 1
 fi
 export PYTHON_BIN="python"

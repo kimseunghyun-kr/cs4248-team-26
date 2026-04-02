@@ -64,24 +64,27 @@ echo "GPU:     $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 
 echo "Project: ${PROJECT_DIR}"
 echo "Workdir: $(pwd)"
 
+# ---------------------------------------------------------
+# REPLACE THE .bashrc BLOCK WITH THIS DIRECT SOURCING
+# ---------------------------------------------------------
 ENV_NAME="${ENV_NAME:-cbdc}"
-if [ -f "${HOME}/.bashrc" ]; then
-    # Some user bashrc files assume interactive shells; avoid nounset blowups.
-    trap - ERR
-    set +e +u
-    # shellcheck disable=SC1090
-    source "${HOME}/.bashrc"
-    set -euo pipefail
-    trap 'on_error $LINENO' ERR
-fi
-if ! command -v conda >/dev/null 2>&1; then
-    echo "[ERROR] 'conda' is unavailable after sourcing ~/.bashrc" >&2
+
+# Directly source the conda initialization script
+CONDA_PROFILE="/home/k/kimsh/miniconda3/etc/profile.d/conda.sh"
+
+if [ -f "${CONDA_PROFILE}" ]; then
+    source "${CONDA_PROFILE}"
+else
+    echo "[ERROR] Cannot find conda.sh at ${CONDA_PROFILE}" >&2
     exit 1
 fi
+
 if ! conda activate "${ENV_NAME}"; then
     echo "[ERROR] Failed to activate conda env '${ENV_NAME}'" >&2
     exit 1
 fi
+# ---------------------------------------------------------
+
 PYTHON_BIN="python"
 echo "Conda env: ${ENV_NAME}"
 echo "Python:    $(command -v python)"
