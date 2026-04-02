@@ -1,1 +1,11 @@
-No complete runs were parsed.
+Best run
+job_id: 538353
+run_name: 
+label: bert | text_plus_selected | L4 | mlp | cross_entropy
+classifier: transformer
+model: bert
+test_macro_f1: 0.9027
+val_macro_f1: 0.9084
+test_accuracy: 0.9034
+log_path: /home/k/kimsh/cs4248/project/results/slurm_new_538353.log
+command: python -u run_all.py --classifier transformer --model bert --max_length 128 --embed_batch_size 64 --batch_size 32 --eval_batch_size 64 --epochs 5 --unfreeze_layers 4 --input_mode text_plus_selected --head_type mlp --loss_name cross_entropy --start_phase 1

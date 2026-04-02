@@ -1,1 +1,10 @@
-No complete runs were parsed.
+1. bert | text_plus_selected | L4 | mlp | cross_entropy | test_f1=0.9027 | val_f1=0.9084 | acc=0.9034 | log=/home/k/kimsh/cs4248/project/results/slurm_new_538353.log
+2. bertweet | text | L4 | mlp | cross_entropy | test_f1=0.7867 | val_f1=0.7877 | acc=0.7832 | log=/home/k/kimsh/cs4248/project/results/slurm_new_538559.log
+3. bert | text | L4 | mlp | cross_entropy | test_f1=0.7850 | val_f1=0.7762 | acc=0.7818 | log=/home/k/kimsh/cs4248/project/results/slurm_new_538508.log
+4. roberta | text | L4 | mlp | cross_entropy | test_f1=0.7816 | val_f1=0.7805 | acc=0.7779 | log=/home/k/kimsh/cs4248/project/results/slurm_new_538556.log
+5. bert | text_plus_selected | L4 | mlp | cross_entropy | test_f1=0.6512 | val_f1=0.9084 | acc=0.6658 | log=/home/k/kimsh/cs4248/project/results/slurm_new_538655.log
+6. bert | text_plus_selected | L4 | mlp | cross_entropy | test_f1=0.6450 | val_f1=0.9084 | acc=0.6624 | log=/home/k/kimsh/cs4248/project/results/slurm_new_538654.log
+7. bert | text_plus_selected | L4 | mlp | cross_entropy | test_f1=0.6406 | val_f1=0.9095 | acc=0.6590 | log=/home/k/kimsh/cs4248/project/results/slurm_new_538727.log
+8. bert | text_plus_selected | L4 | mlp | cross_entropy | test_f1=0.6379 | val_f1=0.9060 | acc=0.6556 | log=/home/k/kimsh/cs4248/project/results/slurm_new_538726.log
+9. bert | linear | test_f1=0.6371 | val_f1=0.6624 | acc=0.6342 | log=/home/k/kimsh/cs4248/project/results/slurm_new_538416.log
+10. bert | text_plus_selected | L4 | mlp | cross_entropy | test_f1=0.6365 | val_f1=0.9052 | acc=0.6556 | log=/home/k/kimsh/cs4248/project/results/slurm_new_538446.log
