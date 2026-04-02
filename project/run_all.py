@@ -60,6 +60,7 @@ def run_phase(script_path: str, description: str, extra_env: dict, extra_args: l
 
 def main():
     parser = argparse.ArgumentParser(description="Run the sentiment-classification pipeline.")
+    parser.add_argument("--run_name", default=os.environ.get("RUN_NAME", ""), help="Optional run name for isolated cache/report outputs.")
     parser.add_argument("--start_phase", type=int, default=1, help="Resume from this phase (1-3).")
     parser.add_argument("--only_phase", type=int, default=None, help="Run only this phase.")
     parser.add_argument("--classifier", choices=["linear", "transformer"], default="transformer")
@@ -102,7 +103,7 @@ def main():
 
     hf_model_name = get_model_name(args.model)
     slug = model_slug(args.model)
-    cache_dir = os.path.join(PROJECT_DIR, "cache", slug)
+    cache_dir = os.path.join(PROJECT_DIR, "cache", slug, args.run_name) if args.run_name else os.path.join(PROJECT_DIR, "cache", slug)
     os.makedirs(cache_dir, exist_ok=True)
     os.makedirs(os.path.join(PROJECT_DIR, "results"), exist_ok=True)
 
@@ -110,6 +111,10 @@ def main():
         "MODEL_NAME": hf_model_name,
         "CACHE_DIR": cache_dir,
     }
+    if args.run_name:
+        extra_env["RUN_NAME"] = args.run_name
+        extra_env["LINEAR_REPORT_FILE"] = f"{args.run_name}_linear_eval_report.txt"
+        extra_env["TRANSFORMER_REPORT_FILE"] = f"{args.run_name}_transformer_eval_report.txt"
     if args.tokenizer:
         extra_env["TOKENIZER_NAME"] = args.tokenizer
 
@@ -170,6 +175,8 @@ def main():
     print("=" * 70)
     print("Sentiment Classification Pipeline")
     print("=" * 70)
+    if args.run_name:
+        print(f"Run name:      {args.run_name}")
     print(f"Classifier:    {args.classifier}")
     print(f"Model:         {hf_model_name}  (--model {args.model})")
     if args.tokenizer:
@@ -192,7 +199,10 @@ def main():
             sys.exit(1)
 
     total_elapsed = time.time() - total_start
-    report_name = "transformer_eval_report.txt" if args.classifier == "transformer" else "linear_eval_report.txt"
+    if args.classifier == "transformer":
+        report_name = f"{args.run_name}_transformer_eval_report.txt" if args.run_name else "transformer_eval_report.txt"
+    else:
+        report_name = f"{args.run_name}_linear_eval_report.txt" if args.run_name else "linear_eval_report.txt"
     print(f"\n{'=' * 70}")
     print(f"All phases complete in {total_elapsed / 60:.1f} minutes.")
     print(f"Results: {os.path.join(PROJECT_DIR, 'results', report_name)}")

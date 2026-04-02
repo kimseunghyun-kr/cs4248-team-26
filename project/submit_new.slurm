@@ -92,6 +92,10 @@ CMD=(
   --dropout "${DROPOUT}"
 )
 
+if [ -n "${RUN_NAME}" ]; then
+    CMD+=(--run_name "${RUN_NAME}")
+fi
+
 if [ "${CLASSIFIER}" = "transformer" ]; then
   CMD+=(
     --epochs "${EPOCHS}"

@@ -22,6 +22,8 @@ CACHE_DIR = os.environ.get("CACHE_DIR", _DEFAULT_CACHE)
 RESULTS_DIR = os.path.join(PROJECT_DIR, "results")
 LINEAR_RESULTS_FILE = os.environ.get("LINEAR_RESULTS_FILE", "linear_results.pt")
 TRANSFORMER_RESULTS_FILE = os.environ.get("TRANSFORMER_RESULTS_FILE", "transformer_results.pt")
+LINEAR_REPORT_FILE = os.environ.get("LINEAR_REPORT_FILE", "linear_eval_report.txt")
+TRANSFORMER_REPORT_FILE = os.environ.get("TRANSFORMER_REPORT_FILE", "transformer_eval_report.txt")
 LEGACY_LINEAR_RESULTS_FILE = "results.pt"
 
 
@@ -104,7 +106,7 @@ def run_linear_evaluation():
         for row in confusion:
             log("  " + " ".join(f"{int(v):>5d}" for v in row))
 
-    report_path = os.path.join(RESULTS_DIR, "linear_eval_report.txt")
+    report_path = os.path.join(RESULTS_DIR, LINEAR_REPORT_FILE)
     with open(report_path, "w") as f:
         f.write("\n".join(lines) + "\n")
     log(f"\nFull report saved -> {report_path}")
@@ -167,7 +169,7 @@ def run_transformer_evaluation():
         log(f"Linear probe test F1: {baseline['test']['macro_f1']:.4f}")
         log(f"Delta: {delta:+.4f}")
 
-    report_path = os.path.join(RESULTS_DIR, "transformer_eval_report.txt")
+    report_path = os.path.join(RESULTS_DIR, TRANSFORMER_REPORT_FILE)
     with open(report_path, "w") as f:
         f.write("\n".join(lines) + "\n")
     log(f"\nFull report saved -> {report_path}")
