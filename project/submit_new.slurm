@@ -12,6 +12,12 @@
 
 # -------------------------------------------------------
 # Sentiment Classification Pipeline
+#
+# Usage:
+#   sbatch submit_new.slurm
+#   sbatch --export=ALL,CLASSIFIER=linear submit_new.slurm
+#   sbatch --export=ALL,START_PHASE=2 submit_new.slurm
+#   sbatch --export=ALL,ONLY_PHASE=3 submit_new.slurm
 # -------------------------------------------------------
 
 set -euo pipefail
@@ -58,22 +64,27 @@ echo "GPU:     $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 
 echo "Project: ${PROJECT_DIR}"
 echo "Workdir: $(pwd)"
 
-# ========================================================
-# DIRECT BASH ACTIVATION (BYPASSES PYTHON CONDA WRAPPER)
-# ========================================================
 ENV_NAME="${ENV_NAME:-cbdc}"
-
-if [ -f "/home/k/kimsh/miniconda3/bin/activate" ]; then
-    source "/home/k/kimsh/miniconda3/bin/activate" "${ENV_NAME}"
-else
-    echo "[ERROR] Cannot find raw activate script at /home/k/kimsh/miniconda3/bin/activate" >&2
+if [ -f "${HOME}/.bashrc" ]; then
+    # Some user bashrc files assume interactive shells; avoid nounset blowups.
+    trap - ERR
+    set +e +u
+    # shellcheck disable=SC1090
+    source "${HOME}/.bashrc"
+    set -euo pipefail
+    trap 'on_error $LINENO' ERR
+fi
+if ! command -v conda >/dev/null 2>&1; then
+    echo "[ERROR] 'conda' is unavailable after sourcing ~/.bashrc" >&2
     exit 1
 fi
-
-export PYTHON_BIN="python"
+if ! conda activate "${ENV_NAME}"; then
+    echo "[ERROR] Failed to activate conda env '${ENV_NAME}'" >&2
+    exit 1
+fi
+PYTHON_BIN="python"
 echo "Conda env: ${ENV_NAME}"
 echo "Python:    $(command -v python)"
-# ========================================================
 
 "${PYTHON_BIN}" -m pip install -q "kagglehub[pandas-datasets]>=0.3.0" 2>/dev/null || true
 
