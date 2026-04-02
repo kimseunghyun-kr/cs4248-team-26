@@ -272,6 +272,16 @@ extract_token_value() {
   return 1
 }
 
+spec_to_export_list() {
+  local spec="$1"
+  local token
+  local export_list="ALL"
+  for token in $spec; do
+    export_list+=",${token}"
+  done
+  echo "${export_list}"
+}
+
 active_job_count() {
   if ! command -v squeue >/dev/null 2>&1; then
     echo "[ERROR] squeue is not available in PATH." >&2
@@ -332,7 +342,9 @@ submit_run() {
     exit 1
   fi
 
-  local cmd=(sbatch --chdir "${PROJECT_DIR}" --job-name "${job_name}" --export "ALL,${spec}" "${slurm_path}")
+  local export_list
+  export_list="$(spec_to_export_list "${spec}")"
+  local cmd=(sbatch --chdir "${PROJECT_DIR}" --job-name "${job_name}" --export "${export_list}" "${slurm_path}")
 
   echo
   echo "[submit] ${run_name}"
