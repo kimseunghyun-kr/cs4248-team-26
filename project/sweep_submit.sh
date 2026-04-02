@@ -45,6 +45,7 @@ Matrix format:
 
 Built-in presets:
   starter    Small sanity sweep.
+  report6h   Curated report-ready sweep sized for roughly a half-day run.
   full       Broad practical sweep across models, unfreeze depth, head, loss, and metadata.
   exhaustive Larger combinatorial sweep; intended for long overnight runs.
 
@@ -170,6 +171,32 @@ def build_run_name(model, input_mode, unfreeze, head, loss, meta_name, lr_name=N
         pieces.append(pooling)
     return "_".join(pieces)
 
+def emit_transformer(
+    model,
+    *,
+    input_mode="text",
+    unfreeze=4,
+    head="mlp",
+    loss="cross_entropy",
+    meta_name="none",
+    lr_name="std",
+    pooling="auto",
+):
+    spec = {
+        "RUN_NAME": build_run_name(model, input_mode, unfreeze, head, loss, meta_name, lr_name, pooling),
+        "CLASSIFIER": "transformer",
+        "MODEL": model,
+        "START_PHASE": "1",
+        "INPUT_MODE": input_mode,
+        "UNFREEZE_LAYERS": str(unfreeze),
+        "HEAD_TYPE": head,
+        "LOSS_NAME": loss,
+        "POOLING": pooling,
+    }
+    spec.update(lr_presets[lr_name])
+    spec.update(meta_presets[meta_name])
+    emit(spec)
+
 def add_linear_runs():
     for model in models:
         emit({
@@ -219,6 +246,66 @@ elif preset == "full":
         metadata_names=["none", "all"],
         input_modes=["text"],
     )
+elif preset == "report6h":
+    top_models = ["bert", "bertweet", "finbert"]
+    llm_report_models = ["qwen2", "tinyllama"]
+    report_models = models + [m for m in llm_report_models if m not in models]
+
+    # 1. Frozen-embedding baselines across all report backbones.
+    for model in report_models:
+        emit({
+            "RUN_NAME": f"{model}_linear",
+            "CLASSIFIER": "linear",
+            "MODEL": model,
+            "START_PHASE": "1",
+        })
+
+    # 2. Strong default transformer comparison across all report backbones.
+    for model in report_models:
+        emit_transformer(model)
+
+    # 3. Unfreeze-depth study for the three most promising backbones.
+    for model in top_models:
+        for unfreeze in [0, 2, 12]:
+            emit_transformer(model, unfreeze=unfreeze)
+
+    # 4. Ablate head choice on the top three.
+    for model in top_models:
+        emit_transformer(model, head="linear")
+
+    # 5. Ablate focal loss on the top three.
+    for model in top_models:
+        emit_transformer(model, loss="focal")
+
+    # 6. Try lower LRs on the top three.
+    for model in top_models:
+        emit_transformer(model, lr_name="low")
+
+    # 7. Metadata study: all metadata on the top three.
+    for model in top_models:
+        emit_transformer(model, meta_name="all")
+
+    # 8. Which metadata helps most: single-field ablations on bert + finbert.
+    for model in ["bert", "finbert"]:
+        for meta_name in ["time", "age", "country"]:
+            emit_transformer(model, meta_name=meta_name)
+
+    # 9. Pooling comparison on the top three.
+    for model in top_models:
+        emit_transformer(model, pooling="mean")
+
+    # 10. Low-LR + all-metadata combo on the strongest reportable pair.
+    for model in ["bert", "finbert"]:
+        emit_transformer(model, meta_name="all", lr_name="low")
+
+    # 11. Lightweight decoder-style comparison set for qwen2 and tinyllama.
+    for model in llm_report_models:
+        for unfreeze in [0, 2, 12]:
+            emit_transformer(model, unfreeze=unfreeze)
+        emit_transformer(model, head="linear")
+        emit_transformer(model, loss="focal")
+        emit_transformer(model, lr_name="low")
+        emit_transformer(model, pooling="mean")
 elif preset == "exhaustive":
     add_linear_runs()
     input_modes = ["text"]
