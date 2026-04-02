@@ -53,22 +53,21 @@ echo "Time:     $(date)"
 echo "Project:  ${PROJECT_DIR}"
 echo "Workdir:  $(pwd)"
 
+# ========================================================
+# RESTORED WORKING CONDA ACTIVATION
+# ========================================================
 ENV_NAME="${ENV_NAME:-cbdc}"
-CONDA_PROFILE="/home/k/kimsh/miniconda3/etc/profile.d/conda.sh"
-
-# ========================================================
-# CONDA ACTIVATION BLOCK
-# ========================================================
-# 1. Temporarily disable error trapping and strict mode
-trap - ERR
-set +eu
-
-# 2. Source Conda and activate
-if [ -f "${CONDA_PROFILE}" ]; then
+if [ -f "${HOME}/.bashrc" ]; then
+    trap - ERR
+    set +e +u
     # shellcheck disable=SC1090
-    source "${CONDA_PROFILE}"
-else
-    echo "[ERROR] Cannot find conda.sh at ${CONDA_PROFILE}" >&2
+    source "${HOME}/.bashrc"
+    set -euo pipefail
+    trap 'on_error $LINENO' ERR
+fi
+
+if ! command -v conda >/dev/null 2>&1; then
+    echo "[ERROR] 'conda' is unavailable after sourcing ~/.bashrc" >&2
     exit 1
 fi
 
@@ -76,10 +75,6 @@ if ! conda activate "${ENV_NAME}"; then
     echo "[ERROR] Failed to activate conda env '${ENV_NAME}'" >&2
     exit 1
 fi
-
-# 3. Turn strict mode and error trapping back on
-set -euo pipefail
-trap 'on_error $LINENO' ERR
 # ========================================================
 
 export PYTHON_BIN="python"
