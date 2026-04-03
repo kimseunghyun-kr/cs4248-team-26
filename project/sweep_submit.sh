@@ -12,6 +12,9 @@ SBATCH_USER="${SBATCH_USER:-${USER:-kimsh}}"
 QUEUE_LIMIT="${QUEUE_LIMIT:-2}"
 POLL_SECONDS="${POLL_SECONDS:-30}"
 TOP_K="${TOP_K:-10}"
+SBATCH_RETRIES="${SBATCH_RETRIES:-6}"
+SBATCH_RETRY_DELAY="${SBATCH_RETRY_DELAY:-20}"
+SBATCH_RETRY_MAX_DELAY="${SBATCH_RETRY_MAX_DELAY:-180}"
 DRY_RUN=0
 ANALYZE_ONLY=0
 MATRIX_FILE="${MATRIX_FILE:-}"
@@ -19,7 +22,7 @@ SWEEP_PRESET="${SWEEP_PRESET:-full}"
 INCLUDE_SELECTED_INPUTS="${INCLUDE_SELECTED_INPUTS:-0}"
 INCLUDE_LLM_MODELS="${INCLUDE_LLM_MODELS:-0}"
 JOB_NAME_PREFIX="${JOB_NAME_PREFIX:-sweep}"
-MANIFEST_FILE="${SWEEP_DIR}/submitted_runs.tsv"
+MANIFEST_FILE="${MANIFEST_FILE:-${SWEEP_DIR}/submitted_runs.tsv}"
 
 usage() {
   cat <<'EOF'
@@ -127,6 +130,7 @@ echo "[sweep] matrix_file=${MATRIX_FILE:-<builtin>}"
 echo "[sweep] include_selected_inputs=${INCLUDE_SELECTED_INPUTS}"
 echo "[sweep] include_llm_models=${INCLUDE_LLM_MODELS}"
 echo "[sweep] user=${SBATCH_USER} queue_limit=${QUEUE_LIMIT} poll_seconds=${POLL_SECONDS}"
+echo "[sweep] sbatch_retries=${SBATCH_RETRIES} retry_delay=${SBATCH_RETRY_DELAY} retry_max_delay=${SBATCH_RETRY_MAX_DELAY}"
 echo "[sweep] python_bin=${PYTHON_BIN_RESOLVED}"
 "${PYTHON_BIN_RESOLVED}" -V || true
 
@@ -421,6 +425,36 @@ wait_for_visibility() {
 
 declare -a SUBMITTED_JOB_IDS=()
 
+manifest_lookup_job_id() {
+  local run_name="$1"
+  if [ ! -f "${MANIFEST_FILE}" ]; then
+    return 1
+  fi
+  awk -F '\t' -v target="${run_name}" 'NR > 1 && $2 == target { print $1; exit }' "${MANIFEST_FILE}"
+}
+
+is_transient_sbatch_error() {
+  local text_lower
+  text_lower="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  case "${text_lower}" in
+    *"socket timed out"*|*"connection timed out"*|*"unable to contact slurm controller"*|*"temporarily unavailable"*|*"resource temporarily unavailable"*|*"slurmctld"*|*"persist conn"* )
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+print_slurm_submit_diag() {
+  echo "[diag] sbatch=$(command -v sbatch 2>/dev/null || echo N/A)" >&2
+  echo "[diag] squeue=$(command -v squeue 2>/dev/null || echo N/A)" >&2
+  if command -v scontrol >/dev/null 2>&1; then
+    echo "[diag] scontrol ping:" >&2
+    scontrol ping >&2 || true
+  fi
+}
+
 submit_run() {
   local spec="$1"
   local index="$2"
@@ -454,6 +488,14 @@ submit_run() {
     return 0
   fi
 
+  local existing_job_id
+  existing_job_id="$(manifest_lookup_job_id "${run_name}" || true)"
+  if [ -n "${existing_job_id}" ]; then
+    echo "[submit] skipping ${run_name}; already present in manifest as job ${existing_job_id}"
+    SUBMITTED_JOB_IDS+=("${existing_job_id}")
+    return 0
+  fi
+
   wait_for_slot
 
   if ! command -v sbatch >/dev/null 2>&1; then
@@ -461,13 +503,34 @@ submit_run() {
     exit 1
   fi
 
-  local out
-  if ! out="$("${cmd[@]}" 2>&1)"; then
-    echo "[submit][ERROR] sbatch failed for run '${run_name}'" >&2
-    echo "[submit][ERROR] spec: ${spec}" >&2
+  local out=""
+  local attempt=1
+  local delay="${SBATCH_RETRY_DELAY}"
+  while true; do
+    if out="$("${cmd[@]}" 2>&1)"; then
+      break
+    fi
+
+    echo "[submit][WARN] sbatch attempt ${attempt}/${SBATCH_RETRIES} failed for run '${run_name}'" >&2
+    echo "[submit][WARN] spec: ${spec}" >&2
     echo "${out}" >&2
-    exit 1
-  fi
+    print_slurm_submit_diag
+
+    if [ "${attempt}" -ge "${SBATCH_RETRIES}" ] || ! is_transient_sbatch_error "${out}"; then
+      echo "[submit][ERROR] giving up on run '${run_name}' after ${attempt} attempt(s)" >&2
+      exit 1
+    fi
+
+    echo "[submit][WARN] transient sbatch failure detected; retrying in ${delay}s" >&2
+    sleep "${delay}"
+    attempt=$((attempt + 1))
+    delay=$((delay * 2))
+    if [ "${delay}" -gt "${SBATCH_RETRY_MAX_DELAY}" ]; then
+      delay="${SBATCH_RETRY_MAX_DELAY}"
+    fi
+    wait_for_slot
+  done
+
   echo "[submit] ${out}"
 
   local job_id
@@ -914,7 +977,14 @@ if [ "${ANALYZE_ONLY}" = "0" ]; then
     exit 1
   fi
 
-  printf 'job_id\trun_name\tjob_name\tspec\n' > "${MANIFEST_FILE}"
+  if [ ! -f "${MANIFEST_FILE}" ]; then
+    printf 'job_id\trun_name\tjob_name\tspec\n' > "${MANIFEST_FILE}"
+  elif ! head -n 1 "${MANIFEST_FILE}" 2>/dev/null | grep -q '^job_id	run_name	job_name	spec$'; then
+    echo "[ERROR] Existing manifest has an unexpected header; refusing to overwrite: ${MANIFEST_FILE}" >&2
+    exit 1
+  else
+    echo "[sweep] resuming from existing manifest: ${MANIFEST_FILE}"
+  fi
 
   echo "[sweep] using SLURM file: ${SLURM_FILE}"
   echo "[sweep] results dir: ${RESULTS_DIR}"
