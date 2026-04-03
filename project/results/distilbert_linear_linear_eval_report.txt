@@ -1,0 +1,29 @@
+======================================================================
+Linear Probe Sentiment Baseline — Evaluation Report
+======================================================================
+Cache dir: /home/k/kimsh/cs4248/project/cache/distilbert/distilbert_linear
+Best val macro-F1: 0.6559
+Checkpoint: /home/k/kimsh/cs4248/project/cache/distilbert/distilbert_linear/linear_probe.pt
+
+--- Split Summary ---
+Split        Macro F1   Accuracy
+----------------------------------
+train          0.6692     0.6683
+val            0.6559     0.6531
+test           0.6670     0.6661
+
+--- TEST Classification Report ---
+precision    recall  f1-score   support
+
+    negative     0.6680    0.6434    0.6555      1001
+     neutral     0.6351    0.6804    0.6570      1430
+    positive     0.7100    0.6682    0.6885      1103
+
+    accuracy                         0.6661      3534
+   macro avg     0.6711    0.6640    0.6670      3534
+weighted avg     0.6678    0.6661    0.6664      3534
+
+TEST confusion matrix:
+    644   272    85
+    241   973   216
+     79   287   737

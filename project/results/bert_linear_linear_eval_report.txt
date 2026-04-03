@@ -1,0 +1,29 @@
+======================================================================
+Linear Probe Sentiment Baseline — Evaluation Report
+======================================================================
+Cache dir: /home/k/kimsh/cs4248/project/cache/bert/bert_linear
+Best val macro-F1: 0.6589
+Checkpoint: /home/k/kimsh/cs4248/project/cache/bert/bert_linear/linear_probe.pt
+
+--- Split Summary ---
+Split        Macro F1   Accuracy
+----------------------------------
+train          0.6675     0.6663
+val            0.6589     0.6562
+test           0.6586     0.6565
+
+--- TEST Classification Report ---
+precision    recall  f1-score   support
+
+    negative     0.6670    0.6484    0.6575      1001
+     neutral     0.6270    0.6490    0.6378      1430
+    positive     0.6873    0.6736    0.6804      1103
+
+    accuracy                         0.6565      3534
+   macro avg     0.6605    0.6570    0.6586      3534
+weighted avg     0.6572    0.6565    0.6567      3534
+
+TEST confusion matrix:
+    649   264    88
+    252   928   250
+     72   288   743

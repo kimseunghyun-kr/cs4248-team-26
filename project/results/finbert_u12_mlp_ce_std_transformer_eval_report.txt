@@ -1,0 +1,46 @@
+======================================================================
+Transformer Sentiment Classifier — Evaluation Report
+======================================================================
+Model: ProsusAI/finbert
+Cache dir: /home/k/kimsh/cs4248/project/cache/finbert/finbert_u12_mlp_ce_std
+Data source: cache_tokens
+Best epoch: 2 | best val_f1=0.7900
+
+--- Split Summary ---
+Split          Loss   Macro F1   Accuracy
+------------------------------------------
+train        0.2779     0.8930     0.8912
+val          0.5363     0.7900     0.7865
+test         0.5169     0.7885     0.7852
+
+--- VAL Classification Report ---
+precision    recall  f1-score   support
+
+    negative     0.7457    0.8466    0.7929      1167
+     neutral     0.7827    0.7038    0.7412      1668
+    positive     0.8327    0.8392    0.8359      1287
+
+    accuracy                         0.7865      4122
+   macro avg     0.7870    0.7965    0.7900      4122
+weighted avg     0.7878    0.7865    0.7854      4122
+
+VAL confusion matrix:
+    988   156    23
+    300  1174   194
+     37   170  1080
+
+--- TEST Classification Report ---
+precision    recall  f1-score   support
+
+    negative     0.7360    0.8551    0.7911      1001
+     neutral     0.7896    0.6979    0.7409      1430
+    positive     0.8320    0.8350    0.8335      1103
+
+    accuracy                         0.7852      3534
+   macro avg     0.7859    0.7960    0.7885      3534
+weighted avg     0.7876    0.7852    0.7840      3534
+
+TEST confusion matrix:
+    856   120    25
+    271   998   161
+     36   146   921

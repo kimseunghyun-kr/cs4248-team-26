@@ -1,0 +1,46 @@
+======================================================================
+Transformer Sentiment Classifier — Evaluation Report
+======================================================================
+Model: distilbert-base-uncased
+Cache dir: /home/k/kimsh/cs4248/project/cache/distilbert/distilbert_u4_mlp_ce_std
+Data source: cache_tokens
+Best epoch: 4 | best val_f1=0.7840
+
+--- Split Summary ---
+Split          Loss   Macro F1   Accuracy
+------------------------------------------
+train        0.2732     0.8967     0.8949
+val          0.5807     0.7840     0.7804
+test         0.5661     0.7839     0.7810
+
+--- VAL Classification Report ---
+precision    recall  f1-score   support
+
+    negative     0.7784    0.8038    0.7909      1167
+     neutral     0.7590    0.7230    0.7406      1668
+    positive     0.8080    0.8337    0.8207      1287
+
+    accuracy                         0.7804      4122
+   macro avg     0.7818    0.7868    0.7840      4122
+weighted avg     0.7798    0.7804    0.7798      4122
+
+VAL confusion matrix:
+    938   193    36
+    243  1206   219
+     24   190  1073
+
+--- TEST Classification Report ---
+precision    recall  f1-score   support
+
+    negative     0.7556    0.8032    0.7787      1001
+     neutral     0.7658    0.7294    0.7471      1430
+    positive     0.8240    0.8277    0.8259      1103
+
+    accuracy                         0.7810      3534
+   macro avg     0.7818    0.7868    0.7839      3534
+weighted avg     0.7811    0.7810    0.7806      3534
+
+TEST confusion matrix:
+    804   161    36
+    228  1043   159
+     32   158   913

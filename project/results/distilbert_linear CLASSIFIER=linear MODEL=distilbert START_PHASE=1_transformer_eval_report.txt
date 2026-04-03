@@ -1,0 +1,46 @@
+======================================================================
+Transformer Sentiment Classifier — Evaluation Report
+======================================================================
+Model: bert-base-uncased
+Cache dir: /home/k/kimsh/cs4248/project/cache/bert/distilbert_linear CLASSIFIER=linear MODEL=distilbert START_PHASE=1
+Data source: cache_records
+Best epoch: 2 | best val_f1=0.9070
+
+--- Split Summary ---
+Split          Loss   Macro F1   Accuracy
+------------------------------------------
+train        0.2016     0.9310     0.9314
+val          0.2772     0.9070     0.9076
+test         1.0266     0.6102     0.6338
+
+--- VAL Classification Report ---
+precision    recall  f1-score   support
+
+    negative     0.8958    0.8989    0.8973      1167
+     neutral     0.8861    0.9371    0.9108      1668
+    positive     0.9511    0.8772    0.9127      1287
+
+    accuracy                         0.9076      4122
+   macro avg     0.9110    0.9044    0.9070      4122
+weighted avg     0.9091    0.9076    0.9076      4122
+
+VAL confusion matrix:
+   1049    99    19
+     66  1563    39
+     56   102  1129
+
+--- TEST Classification Report ---
+precision    recall  f1-score   support
+
+    negative     0.8765    0.4326    0.5793      1001
+     neutral     0.5285    0.9469    0.6784      1430
+    positive     0.9477    0.4107    0.5731      1103
+
+    accuracy                         0.6338      3534
+   macro avg     0.7842    0.5967    0.6102      3534
+weighted avg     0.7579    0.6338    0.6174      3534
+
+TEST confusion matrix:
+    433   566     2
+     53  1354    23
+      8   642   453

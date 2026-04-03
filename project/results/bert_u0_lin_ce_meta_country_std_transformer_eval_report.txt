@@ -1,0 +1,46 @@
+======================================================================
+Transformer Sentiment Classifier — Evaluation Report
+======================================================================
+Model: bert-base-uncased
+Cache dir: /home/k/kimsh/cs4248/project/cache/bert/bert_u0_lin_ce_meta_country_std
+Data source: cache_records
+Best epoch: 5 | best val_f1=0.6164
+
+--- Split Summary ---
+Split          Loss   Macro F1   Accuracy
+------------------------------------------
+train        0.8241     0.6260     0.6247
+val          0.8268     0.6164     0.6150
+test         0.8226     0.6302     0.6293
+
+--- VAL Classification Report ---
+precision    recall  f1-score   support
+
+    negative     0.5812    0.7207    0.6435      1167
+     neutral     0.6463    0.4622    0.5390      1668
+    positive     0.6228    0.7172    0.6667      1287
+
+    accuracy                         0.6150      4122
+   macro avg     0.6168    0.6334    0.6164      4122
+weighted avg     0.6205    0.6150    0.6084      4122
+
+VAL confusion matrix:
+    841   199   127
+    465   771   432
+    141   223   923
+
+--- TEST Classification Report ---
+precision    recall  f1-score   support
+
+    negative     0.5979    0.7383    0.6607      1001
+     neutral     0.6801    0.4713    0.5568      1430
+    positive     0.6205    0.7353    0.6730      1103
+
+    accuracy                         0.6293      3534
+   macro avg     0.6328    0.6483    0.6302      3534
+weighted avg     0.6382    0.6293    0.6225      3534
+
+TEST confusion matrix:
+    739   133   129
+    389   674   367
+    108   184   811

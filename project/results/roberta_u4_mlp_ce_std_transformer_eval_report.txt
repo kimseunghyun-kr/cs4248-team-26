@@ -1,0 +1,46 @@
+======================================================================
+Transformer Sentiment Classifier — Evaluation Report
+======================================================================
+Model: roberta-base
+Cache dir: /home/k/kimsh/cs4248/project/cache/roberta/roberta_u4_mlp_ce_std
+Data source: cache_tokens
+Best epoch: 3 | best val_f1=0.7799
+
+--- Split Summary ---
+Split          Loss   Macro F1   Accuracy
+------------------------------------------
+train        0.4039     0.8345     0.8319
+val          0.5427     0.7799     0.7763
+test         0.5305     0.7813     0.7779
+
+--- VAL Classification Report ---
+precision    recall  f1-score   support
+
+    negative     0.7695    0.7866    0.7780      1167
+     neutral     0.7471    0.7296    0.7382      1668
+    positive     0.8192    0.8275    0.8233      1287
+
+    accuracy                         0.7763      4122
+   macro avg     0.7786    0.7813    0.7799      4122
+weighted avg     0.7760    0.7763    0.7761      4122
+
+VAL confusion matrix:
+    918   220    29
+    245  1217   206
+     30   192  1065
+
+--- TEST Classification Report ---
+precision    recall  f1-score   support
+
+    negative     0.7562    0.7902    0.7728      1001
+     neutral     0.7516    0.7280    0.7396      1430
+    positive     0.8314    0.8314    0.8314      1103
+
+    accuracy                         0.7779      3534
+   macro avg     0.7797    0.7832    0.7813      3534
+weighted avg     0.7778    0.7779    0.7777      3534
+
+TEST confusion matrix:
+    791   186    24
+    227  1041   162
+     28   158   917
