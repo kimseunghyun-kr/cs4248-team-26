@@ -480,7 +480,8 @@ def text_iccv(
     print("\n=== CBDC text_iccv training ===")
     print(
         f"  n_epochs={cfg.n_epochs} | lr={cfg.lr} | "
-        f"PGD: epsilon={cfg.epsilon} steps={cfg.n_pgd_steps} restarts={cfg.num_samples}"
+        f"PGD: epsilon={cfg.epsilon} steps={cfg.n_pgd_steps} restarts={cfg.num_samples} "
+        f"| grad_clip={cfg.max_grad_norm}"
     )
     if selector_mode == "val_f1":
         print("  Checkpoint selector: labeled val centroid macro-F1")
@@ -565,8 +566,15 @@ def text_iccv(
         )
 
         total_loss = match_loss + ck_loss
+        if not torch.isfinite(total_loss):
+            raise RuntimeError(
+                "Encountered non-finite CBDC loss during Phase 2. "
+                "Try a smaller model, fewer PGD steps, or a lower learning rate."
+            )
         optimizer.zero_grad()
         total_loss.backward()
+        if cfg.max_grad_norm and cfg.max_grad_norm > 0:
+            torch.nn.utils.clip_grad_norm_(layer_tail.parameters(), cfg.max_grad_norm)
         optimizer.step()
 
         should_eval = (
@@ -838,6 +846,7 @@ def main():
     )
     parser.add_argument("--n_epochs", type=int, default=100)
     parser.add_argument("--lr", type=float, default=1e-5)
+    parser.add_argument("--max_grad_norm", type=float, default=1.0)
     parser.add_argument("--epsilon", type=float, default=1.0)
     parser.add_argument("--n_pgd_steps", type=int, default=20)
     parser.add_argument("--step_lr", type=float, default=0.0037)
@@ -875,6 +884,7 @@ def main():
         random_eps=args.random_eps,
         n_epochs=args.n_epochs,
         lr=args.lr,
+        max_grad_norm=args.max_grad_norm,
         up_scale=args.up_scale,
         eval_every=args.eval_every,
         selector_train_per_class=args.selector_train_per_class,

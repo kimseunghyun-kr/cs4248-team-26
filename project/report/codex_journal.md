@@ -1157,6 +1157,505 @@ To activate the fixed test behavior in an actual run:
   - supervised linear-probe evaluation
 - This avoids mixing the "unsupervised training" story with the "supervised downstream probe" story.
 
+### D2 vs D2.5 artifact isolation
+
+- `D2` and `D2.5` do not share condition-specific `.pt` artifacts.
+- They are written into different condition directories under the same model cache:
+  - `conditions/d2_cbdc/`
+  - `conditions/d25_cbdc_no_label_select/`
+- So these files are isolated per condition:
+  - `class_prompt_prototypes.pt`
+  - `encoder_cbdc.pt`
+  - `training_meta.json`
+  - `z_tweet_train.pt`
+  - `z_tweet_val.pt`
+  - `z_tweet_test.pt`
+- They do intentionally share the raw Phase 1 cache at the model root:
+  - `z_tweet_train.pt`
+  - `z_tweet_val.pt`
+  - `z_tweet_test.pt`
+- That shared root cache is the common input to all conditions and is not cross-contamination by itself.
+- They also use the same fixed CBDC prompt bank definition, but each condition re-encodes and saves its own prompt prototypes separately.
+- `cbdc/refine.py` loads a fresh encoder for `D2` and another fresh encoder for `D2.5`, so there is no parameter carry-over between the two branches during materialization.
+
+## 2026-04-04 Fixed-Test Prototype Run With D2.5
+
+Run setting:
+
+- model: `roberta`
+- classifier: `prototype`
+- `INCLUDE_D25=1`
+- fixed held-out `project/data/test.csv` was present and used
+
+Observed split:
+
+- train: `23358`
+- val: `4122`
+- test: `3534`
+
+Prototype summary on the fixed test split:
+
+- `B1 (raw)`:
+  - test acc `0.4318`
+  - test macro-F1 `0.3747`
+- `D1 (debias_vl)`:
+  - test acc `0.4709`
+  - test macro-F1 `0.4577`
+- `D2 (CBDC)`:
+  - test acc `0.4709`
+  - test macro-F1 `0.4715`
+- `D2.5 (CBDC no-label-select)`:
+  - test acc `0.4601`
+  - test macro-F1 `0.4613`
+- `D3 (debias_vl->CBDC)`:
+  - test acc `0.4349`
+  - test macro-F1 `0.3750`
+
+Key interpretation:
+
+- `D2` and `D1` tie on test accuracy, but `D2` has the best macro-F1 in the run.
+- `D2.5` is worse than `D2`, which suggests the labeled validation selector is still helping choose a stronger checkpoint.
+- But `D2.5` still clearly beats `B1`, which is the important proof point for the label-free-selector story.
+
+Useful deltas:
+
+- `D2` vs `B1`:
+  - accuracy `+0.0390`
+  - macro-F1 `+0.0968`
+- `D2.5` vs `B1`:
+  - accuracy `+0.0283`
+  - macro-F1 `+0.0866`
+- `D2.5` vs `D2`:
+  - accuracy `-0.0108`
+  - macro-F1 `-0.0102`
+
+Meaning:
+
+- The CBDC objective itself is doing useful work, because even without label-based checkpoint selection, `D2.5` remains materially better than the raw prototype baseline.
+- The labeled selector in `D2` adds another small gain on top of that.
+- So the cleanest current claim is:
+  - `D2.5` supports a label-free-training / labeled-evaluation story
+  - `D2` is the stronger-performing but slightly less clean version because checkpoint selection uses labels
+
+Important caution:
+
+- This fixed-test run should be compared primarily within itself.
+- It should not be over-interpreted against older runs that used the previous random train/val/test split, because the evaluation set changed.
+
+## 2026-04-04 Fixed-Test Prototype Run With D2.5 (Run 2)
+
+Run setting:
+
+- model: `roberta`
+- classifier: `prototype`
+- `INCLUDE_D25=1`
+- fixed held-out `project/data/test.csv` was present and used
+
+Observed split:
+
+- train: `23358`
+- val: `4122`
+- test: `3534`
+
+Prototype summary on the fixed test split:
+
+- `B1 (raw)`:
+  - test acc `0.4318`
+  - test macro-F1 `0.3747`
+- `D1 (debias_vl)`:
+  - test acc `0.4709`
+  - test macro-F1 `0.4577`
+- `D2 (CBDC)`:
+  - test acc `0.4709`
+  - test macro-F1 `0.4719`
+- `D2.5 (CBDC no-label-select)`:
+  - test acc `0.4513`
+  - test macro-F1 `0.4503`
+- `D3 (debias_vl->CBDC)`:
+  - test acc `0.4363`
+  - test macro-F1 `0.3764`
+
+Useful deltas:
+
+- `D2` vs `B1`:
+  - accuracy `+0.0390`
+  - macro-F1 `+0.0972`
+- `D2.5` vs `B1`:
+  - accuracy `+0.0195`
+  - macro-F1 `+0.0756`
+- `D2.5` vs `D2`:
+  - accuracy `-0.0195`
+  - macro-F1 `-0.0216`
+
+Key interpretation:
+
+- `D2` again beats `B1` by a large margin.
+- `D2.5` again beats `B1`.
+- `D2` again beats `D2.5`.
+- This repeats the same ordering as the previous fixed-test run.
+
+## Repeatability note across the two fixed-test runs so far
+
+Common pattern:
+
+- `B1` remains the weakest meaningful baseline.
+- `D2` is consistently one of the top methods and has the strongest macro-F1.
+- `D2.5` is consistently better than `B1`, but consistently below `D2`.
+- `D3` remains weak.
+
+What this supports:
+
+- The CBDC objective itself appears to help even when checkpoint selection is label-free, because `D2.5 > B1` in both fixed-test runs.
+- The labeled validation selector appears to add additional value, because `D2 > D2.5` in both fixed-test runs.
+
+Safe wording if this trend continues over more runs:
+
+- On a fixed held-out test set, the label-free-selector variant `D2.5` consistently improves over the raw prototype baseline.
+- The label-selected `D2` variant consistently provides an additional gain over `D2.5`.
+
+## 2026-04-04 Large-model support and stability guardrails
+
+Motivation:
+
+- The original CBDC paper relies on a strong backbone with rich representational structure.
+- For the NLP port, larger encoders are reasonable to test, but only if the custom Phase 2 latent-tail path is actually architecture-compatible.
+
+What changed:
+
+- Added safe registry shortcuts for larger encoder models:
+  - `roberta-large` -> `FacebookAI/roberta-large`
+  - `xlmr-large` -> `FacebookAI/xlm-roberta-large`
+- Forced backbone loading in `float32` for stability.
+- Added gradient clipping for the trainable tail during Phase 2:
+  - `max_grad_norm=1.0` by default
+- Added a non-finite-loss guard during CBDC training.
+
+Important architecture note:
+
+- Phase 1 embedding extraction can work with many Hugging Face encoder models.
+- Phase 2 CBDC latent-tail training is now explicitly restricted to the safe BERT-like families that match the current tail-forwarding assumptions:
+  - `bert`
+  - `roberta`
+  - `xlm-roberta`
+  - `distilbert`
+- This avoids silent breakage for architectures whose layer forward signatures differ in ways that matter for the custom tail pass.
+
+Why some large models are intentionally not yet enabled for Phase 2:
+
+- `microsoft/deberta-v3-large` uses DeBERTa-v2/V3 layer internals with extra relative-position arguments in the layer forward path.
+- `answerdotai/ModernBERT-large` uses a different encoder-layer interface and longer-context setup.
+- Those models may be excellent candidates later, but they need architecture-specific Phase 2 support rather than being dropped into the current path naively.
+
+Smoke check:
+
+- `roberta-base` Phase 2 path still works after the stability changes:
+  - model loads in `float32`
+  - intermediate hidden extraction works
+  - delta/tail path works
+
+Recommended next large-model commands:
+
+- `sbatch --export=ALL,RUN_MODEL=roberta-large,CLASSIFIER=prototype,INCLUDE_D25=1 submit_new.slurm`
+- `sbatch --export=ALL,RUN_MODEL=xlmr-large,CLASSIFIER=prototype,INCLUDE_D25=1 submit_new.slurm`
+
+Why not Qwen / Llama in the current pipeline:
+
+- Qwen2.5 and Llama 3.1 are causal language models, not encoder-style MLM backbones.
+- The current Phase 2 CBDC port assumes:
+  - bidirectional encoder representations
+  - CLS-style sentence pooling at token position 0
+  - a BERT-like latent-tail path where delta is injected before the final encoder layer
+- Decoder-only models violate those assumptions:
+  - no natural CLS token
+  - causal masking instead of bidirectional encoding
+  - different layer/attention semantics for the custom tail pass
+- So using Qwen/Llama in the current code would not be a simple “bigger model” swap; it would require a separate decoder-style Phase 2 implementation.
+
+Practical conclusion:
+
+- If the goal is a stronger backbone while staying faithful to the current CBDC-NLP mechanics, large encoder models are the safest next step.
+- If the goal is to test Llama/Qwen specifically, that should be treated as a new method branch, not a drop-in replacement.
+
+Safe large-model shortlist for the current code:
+
+- `FacebookAI/roberta-large`
+  - English
+  - about `0.4B` params on the HF card
+  - best first choice for a larger CBDC-style run
+- `google-bert/bert-large-cased`
+  - English
+  - `24` layers, `1024` hidden, `336M` params on the HF card
+  - safe to run by passing the full HF model ID
+- `FacebookAI/xlm-roberta-large`
+  - multilingual
+  - about `0.6B` params on the HF card
+  - largest safe encoder currently supported in the pipeline
+
+Recommended order:
+
+1. `roberta-large`
+2. `bert-large-cased`
+3. `xlm-roberta-large`
+
+Added uncased BERT shortcuts:
+
+- `bert-uncased` -> `google-bert/bert-base-uncased`
+- `bert-base-uncased` -> `google-bert/bert-base-uncased`
+- `bert-large-uncased` -> `google-bert/bert-large-uncased`
+
+Important note:
+
+- plain `bert` still maps to `bert-base-cased`
+- the new uncased aliases are additive and do not change existing experiment behavior
+
+## 2026-04-04 Decoder-only alternative path (Qwen / Llama-style)
+
+Motivation:
+
+- The user wants stronger backbones beyond encoder-style BERT/RoBERTa models.
+- To stay as semantically close as possible to CBDC, the decoder-only variant should still:
+  - use a frozen backbone
+  - extract an intermediate latent state
+  - inject a perturbation before the final transformer block(s)
+  - train only the tail path used in Phase 2
+
+What was implemented:
+
+- Added a decoder-family Phase 2 path for:
+  - `qwen2`
+  - `llama`
+- Main encoder changes:
+  - decoder models use last non-pad token pooling instead of CLS pooling
+  - delta is injected at the last non-pad token, not token position 0
+  - tail forwarding uses causal masks and rotary embeddings consistent with the model's own forward pass
+  - decoder families apply the final model norm after the tail layers before pooling
+
+Model shortcuts added:
+
+- `qwen25-0.5b` -> `Qwen/Qwen2.5-0.5B`
+- `qwen25-1.5b` -> `Qwen/Qwen2.5-1.5B`
+- `qwen25-3b` -> `Qwen/Qwen2.5-3B`
+- `llama32-1b` -> `meta-llama/Llama-3.2-1B`
+- `llama32-3b` -> `meta-llama/Llama-3.2-3B`
+
+Important safety fix:
+
+- `data/embed.py` no longer silently falls back to DistilBERT when a requested model fails to load.
+- This is especially important for gated decoder models like Llama, where a silent fallback would corrupt the experiment.
+
+Local verification status:
+
+- Existing encoder-family path still works:
+  - `roberta-base` smoke test passed
+- Decoder-family path verified locally for Qwen:
+  - `Qwen/Qwen2.5-0.5B` smoke test passed
+  - tokenization, encoding, intermediate-state extraction, and delta-tail path all completed successfully
+- Llama path is wired, but not locally validated in this environment because Meta checkpoints are gated without HF authentication
+
+Current best practical decoder-family recommendation:
+
+- `qwen25-3b`
+  - closest to the requested “~2.5B-level” size
+  - open and not gated like Meta Llama
+
+Example command:
+
+- `sbatch --export=ALL,RUN_MODEL=qwen25-3b,CLASSIFIER=prototype,INCLUDE_D25=1 submit_new.slurm`
+
+Methodological note:
+
+- This decoder-family path is not identical to the original encoder-style NLP port.
+- But it is semantically consistent with the paper at the level that matters:
+  - perturb latent representation
+  - derive bias directions from prompt responses
+  - debias via the model's final textual representation rather than direct supervised label fitting
+
+## 2026-04-04 Additional Fixed-Test Runs
+
+### RoBERTa fixed-test run (additional)
+
+- `B1 (raw)`:
+  - test acc `0.4318`
+  - test macro-F1 `0.3747`
+- `D1 (debias_vl)`:
+  - test acc `0.4709`
+  - test macro-F1 `0.4577`
+- `D2 (CBDC)`:
+  - test acc `0.4740`
+  - test macro-F1 `0.4758`
+- `D2.5 (CBDC no-label-select)`:
+  - test acc `0.4544`
+  - test macro-F1 `0.4411`
+- `D3 (debias_vl->CBDC)`:
+  - test acc `0.4349`
+  - test macro-F1 `0.3750`
+
+Interpretation:
+
+- This is another RoBERTa run where:
+  - `D2 > B1`
+  - `D2.5 > B1`
+  - `D2 > D2.5`
+- `D2` reaches the strongest RoBERTa macro-F1 observed so far on the fixed test split.
+
+### BERT-base-cased fixed-test run
+
+- `B1 (raw)`:
+  - test acc `0.4287`
+  - test macro-F1 `0.3785`
+- `D1 (debias_vl)`:
+  - test acc `0.4810`
+  - test macro-F1 `0.4782`
+- `D2 (CBDC)`:
+  - test acc `0.4621`
+  - test macro-F1 `0.4574`
+- `D2.5 (CBDC no-label-select)`:
+  - test acc `0.4581`
+  - test macro-F1 `0.4074`
+- `D3 (debias_vl->CBDC)`:
+  - test acc `0.4290`
+  - test macro-F1 `0.3930`
+
+Interpretation:
+
+- On BERT, `D1` is the strongest method.
+- `D2` and `D2.5` still improve over `B1`, but the advantage is smaller than on RoBERTa.
+- `D2 > D2.5` still holds.
+
+## Cross-model read so far
+
+- RoBERTa appears to be the stronger backbone for the CBDC-style path:
+  - `D2` is especially strong on RoBERTa.
+- BERT appears to favor the DebiasVL-style path more:
+  - `D1` is strongest there.
+- Across both backbones, one robust pattern remains:
+  - `D2 > B1`
+  - `D2.5 > B1`
+  - `D2 > D2.5`
+
+Current safe conclusion:
+
+- The label-free-selector CBDC variant (`D2.5`) continues to improve over the raw prototype baseline across backbones.
+- The label-selected CBDC variant (`D2`) continues to provide an additional gain over `D2.5`.
+- The relative ranking of `D1` vs `D2` is backbone-dependent.
+
+## Proposed Next Tests
+
+### Closest-to-CBDC-paper tests
+
+1. Repeatability on a fixed held-out test set
+
+- Run multiple seeds for:
+  - `B1`
+  - `D2`
+  - `D2.5`
+- Report mean and std for:
+  - test accuracy
+  - macro-F1
+- This is the cleanest next step for making the current prototype story reportable.
+
+2. Fairness/robustness-style subgroup evaluation
+
+- The original paper emphasizes:
+  - worst-group accuracy
+  - average accuracy
+  - performance gap
+- NLP analogue:
+  - define heuristic subgroups from bias cues on the held-out test set
+  - examples:
+    - URL present / absent
+    - question-mark ending / not
+    - repeated question marks / not
+    - very short / not
+    - topic-present / topic-absent
+- Then report:
+  - average accuracy
+  - worst-group accuracy
+  - gap = avg - worst-group
+
+3. Utility-preservation evaluation
+
+- The original paper explicitly checks whether debiasing preserves zero-shot utility on unrelated benchmarks.
+- NLP analogue:
+  - after learning D2 / D2.5 on the main tweet sentiment data, test prototype classification on an external sentiment dataset or domain-shifted dataset without retraining the method
+  - the goal is to show that debiasing does not destroy general sentiment utility
+
+4. PCA / embedding-organization visualization
+
+- The original paper shows before/after embedding organization.
+- NLP analogue:
+  - PCA or UMAP of test embeddings
+  - color by sentiment
+  - marker shape by heuristic bias group
+- Desired pattern:
+  - after D2/D2.5, points cluster more by sentiment and less by nuisance group
+
+5. Bias-direction induction sanity check
+
+- The original paper qualitatively verifies that PGD-induced directions actually control meaningful bias attributes.
+- NLP analogue:
+  - for a handful of prompts or tweets, inspect nearest neighbors before and after moving along a learned bias direction
+  - check whether the shift changes style/topic cues while preserving sentiment semantics
+
+### Strong local ablations
+
+1. D2 vs D2.5
+
+- This is already one of the most useful local ablations:
+  - same CBDC objective
+  - label-based selector vs label-free selector
+
+2. Semantic-preservation ablation
+
+- Vary `keep_weight`
+- Recommended settings:
+  - `0.0`
+  - `0.5`
+  - default
+- Goal:
+  - test whether semantic preservation is what prevents class collapse
+
+3. Sentiment-orthogonal PGD ablation
+
+- Run with and without `sent_orthogonal_pgd`
+- This is one of the clearest method contributions in the local NLP version.
+
+4. PGD strength sweep
+
+- Sweep:
+  - `n_pgd_steps`
+  - `num_samples`
+  - `random_eps`
+- Goal:
+  - check whether stronger perturbation helps bias discovery or just damages sentiment structure
+
+5. Bias-bank size / diversity sweep
+
+- Sweep:
+  - `n_bias_dirs`
+  - `mine_max_topics`
+  - `pole_phrases_per_side`
+- Goal:
+  - test whether more diverse bias directions actually help or whether noisy anchors start hurting performance
+
+6. Prompt-bank ablation
+
+- Compare:
+  - current fixed CBDC bank
+  - safer structural-only bank
+  - topic-heavy bank
+  - risky emoticon/laughter bank as ablation only
+- Goal:
+  - show which bias anchors help without eating sentiment signal
+
+### Recommended priority order
+
+1. Multi-seed fixed-test runs for `B1`, `D2`, `D2.5`
+2. Worst-group / gap evaluation with heuristic NLP bias groups
+3. `keep_weight` and `sent_orthogonal_pgd` ablations
+4. External-dataset utility-preservation test
+5. PCA / UMAP visualization
+
 ### 7. Optional follow-up if strict unsupervised framing is needed
 
 - The current Phase 2 checkpoint selector uses labeled validation F1.
@@ -1182,3 +1681,52 @@ To activate the fixed test behavior in an actual run:
 - Where are pseudo-labels or unsupervised topic/style biases mined in the local project?
 - How is evaluation currently defined for the sentiment task: prototype similarity, linear head, or another classifier?
 - How much of DebiasVL is conceptually needed for the NLP story versus only CBDC itself?
+
+## 2026-04-04 BERTweet fixed-test prototype run
+
+Model:
+
+- `vinai/bertweet-base`
+- classifier: `prototype`
+- `INCLUDE_D25=1`
+
+Results:
+
+- `B1 (raw)`:
+  - test acc `0.3305`
+  - test macro-F1 `0.3000`
+- `D1 (debias_vl)`:
+  - test acc `0.3483`
+  - test macro-F1 `0.3441`
+- `D2 (CBDC)`:
+  - test acc `0.3373`
+  - test macro-F1 `0.3269`
+- `D2.5 (CBDC no-label-select)`:
+  - test acc `0.3430`
+  - test macro-F1 `0.3349`
+- `D3 (debias_vl->CBDC)`:
+  - test acc `0.3444`
+  - test macro-F1 `0.3131`
+
+Interpretation:
+
+- Absolute prototype performance is much weaker than RoBERTa or BERT on this setup.
+- `D1` is the best BERTweet method in this run.
+- `D2.5` is slightly better than `D2` on BERTweet, which is the opposite of the stronger RoBERTa/BERT pattern.
+- So the currently stable cross-backbone claim should stay modest:
+  - all methods are somewhat backbone-dependent
+  - `D2.5 > B1` still holds here
+  - but `D2 > D2.5` is not universal across all backbones
+
+Likely practical note:
+
+- BERTweet may want prompt wording closer to tweets rather than generic `text`.
+- If BERTweet is explored further, try the same run with:
+  - `--text_unit tweet`
+- It is also possible that BERTweet is simply worse for this prototype-prompt setup even if it is tweet-native.
+
+Updated cross-model read:
+
+- RoBERTa currently gives the strongest CBDC-style results.
+- BERT gives strong DebiasVL-style results.
+- BERTweet is weaker overall in the current prototype setup.

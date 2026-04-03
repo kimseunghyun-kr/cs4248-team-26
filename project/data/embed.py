@@ -87,9 +87,9 @@ def main():
 
     try:
         encoder = TransformerEncoder(model_name=args.model_name, device=device, tokenizer=tokenizer)
-    except Exception:
-        print("Falling back to distilbert-base-uncased")
-        encoder = TransformerEncoder(model_name="distilbert-base-uncased", device=device)
+    except Exception as e:
+        print(f"ERROR: failed to load requested model '{args.model_name}': {e}")
+        raise
 
     # ---- Load text data ------------------------------------------------------
     train_records, val_records, test_records = load_records()

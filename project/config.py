@@ -5,9 +5,19 @@ from dataclasses import dataclass
 # ---------------------------------------------------------------------------
 MODEL_REGISTRY = {
     "bert":       "bert-base-cased",       # <--- changed to cased
+    "bert-uncased": "google-bert/bert-base-uncased",
+    "bert-base-uncased": "google-bert/bert-base-uncased",
+    "bert-large-uncased": "google-bert/bert-large-uncased",
     "finbert":    "ProsusAI/finbert",
     "bertweet":   "vinai/bertweet-base",   # <--- Highly recommended to run with this
     "roberta":    "roberta-base",
+    "roberta-large": "FacebookAI/roberta-large",
+    "xlmr-large": "FacebookAI/xlm-roberta-large",
+    "qwen25-0.5b": "Qwen/Qwen2.5-0.5B",
+    "qwen25-1.5b": "Qwen/Qwen2.5-1.5B",
+    "qwen25-3b": "Qwen/Qwen2.5-3B",
+    "llama32-1b": "meta-llama/Llama-3.2-1B",
+    "llama32-3b": "meta-llama/Llama-3.2-3B",
     "distilbert": "distilbert-base-cased", # <--- changed to cased
 }
 
@@ -43,6 +53,7 @@ class CBDCConfig:
     # text_iccv training loop
     n_epochs: int = 100            # encoder training epochs (txt_iters)
     lr: float = 1e-5               # AdamW lr for layer 11
+    max_grad_norm: float = 1.0     # gradient clipping for the trainable tail
     up_scale: float = 100.0        # loss multiplier (up_)
     eval_every: int = 10           # validation selector frequency during Phase 2
     selector_train_per_class: int = 512   # balanced train subset size per class

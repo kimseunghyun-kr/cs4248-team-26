@@ -17,6 +17,11 @@ Usage:
                                                # include D2.5 (no-label selector)
   python run_all.py --skip_cbdc                # skip phase 2 (baseline-only evaluation)
   python run_all.py --model roberta-base       # arbitrary HuggingFace model
+  python run_all.py --model bert-uncased       # base uncased BERT shortcut
+  python run_all.py --model bert-large-uncased # large uncased BERT shortcut
+  python run_all.py --model roberta-large      # larger safe encoder shortcut
+  python run_all.py --model xlmr-large         # multilingual large encoder shortcut
+  python run_all.py --model qwen25-3b          # decoder-only Qwen2.5 path
   python run_all.py --tokenizer custom-tok     # custom tokenizer
 """
 
