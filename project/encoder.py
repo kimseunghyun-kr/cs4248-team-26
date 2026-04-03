@@ -100,6 +100,8 @@ class TransformerEncoder(nn.Module):
     def _get_embedding_module(self):
         if hasattr(self.backbone, "embeddings"):
             return self.backbone.embeddings
+        if hasattr(self.backbone, "embed_tokens"):
+            return self.backbone.embed_tokens
         if hasattr(self.backbone, "model") and hasattr(self.backbone.model, "embed_tokens"):
             return self.backbone.model.embed_tokens
         if hasattr(self.backbone, "transformer") and hasattr(self.backbone.transformer, "wte"):
@@ -116,7 +118,7 @@ class TransformerEncoder(nn.Module):
           - BERT / RoBERTa / FinBERT / DeBERTa: backbone.encoder.layer
           - DistilBERT:                          backbone.transformer.layer
           - GPT-2 / GPT-Neo:                     backbone.transformer.h
-          - LLaMA / Qwen2 / Mistral:             backbone.model.layers
+          - LLaMA / Qwen2 / Mistral:             backbone.layers or backbone.model.layers
           - CLIP text encoder:                    backbone.text_model.encoder.layers
         Note: Causal models (GPT-2, LLaMA, Qwen2) need last-token pooling and
         delta injection at the last non-pad position rather than CLS at pos 0.
@@ -128,7 +130,10 @@ class TransformerEncoder(nn.Module):
         # GPT-2 / GPT-Neo
         if hasattr(self.backbone, "transformer") and hasattr(self.backbone.transformer, "h"):
             return self.backbone.transformer.h
-        # LLaMA / Qwen2 / Mistral
+        # Bare decoder backbones returned by AutoModel, e.g. LlamaModel/Qwen2Model
+        if hasattr(self.backbone, "layers"):
+            return self.backbone.layers
+        # Wrapped decoder backbones
         if hasattr(self.backbone, "model") and hasattr(self.backbone.model, "layers"):
             return self.backbone.model.layers
         # CLIP text encoder
@@ -137,7 +142,7 @@ class TransformerEncoder(nn.Module):
         raise AttributeError(
             f"Cannot find transformer layers in {type(self.backbone).__name__}. "
             f"Expected .encoder.layer, .transformer.layer, .transformer.h, "
-            f".model.layers, or .text_model.encoder.layers"
+            f".layers, .model.layers, or .text_model.encoder.layers"
         )
 
     # ------------------------------------------------------------------
@@ -199,6 +204,12 @@ class TransformerEncoder(nn.Module):
         if train_embeddings and embedding_module is not None:
             for p in embedding_module.parameters():
                 p.requires_grad_(True)
+
+        if n_layers == 0:
+            trainable = sum(p.numel() for p in self.backbone.parameters() if p.requires_grad)
+            print(f"  trainable backbone params={trainable:,} | unfrozen_layers=0 | "
+                  f"train_embeddings={train_embeddings}")
+            return
 
         layers = list(self._get_transformer_layers())
         n_layers = min(n_layers, len(layers))
