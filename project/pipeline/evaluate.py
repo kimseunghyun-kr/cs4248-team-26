@@ -137,6 +137,7 @@ def main():
     b1_acc = _metric("B1 (raw)", "test_accuracy")
     d1_acc = _metric("D1 (debias_vl)", "test_accuracy")
     d2_acc = _metric("D2 (CBDC)", "test_accuracy")
+    d25_acc = _metric("D2.5 (CBDC no-label-select)", "test_accuracy")
     d3_acc = _metric("D3 (debias_vl->CBDC)", "test_accuracy")
 
     if b1_acc is not None and d1_acc is not None:
@@ -145,9 +146,15 @@ def main():
     if b1_acc is not None and d2_acc is not None:
         delta = d2_acc - b1_acc
         log(f"  D2 vs B1 test accuracy: {delta:+.4f}")
+    if b1_acc is not None and d25_acc is not None:
+        delta = d25_acc - b1_acc
+        log(f"  D2.5 vs B1 test accuracy: {delta:+.4f}")
     if b1_acc is not None and d3_acc is not None:
         delta = d3_acc - b1_acc
         log(f"  D3 vs B1 test accuracy: {delta:+.4f}")
+    if d2_acc is not None and d25_acc is not None:
+        delta = d25_acc - d2_acc
+        log(f"  D2.5 vs D2 test accuracy: {delta:+.4f}")
     if d2_acc is not None and d3_acc is not None:
         delta = d3_acc - d2_acc
         log(f"  D3 vs D2 test accuracy: {delta:+.4f}")

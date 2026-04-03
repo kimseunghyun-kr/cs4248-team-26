@@ -18,6 +18,7 @@
 #   sbatch --export=ALL,START_PHASE=4 submit_new.slurm
 #   sbatch --export=ALL,ONLY_PHASE=4 submit_new.slurm
 #   sbatch --export=ALL,CLASSIFIER=prototype submit_new.slurm
+#   sbatch --export=ALL,CLASSIFIER=prototype,INCLUDE_D25=1 submit_new.slurm
 # -------------------------------------------------------
 
 set -euo pipefail
@@ -48,13 +49,19 @@ START_PHASE="${START_PHASE:-1}"
 ONLY_PHASE="${ONLY_PHASE:-}"
 CLASSIFIER="${CLASSIFIER:-probe}"
 RUN_MODEL="${RUN_MODEL:-roberta}"
+INCLUDE_D25="${INCLUDE_D25:-0}"
+
+RUN_ARGS=(--model "${RUN_MODEL}" --classifier "${CLASSIFIER}")
+if [ "${INCLUDE_D25}" = "1" ]; then
+    RUN_ARGS+=(--include_d25)
+fi
 
 if [ -n "${ONLY_PHASE}" ]; then
     echo "Running only phase ${ONLY_PHASE} with classifier=${CLASSIFIER} model=${RUN_MODEL}"
-    python -u run_all.py --model "${RUN_MODEL}" --classifier "${CLASSIFIER}" --only_phase "${ONLY_PHASE}"
+    python -u run_all.py "${RUN_ARGS[@]}" --only_phase "${ONLY_PHASE}"
 else
     echo "Running phases from ${START_PHASE} with classifier=${CLASSIFIER} model=${RUN_MODEL}"
-    python -u run_all.py --model "${RUN_MODEL}" --classifier "${CLASSIFIER}" --start_phase "${START_PHASE}"
+    python -u run_all.py "${RUN_ARGS[@]}" --start_phase "${START_PHASE}"
 fi
 
 echo "Done. $(date)"

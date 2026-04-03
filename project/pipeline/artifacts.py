@@ -1,5 +1,5 @@
 """
-Shared cache-path helpers for the four official evaluation conditions.
+Shared cache-path helpers for the evaluation conditions.
 """
 
 from __future__ import annotations
@@ -8,14 +8,21 @@ import os
 from collections import OrderedDict
 
 
-CONDITION_SPECS = OrderedDict(
-    [
-        ("B1 (raw)", {"slug": "b1_raw"}),
-        ("D1 (debias_vl)", {"slug": "d1_debias_vl"}),
-        ("D2 (CBDC)", {"slug": "d2_cbdc"}),
-        ("D3 (debias_vl->CBDC)", {"slug": "d3_debias_vl_cbdc"}),
-    ]
-)
+def _build_condition_specs() -> OrderedDict:
+    specs = OrderedDict(
+        [
+            ("B1 (raw)", {"slug": "b1_raw"}),
+            ("D1 (debias_vl)", {"slug": "d1_debias_vl"}),
+            ("D2 (CBDC)", {"slug": "d2_cbdc"}),
+        ]
+    )
+    if os.environ.get("INCLUDE_D25") == "1":
+        specs["D2.5 (CBDC no-label-select)"] = {"slug": "d25_cbdc_no_label_select"}
+    specs["D3 (debias_vl->CBDC)"] = {"slug": "d3_debias_vl_cbdc"}
+    return specs
+
+
+CONDITION_SPECS = _build_condition_specs()
 
 SLUG_TO_LABEL = {spec["slug"]: label for label, spec in CONDITION_SPECS.items()}
 

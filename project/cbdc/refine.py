@@ -1,9 +1,10 @@
 """
-Phase 2: materialize the three derived methods with isolated artifacts.
+Phase 2: materialize the derived methods with isolated artifacts.
 
 Conditions:
   D1 (debias_vl)        : closed-form debias_vl projection on raw embeddings
   D2 (CBDC)             : pure prompt-driven CBDC training
+  D2.5 (CBDC no-label-select) : pure CBDC with label-free checkpoint selection
   D3 (debias_vl->CBDC)  : debias_vl discovery feeding CBDC training
 
 Each condition writes only into its own method-scoped directory under:
@@ -51,6 +52,7 @@ CACHE_DIR = os.environ.get("CACHE_DIR", _DEFAULT_CACHE)
 B1_LABEL = "B1 (raw)"
 D1_LABEL = "D1 (debias_vl)"
 D2_LABEL = "D2 (CBDC)"
+D25_LABEL = "D2.5 (CBDC no-label-select)"
 D3_LABEL = "D3 (debias_vl->CBDC)"
 
 
@@ -58,6 +60,13 @@ def _save_json(path: str, payload: dict) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         json.dump(payload, f, indent=2)
+
+
+def _clone_state_dict(module: torch.nn.Module) -> dict:
+    return {
+        k: v.detach().cpu().clone()
+        for k, v in module.state_dict().items()
+    }
 
 
 def _clone_split_payload(raw_data: dict, embeddings: torch.Tensor) -> dict:
@@ -449,8 +458,12 @@ def text_iccv(
     anti_anchors: torch.Tensor,
     cfg: CBDCConfig,
     prompt_bank: dict,
+    selector_mode: str = "val_f1",
 ) -> tuple[TransformerEncoder, torch.Tensor, torch.Tensor]:
     """Run prompt-driven CBDC training for either D2 or D3."""
+    if selector_mode not in {"val_f1", "loss", "last"}:
+        raise ValueError("selector_mode must be one of: val_f1, loss, last")
+
     device = cfg.device
     cls_text_groups = prompt_bank["cls_text_groups"]
     cls_group_sizes = prompt_bank["cls_group_sizes"]
@@ -469,6 +482,12 @@ def text_iccv(
         f"  n_epochs={cfg.n_epochs} | lr={cfg.lr} | "
         f"PGD: epsilon={cfg.epsilon} steps={cfg.n_pgd_steps} restarts={cfg.num_samples}"
     )
+    if selector_mode == "val_f1":
+        print("  Checkpoint selector: labeled val centroid macro-F1")
+    elif selector_mode == "loss":
+        print("  Checkpoint selector: prompt loss only (label-free)")
+    else:
+        print("  Checkpoint selector: last epoch (label-free)")
 
     cls_flat_text = flatten_prompt_groups(cls_text_groups)
     cls_enc = encoder.tokenize(cls_flat_text)
@@ -493,8 +512,9 @@ def text_iccv(
         p.requires_grad_(True)
     optimizer = torch.optim.AdamW(layer_tail.parameters(), lr=cfg.lr, weight_decay=1e-4)
 
-    selector_data = _prepare_selector_data(cfg)
+    selector_data = _prepare_selector_data(cfg) if selector_mode == "val_f1" else None
     best_selector_f1 = float("-inf")
+    best_loss = float("inf")
     best_epoch = None
     best_state = None
 
@@ -555,7 +575,8 @@ def text_iccv(
             or (epoch + 1) == cfg.n_epochs
         )
         selector_f1 = None
-        if should_eval:
+        current_loss = float(total_loss.item())
+        if selector_mode == "val_f1" and should_eval:
             selector_f1 = _selector_val_f1(
                 encoder,
                 selector_data,
@@ -564,15 +585,22 @@ def text_iccv(
             if selector_f1 > best_selector_f1:
                 best_selector_f1 = selector_f1
                 best_epoch = epoch + 1
-                best_state = {
-                    k: v.detach().cpu().clone()
-                    for k, v in layer_tail.state_dict().items()
-                }
+                best_state = _clone_state_dict(layer_tail)
+        elif selector_mode == "loss":
+            if current_loss < best_loss:
+                best_loss = current_loss
+                best_epoch = epoch + 1
+                best_state = _clone_state_dict(layer_tail)
+        elif selector_mode == "last":
+            best_epoch = epoch + 1
+            best_state = None
 
         if should_eval or (epoch + 1) % 10 == 0 or epoch == 0:
             selector_msg = ""
             if selector_f1 is not None:
                 selector_msg = f" selector_f1={selector_f1:.4f}"
+            elif selector_mode == "loss":
+                selector_msg = f" selector_loss={current_loss:.4f}"
             print(
                 f"  Epoch {epoch+1}/{cfg.n_epochs}: "
                 f"match={match_loss.item():.4f} ck={ck_loss.item():.4f} "
@@ -581,14 +609,26 @@ def text_iccv(
 
     if best_state is not None:
         layer_tail.load_state_dict(best_state)
-        print(
-            f"\n  Restored best CBDC epoch: {best_epoch}/{cfg.n_epochs} "
-            f"(selector_f1={best_selector_f1:.4f})"
-        )
+        if selector_mode == "val_f1":
+            print(
+                f"\n  Restored best CBDC epoch: {best_epoch}/{cfg.n_epochs} "
+                f"(selector_f1={best_selector_f1:.4f})"
+            )
+        elif selector_mode == "loss":
+            print(
+                f"\n  Restored best CBDC epoch: {best_epoch}/{cfg.n_epochs} "
+                f"(selector_loss={best_loss:.4f})"
+            )
+    elif selector_mode == "last":
+        print(f"\n  Using final CBDC epoch: {cfg.n_epochs}/{cfg.n_epochs}")
 
     for p in layer_tail.parameters():
         p.requires_grad_(False)
     encoder.backbone.eval()
+
+    if cfg.sent_orthogonal_pgd:
+        with torch.no_grad():
+            sentiment_protos = _encode_class_prototypes(encoder, cls_ids, cls_mask, cls_group_sizes).detach().to(device)
 
     best_S = _compute_direction_snapshot(
         encoder,
@@ -744,6 +784,7 @@ def materialize_cbdc_condition(
     prompt_bank_payload: dict,
     extra_artifacts: dict[str, torch.Tensor] | None = None,
     extra_json: dict | None = None,
+    selector_mode: str = "val_f1",
 ) -> None:
     print(f"\n{'=' * 72}")
     print(f"Materializing {condition_label}")
@@ -761,6 +802,10 @@ def materialize_cbdc_condition(
     if extra_json:
         for filename, payload in extra_json.items():
             _save_json(condition_artifact_path(CACHE_DIR, condition_label, filename), payload)
+    _save_json(
+        condition_artifact_path(CACHE_DIR, condition_label, "training_meta.json"),
+        {"selector_mode": selector_mode},
+    )
 
     encoder, final_directions, final_cls_prototypes = text_iccv(
         encoder,
@@ -768,6 +813,7 @@ def materialize_cbdc_condition(
         anti_anchors,
         cfg,
         cbdc_prompt_bank,
+        selector_mode=selector_mode,
     )
 
     torch.save(
@@ -788,7 +834,7 @@ def materialize_cbdc_condition(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Materialize D1 / D2 / D3 with isolated method-scoped artifacts."
+        description="Materialize D1 / D2 / D2.5 / D3 with isolated method-scoped artifacts."
     )
     parser.add_argument("--n_epochs", type=int, default=100)
     parser.add_argument("--lr", type=float, default=1e-5)
@@ -843,6 +889,7 @@ def main():
         sent_orthogonal_pgd=not (args.no_sent_orthogonal_pgd or os.environ.get("NO_SENT_ORTHOGONAL_PGD") == "1"),
         device=device,
     )
+    include_d25 = os.environ.get("INCLUDE_D25") == "1"
 
     model_name = os.environ.get("MODEL_NAME", "bert-base-uncased")
     tokenizer_name = os.environ.get("TOKENIZER_NAME")
@@ -894,7 +941,22 @@ def main():
         bias_anchors=prompt_encodings_d2["bias_pole_a_cb"],
         anti_anchors=prompt_encodings_d2["bias_pole_b_cb"],
         prompt_bank_payload=cbdc_prompt_bank,
+        selector_mode="val_f1",
     )
+
+    if include_d25:
+        encoder_d25 = _load_encoder(model_name=model_name, device=device, tokenizer_name=tokenizer_name)
+        prompt_encodings_d25 = encode_all_prompts(encoder_d25, cbdc_prompt_bank)
+        materialize_cbdc_condition(
+            condition_label=D25_LABEL,
+            encoder=encoder_d25,
+            cfg=cfg,
+            cbdc_prompt_bank=cbdc_prompt_bank,
+            bias_anchors=prompt_encodings_d25["bias_pole_a_cb"],
+            anti_anchors=prompt_encodings_d25["bias_pole_b_cb"],
+            prompt_bank_payload=cbdc_prompt_bank,
+            selector_mode="loss",
+        )
 
     encoder_d3 = _load_encoder(model_name=model_name, device=device, tokenizer_name=tokenizer_name)
     P_debias_d3, svd_dirs_d3, bias_anchors_d3, anti_anchors_d3, anchor_info_d3 = discover_confound_map(
@@ -917,6 +979,7 @@ def main():
         extra_json={
             "anchor_poles.json": {"anchor_info": anchor_info_d3},
         },
+        selector_mode="val_f1",
     )
 
     print("\nPhase 2 materialization complete.")

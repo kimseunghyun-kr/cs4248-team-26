@@ -3,7 +3,7 @@ End-to-end orchestrator for the B1 / D1 / D2 / D3 pipeline.
 
 Pipeline:
   1. data/embed.py       — encode text, cache embeddings
-  2. cbdc/refine.py      — materialize D1, D2, D3 artifacts
+  2. cbdc/refine.py      — materialize D1, D2, optional D2.5, and D3 artifacts
   3. pipeline/classify.py or pipeline/prototype_classify.py
   4. pipeline/evaluate.py — full evaluation report
 
@@ -13,6 +13,8 @@ Usage:
   python run_all.py --start_phase 2            # resume from phase 2
   python run_all.py --only_phase 3             # run only supervised evaluation
   python run_all.py --classifier prototype     # run prototype-based evaluation
+  python run_all.py --classifier prototype --include_d25
+                                               # include D2.5 (no-label selector)
   python run_all.py --skip_cbdc                # skip phase 2 (baseline-only evaluation)
   python run_all.py --model roberta-base       # arbitrary HuggingFace model
   python run_all.py --tokenizer custom-tok     # custom tokenizer
@@ -38,7 +40,7 @@ def get_phases(classifier: str):
 
     return [
         (1, "data/embed.py",        "Embedding extraction"),
-        (2, "cbdc/refine.py",       "Materialize D1 / D2 / D3"),
+        (2, "cbdc/refine.py",       "Materialize D1 / D2 / D2.5 / D3"),
         (3, phase3_script,          phase3_desc),
         (4, "pipeline/evaluate.py", "Full evaluation report"),
     ]
@@ -86,6 +88,8 @@ def main():
                         help="Phase-3 prediction method.")
     parser.add_argument("--skip_cbdc", action="store_true",
                         help="Skip Phase 2 materialization and run baseline-only evaluation.")
+    parser.add_argument("--include_d25", action="store_true",
+                        help="Also materialize D2.5 (CBDC with label-free checkpoint selection).")
     parser.add_argument("--no_sent_orthogonal_pgd", action="store_true",
                         help="Disable sentiment-orthogonal PGD gradient projection (ablation).")
     args = parser.parse_args()
@@ -102,6 +106,8 @@ def main():
         extra_env["TOKENIZER_NAME"] = args.tokenizer
     if args.no_sent_orthogonal_pgd:
         extra_env["NO_SENT_ORTHOGONAL_PGD"] = "1"
+    if args.include_d25:
+        extra_env["INCLUDE_D25"] = "1"
 
     if args.classifier == "prototype":
         extra_env["RESULTS_FILE"] = "results_prototype.pt"
@@ -143,6 +149,7 @@ def main():
     print(f"Classifier:    {args.classifier}")
     print(f"Cache dir:     {cache_dir}")
     print(f"Running phases: {[p[0] for p in phases]}")
+    print(f"Include D2.5:  {args.include_d25}")
     if args.no_sent_orthogonal_pgd:
         print(f"Sent-ortho PGD: OFF (ablation)")
     if args.skip_cbdc:

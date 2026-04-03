@@ -23,7 +23,7 @@ def get_phases(classifier: str):
 
     return [
         (1, "data.embed", "Embedding extraction"),
-        (2, "cbdc.refine", "Materialize D1 / D2 / D3"),
+        (2, "cbdc.refine", "Materialize D1 / D2 / D2.5 / D3"),
         (3, phase3_module, phase3_desc),
         (4, "pipeline.evaluate", "Full evaluation report"),
     ]
@@ -100,6 +100,8 @@ def main():
                         help="Phase-3 prediction method.")
     parser.add_argument("--skip_cbdc", action="store_true",
                         help="Skip Phase 2 materialization and run baseline-only evaluation.")
+    parser.add_argument("--include_d25", action="store_true",
+                        help="Also materialize D2.5 (CBDC with label-free checkpoint selection).")
     parser.add_argument("--inprocess", action="store_true",
                         help="Run phases in-process for PyCharm debugging.")
     args = parser.parse_args()
@@ -114,6 +116,8 @@ def main():
     }
     if args.tokenizer:
         extra_env["TOKENIZER_NAME"] = args.tokenizer
+    if args.include_d25:
+        extra_env["INCLUDE_D25"] = "1"
 
     if args.classifier == "prototype":
         extra_env["RESULTS_FILE"] = "results_prototype.pt"
@@ -155,6 +159,7 @@ def main():
     print(f"Classifier:     {args.classifier}")
     print(f"Cache dir:      {cache_dir}")
     print(f"Running phases: {[p[0] for p in phases]}")
+    print(f"Include D2.5:   {args.include_d25}")
     print(f"In-process:     {args.inprocess}")
     if args.skip_cbdc:
         print(f"Phase 2:        SKIPPED (baseline only)")
