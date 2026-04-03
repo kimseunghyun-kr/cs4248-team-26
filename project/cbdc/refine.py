@@ -48,6 +48,7 @@ from cbdc.prompts import (
 _DEFAULT_CACHE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache")
 CACHE_DIR = os.environ.get("CACHE_DIR", _DEFAULT_CACHE)
 
+B1_LABEL = "B1 (raw)"
 D1_LABEL = "D1 (debias_vl)"
 D2_LABEL = "D2 (CBDC)"
 D3_LABEL = "D3 (debias_vl->CBDC)"
@@ -647,10 +648,53 @@ def _save_prompt_bank(condition_label: str, prompt_bank: dict) -> None:
     )
 
 
+@torch.no_grad()
+def _build_class_prompt_prototypes(
+    encoder: TransformerEncoder,
+    prompt_bank: dict,
+    projection: torch.Tensor | None = None,
+) -> torch.Tensor:
+    cls_text_groups = prompt_bank["cls_text_groups"]
+    cls_group_sizes = prompt_bank["cls_group_sizes"]
+    flat_prompts = flatten_prompt_groups(cls_text_groups)
+
+    cls_bank = encoder.encode_text(flat_prompts).cpu()
+    if projection is not None:
+        cls_bank = project_out(cls_bank, projection.cpu())
+
+    return pool_prompt_group_embeddings(
+        cls_bank,
+        cls_group_sizes,
+        normalize=True,
+    ).cpu()
+
+
+def materialize_raw_condition(
+    encoder: TransformerEncoder,
+    prompt_bank: dict,
+) -> None:
+    print(f"\n{'=' * 72}")
+    print(f"Materializing {B1_LABEL}")
+    print(f"{'=' * 72}")
+
+    ensure_condition_dir(CACHE_DIR, B1_LABEL)
+    _save_prompt_bank(B1_LABEL, prompt_bank)
+
+    raw_prototypes = _build_class_prompt_prototypes(
+        encoder=encoder,
+        prompt_bank=prompt_bank,
+    )
+    torch.save(
+        raw_prototypes,
+        condition_artifact_path(CACHE_DIR, B1_LABEL, "class_prompt_prototypes.pt"),
+    )
+
+
 def materialize_debias_vl_condition(
     encoder: TransformerEncoder,
     cfg: CBDCConfig,
     prompt_bank: dict,
+    class_prompt_bank: dict,
 ) -> None:
     print(f"\n{'=' * 72}")
     print(f"Materializing {D1_LABEL}")
@@ -672,6 +716,16 @@ def materialize_debias_vl_condition(
     _save_json(
         condition_artifact_path(CACHE_DIR, D1_LABEL, "anchor_poles.json"),
         {"anchor_info": anchor_info},
+    )
+
+    debiased_class_prototypes = _build_class_prompt_prototypes(
+        encoder=encoder,
+        prompt_bank=class_prompt_bank,
+        projection=P_debias,
+    )
+    torch.save(
+        debiased_class_prototypes,
+        condition_artifact_path(CACHE_DIR, D1_LABEL, "class_prompt_prototypes.pt"),
     )
 
     for split in ["train", "val", "test"]:
@@ -816,11 +870,18 @@ def main():
         text_unit=text_unit,
     )
 
+    encoder_b1 = _load_encoder(model_name=model_name, device=device, tokenizer_name=tokenizer_name)
+    materialize_raw_condition(
+        encoder=encoder_b1,
+        prompt_bank=cbdc_prompt_bank,
+    )
+
     encoder_d1 = _load_encoder(model_name=model_name, device=device, tokenizer_name=tokenizer_name)
     materialize_debias_vl_condition(
         encoder=encoder_d1,
         cfg=cfg,
         prompt_bank=debias_prompt_bank,
+        class_prompt_bank=cbdc_prompt_bank,
     )
 
     encoder_d2 = _load_encoder(model_name=model_name, device=device, tokenizer_name=tokenizer_name)

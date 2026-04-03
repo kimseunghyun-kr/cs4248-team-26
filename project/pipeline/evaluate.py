@@ -22,6 +22,10 @@ from pipeline.artifacts import condition_artifact_path, condition_split_path, it
 _DEFAULT_CACHE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cache")
 CACHE_DIR = os.environ.get("CACHE_DIR", _DEFAULT_CACHE)
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "results")
+RESULTS_FILENAME = os.environ.get("RESULTS_FILE", "results.pt")
+REPORT_FILENAME = os.environ.get("REPORT_FILE", "eval_report.txt")
+EVAL_TITLE = os.environ.get("EVAL_TITLE", "CBDC Sentiment Debiasing — Supervised Evaluation Report")
+RESULTS_SECTION_TITLE = os.environ.get("RESULTS_SECTION_TITLE", "Evaluation Results")
 
 
 def direction_interpretability(z, labels, direction):
@@ -69,17 +73,17 @@ def main():
         lines.append(message)
 
     log("=" * 72)
-    log("CBDC Sentiment Debiasing — Supervised Evaluation Report")
+    log(EVAL_TITLE)
     log("=" * 72)
 
-    results_path = os.path.join(CACHE_DIR, "results.pt")
+    results_path = os.path.join(CACHE_DIR, RESULTS_FILENAME)
     if not os.path.exists(results_path):
-        log("ERROR: results.pt not found. Run pipeline/classify.py first.")
+        log(f"ERROR: {RESULTS_FILENAME} not found. Run the matching phase-3 classifier first.")
         return
 
     results = torch.load(results_path, map_location="cpu")
 
-    log("\n--- Supervised Results ---")
+    log(f"\n--- {RESULTS_SECTION_TITLE} ---")
     log(f"{'Condition':<25} {'Val Acc':>8} {'Test Acc':>9} {'Val F1':>8} {'Test F1':>9}")
     log("-" * 68)
     for condition_label in iter_condition_labels():
@@ -151,7 +155,7 @@ def main():
         delta = d3_acc - d1_acc
         log(f"  D3 vs D1 test accuracy: {delta:+.4f}")
 
-    report_path = os.path.join(RESULTS_DIR, "eval_report.txt")
+    report_path = os.path.join(RESULTS_DIR, REPORT_FILENAME)
     with open(report_path, "w") as f:
         f.write("\n".join(lines) + "\n")
     log(f"\nFull report saved -> {report_path}")
