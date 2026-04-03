@@ -2,12 +2,12 @@ analysis_scope: manifest
 ranking only fixed_test_csv runs
 
 1. bertweet | text | L12 | mlp | cross_entropy | test_f1=0.8008 | val_f1=0.7991 | acc=0.7977 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_540018.log
-2. bertweet | text | L4 | mlp | cross_entropy | test_f1=0.7940 | val_f1=0.7848 | acc=0.7909 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_540790.log
-3. bert | text | L4 | mlp | focal | test_f1=0.7930 | val_f1=0.7770 | acc=0.7898 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_540050.log
-4. bert | text | L12 | mlp | cross_entropy | test_f1=0.7902 | val_f1=0.7941 | acc=0.7872 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_539996.log
-5. finbert | text | L12 | mlp | cross_entropy | test_f1=0.7885 | val_f1=0.7900 | acc=0.7852 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_540035.log
-6. bertweet | text | L4 | mlp | cross_entropy | test_f1=0.7883 | val_f1=0.7874 | acc=0.7849 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_540665.log
-7. bert | text | L4 | linear | cross_entropy | test_f1=0.7873 | val_f1=0.7775 | acc=0.7838 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_540039.log
-8. bertweet | text | L4 | mlp | focal | test_f1=0.7872 | val_f1=0.7895 | acc=0.7838 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_540538.log
-9. bert | text | L4 | mlp | cross_entropy | test_f1=0.7862 | val_f1=0.7734 | acc=0.7832 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_541030.log
-10. bert | text | L4 | mlp | cross_entropy | test_f1=0.7853 | val_f1=0.7849 | acc=0.7821 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_540761.log
+2. tinyllama | text | L12 | mlp | cross_entropy | test_f1=0.7999 | val_f1=0.7980 | acc=0.7960 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_541719.log
+3. bertweet | text | L4 | mlp | cross_entropy | test_f1=0.7940 | val_f1=0.7848 | acc=0.7909 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_540790.log
+4. bert | text | L4 | mlp | focal | test_f1=0.7930 | val_f1=0.7770 | acc=0.7898 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_540050.log
+5. bert | text | L12 | mlp | cross_entropy | test_f1=0.7902 | val_f1=0.7941 | acc=0.7872 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_539996.log
+6. finbert | text | L12 | mlp | cross_entropy | test_f1=0.7885 | val_f1=0.7900 | acc=0.7852 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_540035.log
+7. bertweet | text | L4 | mlp | cross_entropy | test_f1=0.7883 | val_f1=0.7874 | acc=0.7849 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_540665.log
+8. bert | text | L4 | linear | cross_entropy | test_f1=0.7873 | val_f1=0.7775 | acc=0.7838 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_540039.log
+9. bertweet | text | L4 | mlp | focal | test_f1=0.7872 | val_f1=0.7895 | acc=0.7838 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_540538.log
+10. bert | text | L4 | mlp | cross_entropy | test_f1=0.7862 | val_f1=0.7734 | acc=0.7832 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_541030.log
