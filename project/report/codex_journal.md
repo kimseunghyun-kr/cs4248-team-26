@@ -1470,6 +1470,302 @@ Methodological note:
   - derive bias directions from prompt responses
   - debias via the model's final textual representation rather than direct supervised label fitting
 
+## 2026-04-04 CLIP-to-NLP Path Similarity Audit
+
+Files audited:
+
+- Original CBDC / CLIP side:
+  - `direct_port/base.py`
+  - `direct_port/train_bafa.py`
+  - `direct_port/can/attack/simple_pgd.py`
+- Local NLP side:
+  - `encoder.py`
+  - `cbdc/refine.py`
+  - `losses.py`
+  - `cbdc/prompts.py`
+
+Bottom-line verdict:
+
+- The current NLP CBDC port is not a superficial analogy.
+- It mirrors the original CLIP text-stage structure quite closely at the level of:
+  - frozen-body + trainable-tail decomposition
+  - latent-space PGD over prompt representations
+  - bipolar adversarial perturbation discovery
+  - match-loss and cross-knowledge training
+- But it is still not a line-by-line port.
+- The biggest approximation is:
+  - original CLIP PGD perturbs the full intermediate sequence tensor
+  - local NLP PGD perturbs a single token-position latent delta that is injected into the hidden sequence before the final layer
+
+Important clarification about the CLIP reference:
+
+- When describing similarity, it is safer to anchor the analogy to the RN50-style target-tail setup used in the original CBDC code, not to a generic "projection-layer mirror".
+- In the released code, the important common pattern is:
+  - frozen encoder body
+  - expose an intermediate latent
+  - perturb that latent
+  - run the last target block(s) to get the final normalized embedding
+- For CLIP image models:
+  - ViT variants have a direct `proj`
+  - RN50 variants instead go through `attnpool` and `c_proj`
+- So the local NLP port should be described as mirroring the target-tail latent path, not as specifically mirroring a ViT-style projection head.
+
+### Direct path correspondence
+
+Original CLIP / CBDC:
+
+- `Collaboration.text_iccv(...)` in `base.py`
+  - main text-stage training loop
+- `SetTarget.get_feature(...)` in `base.py`
+  - extract intermediate text hidden states before the last transformer block
+- `SetTarget.forward(...)` in `base.py`
+  - run the final text block(s), apply final norm / projection, then pool to the text embedding
+- `perturb_bafa_txt_multi_ablation_lb_ls(...)` in `simple_pgd.py`
+  - bipolar latent PGD with:
+    - sign updates
+    - random restarts
+    - `att_loss`
+    - optional `keep_loss`
+
+Local NLP / CBDC:
+
+- `text_iccv(...)` in `cbdc/refine.py`
+  - main text-stage training loop
+- `get_intermediate_features(...)` in `encoder.py`
+  - extract intermediate hidden states before the final transformer layer
+- `encode_with_delta_from_hidden(...)` in `encoder.py`
+  - run the final transformer block(s), then pool to the sentence embedding
+- `_pgd_bipolar(...)` in `cbdc/refine.py`
+  - bipolar latent PGD with:
+    - sign updates
+    - random restarts
+    - `L_B`
+    - `L_s`
+
+### Where the mirroring is strong
+
+1. Frozen backbone + last-layer tail training
+
+- Original CLIP code:
+  - `txt_model = SetTarget(..., 1, 'txt', cfg.txt_learn_mode)` in `base.py`
+  - with `learn_mode='linear'`, only the last text transformer block is trainable
+- Local NLP code:
+  - `layer_tail = encoder._get_transformer_layers()[-1]` in `cbdc/refine.py`
+  - only that last layer is unfrozen and optimized
+
+Conclusion:
+
+- This is highly analogous.
+- Both methods treat the backbone as frozen and adapt only the terminal text block.
+
+2. Intermediate-latent extraction before the tail
+
+- Original CLIP text side:
+  - `SetTarget.get_feature(...)` runs all but the last text block and returns the latent sequence `z`
+- Local NLP side:
+  - `get_intermediate_features(...)` returns the hidden sequence before the final transformer layer
+
+Conclusion:
+
+- This is one of the cleanest mirrors in the whole port.
+
+3. Latent PGD with bipolar perturbation branches
+
+- Original:
+  - `perturb_bafa_txt_multi_ablation_lb_ls(...)` creates two adversarial sets:
+    - one pushed toward pole A
+    - one pushed toward pole B
+  - uses:
+    - sign-gradient PGD
+    - restart noise
+    - bounded perturbations
+- Local:
+  - `_pgd_bipolar(...)` explicitly produces:
+    - `z_adv_pos`
+    - `z_adv_neg`
+  - also uses:
+    - sign-gradient PGD
+    - restart noise
+    - bounded perturbations
+
+Conclusion:
+
+- This is strongly mirrored.
+
+4. Loss formulas
+
+- Original `simple_pgd.py`:
+  - `att_loss = cross_entropy(100 * logits, target)`
+  - `keep_loss = 100 * ((adv_feat - ori) @ keep.T).pow(2).mean()`
+  - `loss = att_loss * (1 - keep_weight) - keep_loss * keep_weight`
+- Local `losses.py` + `_pgd_bipolar(...)`:
+  - `L_B` is the same pairwise CLIP-style cross-entropy over bias-pole pairs
+  - `L_s` explicitly matches the original keep-loss formula
+  - `loss = L_B * (1 - keep_weight) - L_s * keep_weight`
+- Original `base.py` text training:
+  - `match_loss` from `S = adv_cb_set1 - adv_cb_set2`
+  - `ck_loss = ((bias_a - bias_b) @ cls_em.T).pow(2).mean() * up_`
+- Local `cbdc/refine.py` + `losses.py`:
+  - `S = z_adv_pos - z_adv_neg`
+  - `match_loss` uses the same class-alignment structure
+  - `l_ck(...)` explicitly implements the original `ck_loss` formula
+
+Conclusion:
+
+- The mathematical structure is very close.
+- This is the strongest evidence that the NLP port is genuinely modeled after the original CBDC text stage.
+
+### Main differences from the original CLIP path
+
+1. Full-sequence perturbation vs single-token injected delta
+
+- Original CLIP:
+  - PGD perturbs the entire latent sequence tensor `z`
+  - `z_adv1` has the same shape as the whole intermediate text representation
+- Local NLP:
+  - PGD optimizes a `delta` of shape `(B, H)`
+  - that delta is injected only at one pooled-token position:
+    - CLS for encoder families
+    - last non-pad token for decoder families
+
+This is the single biggest approximation in the local port.
+
+Interpretation:
+
+- The local method is still latent-tail perturbation.
+- But it is a lower-dimensional, pooled-token-centered perturbation, not a full hidden-sequence perturbation.
+
+2. Pooling semantics differ by backbone family
+
+- Original CLIP text encoder:
+  - pools at the end-of-text position (`token_max`) before `text_projection`
+- Local encoder-family models:
+  - pool from CLS
+- Local decoder-family models:
+  - pool from the last non-pad token
+
+Important nuance:
+
+- The decoder-family Qwen/Llama path is actually closer to CLIP text pooling semantics than the BERT/RoBERTa CLS path.
+
+3. VLM collaboration vs text-only port
+
+- Original paper/code:
+  - alternates between text-side and image-side training
+  - uses image embeddings for evaluation and worst-group robustness
+- Local NLP port:
+  - only keeps the text-stage idea
+  - there is no image-side collaboration stage
+  - final evaluation is text-only
+
+Conclusion:
+
+- The local method is best described as a text-only adaptation of the CLIP text-stage CBDC logic, not a full multimodal reproduction.
+
+4. Validation / model selection is only partially mirrored
+
+- Original CLIP code:
+  - `val_()` evaluates image-text zero-shot predictions
+  - best checkpoint is chosen by robust / worst-group validation behavior
+- Local NLP `D2`:
+  - best checkpoint is chosen by labeled validation centroid macro-F1
+- Local NLP `D2.5`:
+  - best checkpoint is chosen by prompt loss only
+
+Conclusion:
+
+- `D2` is structurally similar in the sense of label-aware validation selection, but the metric is different.
+- `D2.5` is cleaner for a label-free story, but less similar to the released CLIP code's selector behavior.
+
+5. Precision / implementation details differ
+
+- Original CLIP code makes heavy use of half precision (`.half()`)
+- Local NLP path was intentionally stabilized toward `float32`
+  - especially for larger encoder and decoder models
+
+Conclusion:
+
+- This is an engineering divergence for stability, not a conceptual divergence in the method.
+
+### Safe summary wording
+
+- The current NLP CBDC port is strongly inspired by and structurally close to the original CLIP text-stage CBDC code.
+- It mirrors:
+  - the frozen-body / trainable-tail split
+  - intermediate-latent extraction
+  - bipolar latent PGD
+  - semantic-preservation loss
+  - match-loss and cross-knowledge training
+- The main deviation is that the local NLP port perturbs a pooled-token latent delta rather than the full intermediate sequence tensor.
+- So the right claim is:
+  - semantically faithful adaptation of the CLIP text-stage CBDC path
+  - not an exact line-by-line reproduction
+- If wording needs to be especially careful, prefer:
+  - "RN50-style frozen-body / target-tail latent adaptation"
+  - rather than
+  - "same projection-layer path as CLIP"
+
+### Perturbation-depth note
+
+Current state:
+
+- The local code already has the structural hook for deeper tail execution:
+  - `encode_with_delta_from_hidden(..., start_layer=...)` in `encoder.py`
+- But the current training loop always uses the default:
+  - perturb before the last layer
+  - unfreeze only the final transformer layer
+
+So there are three different meanings of "increase perturbation depth":
+
+1. More PGD iterations
+
+- Safe and already supported by:
+  - `n_pgd_steps`
+- This does not change where the perturbation enters, only how hard PGD pushes it.
+
+2. Deeper tail span
+
+- Most natural next step.
+- Change the port so that:
+  - `get_intermediate_features(...)` stops earlier
+  - `encode_with_delta_from_hidden(..., start_layer=...)` runs the last 2 or 3 layers
+  - those same last 2 or 3 layers are unfrozen for optimization
+- This would make the NLP path closer to a stronger target-tail adaptation without changing the rest of the method.
+
+3. Full-sequence perturbation instead of single-token delta
+
+- This would be the closest move toward the original CLIP mechanics.
+- But it is the biggest change and the riskiest:
+  - much more memory
+  - much easier to destabilize training
+  - much more likely to damage semantics unless `L_s` and step sizes are retuned
+
+Practical recommendation:
+
+- Increasing depth probably will not "break the method" if done moderately.
+- The safest version is:
+  - keep the current single-token delta
+  - move the perturbation insertion point earlier
+  - train the last 2 layers instead of only the last 1
+- That is a reasonable D2-depth ablation.
+
+Main risk:
+
+- Because the local perturbation is a single injected vector, pushing it through too many layers can make it either:
+  - wash out before the output
+  - or over-distort the representation and hurt sentiment structure
+
+So the recommended order is:
+
+1. try more `n_pgd_steps` first
+2. then try a `tail_layers=2` version
+3. only later consider full-sequence perturbation
+
+Safe interpretation:
+
+- Moderate depth increase is method-consistent.
+- Large depth increase is possible, but becomes a new variant rather than a small tweak.
+
 ## 2026-04-04 Additional Fixed-Test Runs
 
 ### RoBERTa fixed-test run (additional)
@@ -1730,3 +2026,448 @@ Updated cross-model read:
 - RoBERTa currently gives the strongest CBDC-style results.
 - BERT gives strong DebiasVL-style results.
 - BERTweet is weaker overall in the current prototype setup.
+
+## 2026-04-04 BERT-uncased fixed-test prototype run
+
+Model:
+
+- `google-bert/bert-base-uncased`
+- classifier: `prototype`
+- `INCLUDE_D25=1`
+
+Results:
+
+- `B1 (raw)`:
+  - test acc `0.3812`
+  - test macro-F1 `0.3081`
+- `D1 (debias_vl)`:
+  - test acc `0.4440`
+  - test macro-F1 `0.4087`
+- `D2 (CBDC)`:
+  - test acc `0.3902`
+  - test macro-F1 `0.3289`
+- `D2.5 (CBDC no-label-select)`:
+  - test acc `0.3854`
+  - test macro-F1 `0.3191`
+- `D3 (debias_vl->CBDC)`:
+  - test acc `0.3721`
+  - test macro-F1 `0.2877`
+
+Interpretation:
+
+- This is a weak result for the CBDC path on uncased BERT.
+- `D1` is again the clear winner on the BERT family here.
+- `D2` and `D2.5` only slightly improve over raw `B1`, and the margins are much smaller than with `bert-base-cased`.
+- `D3` is actively worse than raw on this run.
+
+Direct comparison against the earlier `bert-base-cased` fixed-test run:
+
+- `bert-base-cased`:
+  - `B1` acc `0.4287`, F1 `0.3785`
+  - `D1` acc `0.4810`, F1 `0.4782`
+  - `D2` acc `0.4621`, F1 `0.4574`
+  - `D2.5` acc `0.4581`, F1 `0.4074`
+- `bert-base-uncased`:
+  - `B1` acc `0.3812`, F1 `0.3081`
+  - `D1` acc `0.4440`, F1 `0.4087`
+  - `D2` acc `0.3902`, F1 `0.3289`
+  - `D2.5` acc `0.3854`, F1 `0.3191`
+
+Takeaway:
+
+- Lowercasing is not helping this prototype setup.
+- The gap is large enough that uncased BERT should not be prioritized over cased BERT or RoBERTa for the current method.
+- Plausible inference:
+  - case information may still matter for the sentiment / prototype geometry in this dataset
+  - or the cased BERT backbone is simply a better fit than the uncased one for this prompt bank
+- Safe wording:
+  - "BERT-uncased underperformed BERT-cased substantially in the current prototype CBDC setting."
+
+## 2026-04-04 BERT-large-uncased fixed-test prototype run
+
+Model:
+
+- `google-bert/bert-large-uncased`
+- classifier: `prototype`
+- `INCLUDE_D25=1`
+
+Results:
+
+- `B1 (raw)`:
+  - test acc `0.3656`
+  - test macro-F1 `0.3654`
+- `D1 (debias_vl)`:
+  - test acc `0.4211`
+  - test macro-F1 `0.4080`
+- `D2 (CBDC)`:
+  - test acc `0.3687`
+  - test macro-F1 `0.3135`
+- `D2.5 (CBDC no-label-select)`:
+  - test acc `0.3995`
+  - test macro-F1 `0.3620`
+- `D3 (debias_vl->CBDC)`:
+  - test acc `0.3947`
+  - test macro-F1 `0.3931`
+
+Interpretation:
+
+- This does not rescue the uncased BERT family for the current CBDC path.
+- `D1` is still the strongest method.
+- `D2` is especially weak here:
+  - it almost collapses on neutral recall
+  - macro-F1 is worse than raw `B1`
+- `D2.5` is much healthier than `D2` on this model and clearly better than raw `B1` on accuracy, but still not close to the best cased-BERT or RoBERTa results.
+- `D3` is better than on base uncased and is surprisingly competitive here, though still below `D1`.
+
+Comparison against `bert-base-uncased`:
+
+- `bert-base-uncased`:
+  - `B1` acc `0.3812`, F1 `0.3081`
+  - `D1` acc `0.4440`, F1 `0.4087`
+  - `D2` acc `0.3902`, F1 `0.3289`
+  - `D2.5` acc `0.3854`, F1 `0.3191`
+  - `D3` acc `0.3721`, F1 `0.2877`
+- `bert-large-uncased`:
+  - `B1` acc `0.3656`, F1 `0.3654`
+  - `D1` acc `0.4211`, F1 `0.4080`
+  - `D2` acc `0.3687`, F1 `0.3135`
+  - `D2.5` acc `0.3995`, F1 `0.3620`
+  - `D3` acc `0.3947`, F1 `0.3931`
+
+Takeaway from the base-vs-large uncased comparison:
+
+- Scaling uncased BERT up helps `D2.5` and `D3` substantially.
+- But scaling up does not help `D1`, and it does not make `D2` strong.
+- So the effect of model size is method-dependent:
+  - larger uncased BERT helps some hybrid / label-free-selector paths
+  - but does not fix the core weakness of the pure `D2` path on the uncased family
+
+Comparison against the earlier `bert-base-cased` fixed-test run:
+
+- `bert-base-cased` still remains clearly stronger overall:
+  - `D1` acc `0.4810`, F1 `0.4782`
+  - `D2` acc `0.4621`, F1 `0.4574`
+  - `D2.5` acc `0.4581`, F1 `0.4074`
+
+Overall BERT-family read after this run:
+
+- cased BERT remains preferable to uncased BERT for the current prototype method.
+- `D1` is the most robust BERT-family method.
+- `D2` on uncased BERT, even large, looks unreliable.
+- `D2.5` on large uncased is interesting as a partial recovery, but still not a top-tier result compared with RoBERTa or cased BERT.
+
+## 2026-04-04 RoBERTa-large fixed-test prototype run
+
+Model:
+
+- `FacebookAI/roberta-large`
+- classifier: `prototype`
+- `INCLUDE_D25=1`
+
+Results:
+
+- `B1 (raw)`:
+  - test acc `0.3104`
+  - test macro-F1 `0.2670`
+- `D1 (debias_vl)`:
+  - test acc `0.3478`
+  - test macro-F1 `0.3048`
+- `D2 (CBDC)`:
+  - test acc `0.4072`
+  - test macro-F1 `0.2262`
+- `D2.5 (CBDC no-label-select)`:
+  - test acc `0.4061`
+  - test macro-F1 `0.2245`
+- `D3 (debias_vl->CBDC)`:
+  - test acc `0.3098`
+  - test macro-F1 `0.2664`
+
+Critical interpretation:
+
+- This is not evidence that "bigger model helps" in a simple way.
+- `D2` and `D2.5` gain a lot of accuracy over the weak raw `B1` baseline, but they do so by almost collapsing onto the `neutral` class.
+- The key warning sign:
+  - `D2` neutral recall is `0.9622`
+  - negative recall is `0.0110`
+  - positive recall is `0.0471`
+- So the higher accuracy is misleading:
+  - macro-F1 is very poor
+  - class balance is much worse than on `roberta-base`
+
+Comparison against the earlier best `roberta-base` fixed-test run:
+
+- `roberta-base`:
+  - `B1` acc `0.4318`, F1 `0.3747`
+  - `D1` acc `0.4709`, F1 `0.4577`
+  - `D2` acc `0.4740`, F1 `0.4758`
+  - `D2.5` acc `0.4544`, F1 `0.4411`
+- `roberta-large`:
+  - `B1` acc `0.3104`, F1 `0.2670`
+  - `D1` acc `0.3478`, F1 `0.3048`
+  - `D2` acc `0.4072`, F1 `0.2262`
+  - `D2.5` acc `0.4061`, F1 `0.2245`
+
+Takeaway:
+
+- `roberta-large` is dramatically worse than `roberta-base` in the current prototype setup.
+- Bigger RoBERTa did not improve the method.
+- Instead, it appears to make the prototype geometry much less balanced, especially for the CBDC path.
+
+Likely inference:
+
+- The method is functioning technically on `roberta-large`, but the current prompt/prototype setup does not transfer cleanly to that backbone.
+- Plausible reasons:
+  - larger hidden space changes prototype geometry
+  - the current one-layer tail adaptation may be too shallow for a much larger backbone
+  - prompt embeddings may become less sentiment-balanced without additional calibration
+
+Safe wording:
+
+- "A larger backbone does not automatically help the current prototype CBDC pipeline; on `roberta-large`, higher D2 accuracy came with severe class-collapse and much worse macro-F1 than `roberta-base`."
+
+Updated RoBERTa-family read:
+
+- `roberta-base` remains the strongest backbone for the current CBDC-style prototype path.
+- `roberta-large` should currently be treated as a negative or cautionary result rather than an upgrade.
+
+## 2026-04-04 BERT-large-cased fixed-test prototype run
+
+Model:
+
+- `bert-large-cased`
+- classifier: `prototype`
+- `INCLUDE_D25=1`
+
+Results:
+
+- `B1 (raw)`:
+  - test acc `0.3540`
+  - test macro-F1 `0.2781`
+- `D1 (debias_vl)`:
+  - test acc `0.4335`
+  - test macro-F1 `0.4082`
+- `D2 (CBDC)`:
+  - test acc `0.3560`
+  - test macro-F1 `0.2825`
+- `D2.5 (CBDC no-label-select)`:
+  - test acc `0.3829`
+  - test macro-F1 `0.3089`
+- `D3 (debias_vl->CBDC)`:
+  - test acc `0.3868`
+  - test macro-F1 `0.3296`
+
+Interpretation:
+
+- This is another case where scaling the backbone up does not help the pure `D2` path.
+- `D1` is clearly the strongest result on this backbone.
+- `D2` is almost identical to raw `B1`, despite Phase 2 training completing normally.
+- `D2.5` and `D3` are both better than `D2`, which suggests the large cased BERT geometry is not interacting well with the current label-selected pure CBDC setup.
+
+Important training clue:
+
+- `D2` restored the best checkpoint at epoch `1/100`.
+- That strongly suggests:
+  - the optimization itself is active
+  - but continuing CBDC tail training on this backbone tends to hurt the selector metric rather than improve it
+
+Comparison against the earlier `bert-base-cased` fixed-test run:
+
+- `bert-base-cased`:
+  - `B1` acc `0.4287`, F1 `0.3785`
+  - `D1` acc `0.4810`, F1 `0.4782`
+  - `D2` acc `0.4621`, F1 `0.4574`
+  - `D2.5` acc `0.4581`, F1 `0.4074`
+- `bert-large-cased`:
+  - `B1` acc `0.3540`, F1 `0.2781`
+  - `D1` acc `0.4335`, F1 `0.4082`
+  - `D2` acc `0.3560`, F1 `0.2825`
+  - `D2.5` acc `0.3829`, F1 `0.3089`
+  - `D3` acc `0.3868`, F1 `0.3296`
+
+Takeaway from base-vs-large cased comparison:
+
+- `bert-base-cased` is much stronger than `bert-large-cased` for every important method here.
+- So larger cased BERT is not an upgrade for the current prototype pipeline.
+
+Comparison against `bert-large-uncased`:
+
+- `bert-large-uncased`:
+  - `D1` acc `0.4211`, F1 `0.4080`
+  - `D2` acc `0.3687`, F1 `0.3135`
+  - `D2.5` acc `0.3995`, F1 `0.3620`
+  - `D3` acc `0.3947`, F1 `0.3931`
+- `bert-large-cased`:
+  - `D1` acc `0.4335`, F1 `0.4082`
+  - `D2` acc `0.3560`, F1 `0.2825`
+  - `D2.5` acc `0.3829`, F1 `0.3089`
+  - `D3` acc `0.3868`, F1 `0.3296`
+
+Nuanced takeaway:
+
+- At large size, cased BERT still wins for `D1`.
+- But large uncased BERT is actually better than large cased BERT for `D2`, `D2.5`, and `D3`.
+- So the simple story is not "cased always wins"; the safer story is:
+  - `bert-base-cased` is the best BERT-family backbone tested so far
+  - scaling BERT up, whether cased or uncased, does not help the current CBDC prototype setup
+
+Updated BERT-family read:
+
+- `bert-base-cased` remains the strongest BERT-family backbone overall.
+- `D1` is still the most robust BERT-family method.
+- The larger BERT models do not currently strengthen the pure `D2` story.
+- If more BERT-family work is done, it should probably focus on prompt/bias calibration or deeper-tail variants rather than simply scaling model size.
+
+## 2026-04-04 Qwen2.5-3B fixed-test prototype run
+
+Model:
+
+- `Qwen/Qwen2.5-3B`
+- classifier: `prototype`
+- `INCLUDE_D25=1`
+
+Results:
+
+- `B1 (raw)`:
+  - test acc `0.4049`
+  - test macro-F1 `0.2058`
+- `D1 (debias_vl)`:
+  - test acc `0.3953`
+  - test macro-F1 `0.2889`
+- `D2 (CBDC)`:
+  - test acc `0.4049`
+  - test macro-F1 `0.2192`
+- `D2.5 (CBDC no-label-select)`:
+  - test acc `0.4027`
+  - test macro-F1 `0.2186`
+- `D3 (debias_vl->CBDC)`:
+  - test acc `0.4035`
+  - test macro-F1 `0.2389`
+
+Critical interpretation:
+
+- Yes, this is a form of class-collapse, but not a numerical failure or NaN-style "zeroing".
+- The collapse is mostly toward `neutral`.
+- The most important nuance is:
+  - the raw baseline `B1` is already collapsed
+  - `negative` recall is `0.0000` even before debiasing
+  - `neutral` recall is `0.9832`
+- So the decoder-family issue is not that `D2` suddenly broke a healthy backbone.
+- Rather:
+  - the raw Qwen prototype geometry is already badly miscalibrated for this task
+  - CBDC training is active, but it is operating on top of an already collapsed prototype setup
+
+What Phase 2 says:
+
+- `D2` training is definitely doing something:
+  - `ck` falls from `7.8405` to `0.0012`
+  - `selector_f1` rises from `0.4065` to `0.4446`
+- So the method is not inert on Qwen.
+- The mismatch is between:
+  - learned representation changes
+  - and the final prototype-classification geometry
+
+Method comparison on Qwen:
+
+- `D1` gives the best macro-F1 on this backbone.
+- `D3` is second-best on macro-F1.
+- `D2` and `D2.5` are only marginally above raw on macro-F1 and essentially tied on accuracy.
+- This suggests:
+  - pure CBDC is not enough to repair the decoder-family prototype collapse under the current prompt setup
+  - DebiasVL-style projection still helps more than CBDC here
+
+Safe wording:
+
+- "Qwen2.5-3B shows severe neutral-class prototype collapse already at the raw baseline. CBDC training remains active and reduces the bias-alignment loss strongly, but the final prompt/prototype geometry stays poorly calibrated for sentiment classification."
+
+Likely inference:
+
+- For decoder-family models, the current prototype prompts and pooling choice are probably the bottleneck.
+- Good next tests, if decoder models are pursued further:
+  - try `--text_unit tweet`
+  - rethink class prompts for decoder LMs
+  - test alternative decoder pooling beyond last-token only
+
+## 2026-04-04 Llama-3.2-3B access failure
+
+Model:
+
+- `meta-llama/Llama-3.2-3B`
+
+Outcome:
+
+- The run failed at Phase 1 with a Hugging Face gated-repo authentication error.
+- This is an access / authentication issue, not a method or implementation failure.
+
+Important note:
+
+- The failure is actually desirable behavior compared with the old code path, because the pipeline now fails loudly instead of silently falling back to a different model.
+
+## 2026-04-04 Prompt-bank bottleneck hypothesis
+
+Current strongest hypothesis:
+
+- `prompts.py` is now a major bottleneck, especially for:
+  - large backbones
+  - decoder-family models
+  - the pure CBDC path (`D2`, `D2.5`)
+
+Why this hypothesis is plausible:
+
+1. Raw prototype collapse already appears before CBDC training on some backbones
+
+- Example: `Qwen/Qwen2.5-3B`
+  - `B1` is already heavily collapsed toward `neutral`
+  - so the issue cannot be blamed only on CBDC training
+- Since `B1` uses raw class prompt prototypes, this points directly at prompt / prototype geometry.
+
+2. `D2` and `D2.5` often fail in similar ways on the hard backbones
+
+- Example: `roberta-large`
+  - `D2` and `D2.5` are almost identical
+  - both drift toward severe neutral-class collapse
+- This suggests the problem is upstream of checkpoint selection.
+- That makes prompt design a stronger suspect than the `D2` vs `D2.5` selector difference.
+
+3. The fixed CBDC bank contains anchors that are not purely nuisance features
+
+- `CBDC_STYLE_BIAS_PAIRS` currently includes:
+  - repeated question marks
+  - exclamation marks
+  - very short text
+  - laughter words
+  - emoticons
+- In sentiment data, several of these are genuine sentiment carriers, not just spurious style.
+- So the pure CBDC bank may be removing signal that actually helps classify sentiment.
+
+4. `keep_text` may be too neutral-coded for a sentiment task
+
+- The current `keep_text` prompts are generic social / daily-life updates.
+- That is reasonable for preserving casual-message semantics.
+- But in sentiment classification, preserving projections onto strongly neutral-looking prompts may bias the representation toward neutrality on some backbones.
+
+5. `target_text` may be too artificial for some models
+
+- Current examples:
+  - `A negative-sentiment text.`
+  - `A neutral-sentiment text.`
+  - `A positive-sentiment text.`
+- These are compact and useful for the current port, but they may be unnatural for decoder LMs and some larger encoders.
+
+Safe interpretation:
+
+- The method appears to be functioning technically.
+- The next likely failure point is not the optimizer or the basic CBDC loop.
+- It is the prompt bank:
+  - class prompts
+  - target prompts
+  - keep prompts
+  - fixed bias-pair prompts
+
+Practical consequence:
+
+- Future improvement should probably focus on prompt-bank redesign before further large-model scaling.
+- Especially high-priority ideas:
+  - test shorter / more natural class prompts
+  - test `text_unit=\"tweet\"` for tweet-native and decoder models
+  - replace riskier style-bias pairs with safer topic / structure pairs
+  - redesign `keep_text` so it preserves content without over-encoding neutrality
