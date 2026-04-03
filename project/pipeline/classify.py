@@ -53,6 +53,7 @@ class LinearProbe(nn.Module):
         self.linear = nn.Linear(in_dim, n_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.to(device=self.linear.weight.device, dtype=self.linear.weight.dtype)
         return self.linear(x)
 
 
