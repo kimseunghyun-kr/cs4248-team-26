@@ -138,6 +138,11 @@ class ClassificationHead(nn.Module):
         self.net = nn.Sequential(*layers)
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
+        # Decoder backbones like Qwen2/TinyLlama may emit bf16 activations while
+        # the freshly initialized classifier head stays in fp32.
+        first_param = next(self.net.parameters(), None)
+        if first_param is not None:
+            features = features.to(device=first_param.device, dtype=first_param.dtype)
         return self.net(features)
 
 
