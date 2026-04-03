@@ -2,6 +2,11 @@
 #SBATCH --job-name=sentiment-sweep
 #SBATCH --output=results/slurm_sweep_%j.log
 #SBATCH --error=results/slurm_sweep_%j.err
+# Wrapper job should avoid ARM submit nodes like xcng* because the local
+# Miniconda install is not executable there. Pin to the xcnf CPU nodes instead.
+# xcnf is a node family, so we request it via nodelist under the long partition.
+#SBATCH --partition=long
+#SBATCH --nodelist=xcnf[0-25]
 #SBATCH --time=24:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
