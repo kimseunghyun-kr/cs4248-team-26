@@ -2509,6 +2509,82 @@ Implementation added:
   - overlays `B1` centroids as a reference so class-level movement is visible directly
   - saves both a PNG figure and a CSV of the projected coordinates
 
+What the PCA is actually measuring:
+
+1. Input objects being projected
+
+- The plotted sample points are the cached sentence embeddings for a chosen split.
+- These embeddings are L2-normalized before PCA.
+- So each sample vector lies on or near the unit sphere in the original embedding space.
+- The plotted prompt prototypes are also normalized before projection.
+
+2. Relationship to cosine similarity
+
+- The prototype classifier itself uses normalized vectors and dot products.
+- For normalized vectors `u` and `v`:
+  - `cos(u, v) = u · v`
+  - `||u - v||^2 = 2 - 2 cos(u, v)`
+- So in the full original space, cosine similarity and Euclidean distance are tightly linked.
+- This is why PCA on normalized embeddings is a reasonable diagnostic for the cosine-based prototype geometry.
+
+3. What PCA does mathematically
+
+- PCA finds orthogonal directions of maximal variance after centering the pooled embedding cloud.
+- `PC1` is the direction explaining the most variance.
+- `PC2` is the next orthogonal direction explaining the next-most variance.
+- `PC3` is the third such direction if requested.
+- The coordinates shown in the PCA plot are just linear projections onto these directions.
+
+4. Why the PCA basis is shared across conditions
+
+- The basis is fit once on the pooled normalized embeddings from all selected conditions.
+- That means each condition is shown in the same coordinate system.
+- So if the cloud for `D2` appears shifted relative to `B1`, that is actual movement in a shared linear subspace, not an artifact of each panel being rotated separately.
+
+5. What the different overlaid markers mean
+
+- Sample points:
+  - individual test examples
+- Class centroids:
+  - the mean projected location of all examples in a gold sentiment class for that condition
+- Prompt prototypes:
+  - the projected class prompt prototype vectors used by the prototype classifier
+- Reference centroids:
+  - the `B1` class centroids, overlaid on every panel so before/after movement can be seen directly
+
+6. How to interpret movement
+
+- Large centroid shift from `B1` to `D2` or `D3`:
+  - the average class representation moved substantially along the dominant shared PCA directions
+- Larger centroid separation between classes:
+  - the class means are more separated in the retained low-dimensional subspace
+- Smaller gap between a class centroid and its prompt prototype:
+  - the prompt prototype is more aligned with the empirical class cloud in the retained PCA subspace
+
+7. What PCA does *not* measure exactly
+
+- PCA is not the classifier itself.
+- It is only a low-rank linear view of the geometry.
+- If `D2` looks close to `B1` in 2D, that does not prove the method had no effect.
+- It may mean:
+  - the effect lives in dimensions beyond `PC1` and `PC2`
+  - the effect is nonlinear
+  - or the effect is small in global variance terms but still relevant for class logits
+
+8. Why 3D helps but still has limits
+
+- `PC1`/`PC2` can miss class-relevant structure if the dominant variance is due to something else.
+- Adding `PC3` can recover some of that hidden movement.
+- But even 3D is still only a truncated linear projection, not the full embedding geometry.
+
+9. Project-specific interpretation rule
+
+- In this project, the most reliable reading is not:
+  - "more visible separation in PCA always means better classifier performance"
+- The safer reading is:
+  - PCA tells us whether the dominant shared embedding geometry changed, in what direction it changed, and whether class means and prompt prototypes moved together or apart.
+- So PCA is best treated as an explainability / representation-diagnostics tool, not as a replacement for accuracy or macro-F1.
+
 Why this should be useful:
 
 - It directly answers the PI's question about whether the representation space actually moved.
@@ -2575,3 +2651,44 @@ Implementation follow-up:
   - PNG output
   - CSV output with `pc1`, `pc2`, `pc3`
 - Added a clearer cache-consistency check for prototype dimensionality mismatch, so inconsistent artifacts now fail with an informative error instead of a cryptic sklearn traceback.
+
+## 2026-04-05 t-SNE / UMAP follow-up
+
+PI concern:
+
+- PCA axes may not be the right axes if the desired class bundling is nonlinear or not aligned with the dominant global variance directions.
+
+Implementation follow-up:
+
+- Extended `pipeline/plot_pca.py` to support:
+  - `--method pca`
+  - `--method tsne`
+  - `--method umap`
+- In the current environment:
+  - `t-SNE` is available through `scikit-learn`
+  - `UMAP` is not currently installed
+
+Important interpretation note:
+
+- `t-SNE` and `UMAP` are much better than PCA for showing local neighborhood bundling.
+- So if the requirement is "show classes as bundled clouds", these methods are more likely to produce a visually satisfying plot.
+- But they are also easier to overinterpret:
+  - they preserve local neighborhoods better than global geometry
+  - apparent cluster separation can look stronger than it really is in the original space
+
+Safe recommendation:
+
+- For explainability / honest geometry:
+  - keep the shared PCA figures
+- For a PI-facing "do the classes bundle up visually?" plot:
+  - also generate `t-SNE` figures
+- Best framing:
+  - PCA = global linear movement diagnostic
+  - t-SNE = local neighborhood / bundling diagnostic
+
+t-SNE smoke-test status:
+
+- A synthetic-cache `t-SNE` run completed successfully and wrote:
+  - PNG output
+  - CSV output
+- So the nonlinear plotting path is working locally.

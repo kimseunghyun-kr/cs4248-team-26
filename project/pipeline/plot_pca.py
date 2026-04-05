@@ -1,9 +1,14 @@
 """
-Visualize cached condition embeddings in a shared 2D PCA space.
+Visualize cached condition embeddings with a shared pooled projection.
 
-The PCA basis is fit once on normalized embeddings pooled across conditions,
-so before/after panels stay in the same coordinate system and actual movement
-is visible.
+For PCA, the basis is fit once on normalized embeddings pooled across
+conditions so before/after panels stay in the same coordinate system and
+actual movement is visible.
+
+For t-SNE / UMAP, the embedding is fit jointly on the pooled normalized
+sample embeddings, so all conditions still live in one shared visualization
+space, but the result should be interpreted as a neighborhood view rather
+than a linear axis-aligned view.
 
 Run from project/ directory:
   python pipeline/plot_pca.py --cache_dir /path/to/cache/roberta
@@ -21,9 +26,11 @@ from collections import OrderedDict
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 from matplotlib.lines import Line2D
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
 
 try:
     import torch
@@ -156,6 +163,140 @@ def _build_output_path(cache_dir: str, split: str, n_components: int, output: st
     return os.path.join(root, "results", f"{stem}_{cache_name}_{split}.png")
 
 
+def _build_output_path_for_method(
+    cache_dir: str,
+    split: str,
+    method: str,
+    n_components: int,
+    output: str | None,
+) -> str:
+    if output:
+        return output
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cache_name = os.path.basename(os.path.normpath(cache_dir))
+    stem = method
+    if n_components == 3:
+        stem = f"{stem}3d"
+    return os.path.join(root, "results", f"{stem}_{cache_name}_{split}.png")
+
+
+def _compute_projection(
+    method: str,
+    n_components: int,
+    fit_bank: torch.Tensor,
+    embeddings_by_condition: dict[str, torch.Tensor],
+    prototypes_by_condition_raw: dict[str, torch.Tensor | None],
+    tsne_perplexity: float,
+    seed: int,
+) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor | None], str | None]:
+    fit_bank_np = fit_bank.numpy()
+
+    if method == "pca":
+        projector = PCA(n_components=n_components)
+        projector.fit(fit_bank_np)
+        projected_embeddings = {
+            label: torch.from_numpy(projector.transform(embeddings.numpy())).float()
+            for label, embeddings in embeddings_by_condition.items()
+        }
+        projected_prototypes = {}
+        for condition_label, prototypes in prototypes_by_condition_raw.items():
+            if prototypes is None:
+                projected_prototypes[condition_label] = None
+                continue
+            if prototypes.shape[1] != fit_bank.shape[1]:
+                raise ValueError(
+                    f"Prototype dimensionality mismatch for {condition_label}: "
+                    f"prototype dim={prototypes.shape[1]} but embedding dim={fit_bank.shape[1]}"
+                )
+            projected_prototypes[condition_label] = torch.from_numpy(
+                projector.transform(prototypes.numpy())
+            ).float()
+        variance = projector.explained_variance_ratio_ * 100.0
+        summary = ", ".join(f"PC{i + 1}={variance[i]:.4f}" for i in range(n_components))
+        return projected_embeddings, projected_prototypes, summary
+
+    if method == "tsne":
+        fit_parts = [fit_bank_np]
+        sample_counts = [len(embeddings_by_condition[label]) for label in embeddings_by_condition]
+        proto_counts = {}
+        for condition_label, prototypes in prototypes_by_condition_raw.items():
+            if prototypes is None:
+                proto_counts[condition_label] = 0
+                continue
+            if prototypes.shape[1] != fit_bank.shape[1]:
+                raise ValueError(
+                    f"Prototype dimensionality mismatch for {condition_label}: "
+                    f"prototype dim={prototypes.shape[1]} but embedding dim={fit_bank.shape[1]}"
+                )
+            fit_parts.append(prototypes.numpy())
+            proto_counts[condition_label] = len(prototypes)
+
+        joint_bank = fit_parts[0] if len(fit_parts) == 1 else np.concatenate(fit_parts, axis=0)
+        projector = TSNE(
+            n_components=n_components,
+            perplexity=tsne_perplexity,
+            init="pca",
+            learning_rate="auto",
+            random_state=seed,
+            max_iter=1000,
+        )
+        embedded = torch.from_numpy(projector.fit_transform(joint_bank)).float()
+
+        projected_embeddings = {}
+        offset = 0
+        condition_order = list(embeddings_by_condition.keys())
+        for condition_label, count in zip(condition_order, sample_counts):
+            projected_embeddings[condition_label] = embedded[offset:offset + count]
+            offset += count
+
+        projected_prototypes = {}
+        for condition_label in condition_order:
+            count = proto_counts.get(condition_label, 0)
+            if count == 0:
+                projected_prototypes[condition_label] = None
+                continue
+            projected_prototypes[condition_label] = embedded[offset:offset + count]
+            offset += count
+
+        summary = f"t-SNE perplexity={tsne_perplexity:.1f}"
+        return projected_embeddings, projected_prototypes, summary
+
+    if method == "umap":
+        try:
+            import umap  # type: ignore
+        except ImportError as exc:
+            raise SystemExit(
+                "UMAP requested, but the 'umap-learn' package is not installed in this environment."
+            ) from exc
+
+        projector = umap.UMAP(
+            n_components=n_components,
+            metric="euclidean",
+            random_state=seed,
+        )
+        projector.fit(fit_bank_np)
+        projected_embeddings = {
+            label: torch.from_numpy(projector.transform(embeddings.numpy())).float()
+            for label, embeddings in embeddings_by_condition.items()
+        }
+        projected_prototypes = {}
+        for condition_label, prototypes in prototypes_by_condition_raw.items():
+            if prototypes is None:
+                projected_prototypes[condition_label] = None
+                continue
+            if prototypes.shape[1] != fit_bank.shape[1]:
+                raise ValueError(
+                    f"Prototype dimensionality mismatch for {condition_label}: "
+                    f"prototype dim={prototypes.shape[1]} but embedding dim={fit_bank.shape[1]}"
+                )
+            projected_prototypes[condition_label] = torch.from_numpy(
+                projector.transform(prototypes.numpy())
+            ).float()
+        return projected_embeddings, projected_prototypes, "UMAP metric=euclidean"
+
+    raise ValueError(f"Unsupported method: {method}")
+
+
 def _subsample_mask(labels: torch.Tensor, max_points: int | None, seed: int) -> torch.Tensor:
     if max_points is None or len(labels) <= max_points:
         return torch.ones(len(labels), dtype=torch.bool)
@@ -251,9 +392,15 @@ def _write_coordinates_csv(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Plot shared-basis PCA for cached condition embeddings.")
+    parser = argparse.ArgumentParser(description="Plot shared-basis projections for cached condition embeddings.")
     parser.add_argument("--cache_dir", default=_default_cache_dir(), help="Condition cache directory.")
     parser.add_argument("--split", default="test", choices=["train", "val", "test"], help="Split to visualize.")
+    parser.add_argument(
+        "--method",
+        choices=["pca", "tsne", "umap"],
+        default="pca",
+        help="Projection method. PCA is linear; t-SNE and UMAP are nonlinear neighborhood views.",
+    )
     parser.add_argument(
         "--conditions",
         nargs="+",
@@ -281,7 +428,13 @@ def main() -> None:
         type=int,
         choices=[2, 3],
         default=2,
-        help="Number of PCA components to visualize.",
+        help="Number of projected components to visualize.",
+    )
+    parser.add_argument(
+        "--tsne_perplexity",
+        type=float,
+        default=30.0,
+        help="Perplexity for t-SNE. Ignored for PCA/UMAP.",
     )
     parser.add_argument("--seed", type=int, default=13, help="Random seed for subsampling.")
     args = parser.parse_args()
@@ -308,32 +461,23 @@ def main() -> None:
         labels_by_condition[condition_label] = labels[mask]
         embeddings_by_condition[condition_label] = embeddings[mask]
 
-    fit_bank = torch.cat([embeddings_by_condition[label] for label in condition_labels], dim=0).numpy()
-    pca = PCA(n_components=args.n_components)
-    pca.fit(fit_bank)
-
-    projected_embeddings = {
-        label: torch.from_numpy(pca.transform(embeddings.numpy())).float()
-        for label, embeddings in embeddings_by_condition.items()
-    }
-
-    prototypes_by_condition = {}
+    fit_bank = torch.cat([embeddings_by_condition[label] for label in condition_labels], dim=0)
+    prototypes_raw = {}
     if not args.no_prototypes:
         for condition_label in condition_labels:
-            prototypes = _load_condition_prototypes(cache_dir, condition_label)
-            if prototypes is None:
-                prototypes_by_condition[condition_label] = None
-                continue
-            if prototypes.shape[1] != fit_bank.shape[1]:
-                raise ValueError(
-                    f"Prototype dimensionality mismatch for {condition_label}: "
-                    f"prototype dim={prototypes.shape[1]} but embedding dim={fit_bank.shape[1]}"
-                )
-            prototypes_by_condition[condition_label] = torch.from_numpy(
-                pca.transform(prototypes.numpy())
-            ).float()
+            prototypes_raw[condition_label] = _load_condition_prototypes(cache_dir, condition_label)
     else:
-        prototypes_by_condition = {label: None for label in condition_labels}
+        prototypes_raw = {label: None for label in condition_labels}
+
+    projected_embeddings, prototypes_by_condition, projection_summary = _compute_projection(
+        method=args.method,
+        n_components=args.n_components,
+        fit_bank=fit_bank,
+        embeddings_by_condition=embeddings_by_condition,
+        prototypes_by_condition_raw=prototypes_raw,
+        tsne_perplexity=args.tsne_perplexity,
+        seed=args.seed,
+    )
 
     centroids_by_condition = {
         label: _compute_centroids(projected_embeddings[label], labels_by_condition[label])
@@ -513,15 +657,24 @@ def main() -> None:
             Line2D([0], [0], marker="*", linestyle="", markerfacecolor="black", markeredgecolor="black", markersize=10, label="Prompt prototype")
         )
 
-    variance = pca.explained_variance_ratio_ * 100.0
-    variance_text = " | ".join(
-        f"PC{i + 1}={variance[i]:.1f}%"
-        for i in range(args.n_components)
-    )
+    title_prefix = {
+        "pca": "Shared-basis PCA",
+        "tsne": "Shared-fit t-SNE",
+        "umap": "Shared-fit UMAP",
+    }[args.method]
+    if args.method == "pca":
+        variance = PCA(n_components=args.n_components).fit(fit_bank.numpy()).explained_variance_ratio_ * 100.0
+        variance_text = " | ".join(
+            f"PC{i + 1}={variance[i]:.1f}%"
+            for i in range(args.n_components)
+        )
+        title_suffix = variance_text
+    else:
+        title_suffix = projection_summary or args.method.upper()
     fig.suptitle(
         (
-            f"Shared-basis PCA of normalized {args.split} embeddings\n"
-            f"{variance_text} | cache={os.path.basename(cache_dir)}"
+            f"{title_prefix} of normalized {args.split} embeddings\n"
+            f"{title_suffix} | cache={os.path.basename(cache_dir)}"
         ),
         fontsize=14,
     )
@@ -534,7 +687,13 @@ def main() -> None:
     )
     fig.tight_layout(rect=[0, 0.06, 1, 0.94])
 
-    output_path = _build_output_path(cache_dir, args.split, args.n_components, args.output)
+    output_path = _build_output_path_for_method(
+        cache_dir,
+        args.split,
+        args.method,
+        args.n_components,
+        args.output,
+    )
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     fig.savefig(output_path, dpi=220, bbox_inches="tight")
     plt.close(fig)
@@ -551,12 +710,15 @@ def main() -> None:
         reference_centroids=reference_centroids,
     )
 
-    print(f"Saved PCA plot -> {output_path}")
-    print(f"Saved PCA coordinates -> {csv_path}")
-    print("Explained variance: " + ", ".join(
-        f"PC{i + 1}={variance[i]:.4f}"
-        for i in range(args.n_components)
-    ))
+    print(f"Saved projection plot -> {output_path}")
+    print(f"Saved projection coordinates -> {csv_path}")
+    if args.method == "pca":
+        print("Explained variance: " + ", ".join(
+            f"PC{i + 1}={variance[i]:.4f}"
+            for i in range(args.n_components)
+        ))
+    elif projection_summary:
+        print(projection_summary)
 
 
 if __name__ == "__main__":
