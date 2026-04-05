@@ -234,6 +234,7 @@ def _compute_projection(
         joint_bank = fit_parts[0] if len(fit_parts) == 1 else np.concatenate(fit_parts, axis=0)
         projector = TSNE(
             n_components=n_components,
+            metric="cosine",
             perplexity=tsne_perplexity,
             init="pca",
             learning_rate="auto",
@@ -258,7 +259,7 @@ def _compute_projection(
             projected_prototypes[condition_label] = embedded[offset:offset + count]
             offset += count
 
-        summary = f"t-SNE perplexity={tsne_perplexity:.1f}"
+        summary = f"t-SNE metric=cosine perplexity={tsne_perplexity:.1f}"
         return projected_embeddings, projected_prototypes, summary
 
     if method == "umap":
@@ -271,7 +272,7 @@ def _compute_projection(
 
         projector = umap.UMAP(
             n_components=n_components,
-            metric="euclidean",
+            metric="cosine",
             random_state=seed,
         )
         projector.fit(fit_bank_np)
@@ -292,7 +293,7 @@ def _compute_projection(
             projected_prototypes[condition_label] = torch.from_numpy(
                 projector.transform(prototypes.numpy())
             ).float()
-        return projected_embeddings, projected_prototypes, "UMAP metric=euclidean"
+        return projected_embeddings, projected_prototypes, "UMAP metric=cosine"
 
     raise ValueError(f"Unsupported method: {method}")
 
