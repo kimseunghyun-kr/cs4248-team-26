@@ -98,6 +98,8 @@ def main():
     parser.add_argument("--use_time_of_tweet", action="store_true")
     parser.add_argument("--use_age_of_user", action="store_true")
     parser.add_argument("--use_country", action="store_true")
+    parser.add_argument("--use_vader_features", action="store_true")
+    parser.add_argument("--use_afinn_features", action="store_true")
     parser.add_argument("--no_class_weights", action="store_true")
     args = parser.parse_args()
 
@@ -161,6 +163,12 @@ def main():
         phase_args[2].append("--use_age_of_user")
     if args.use_country:
         phase_args[2].append("--use_country")
+    if args.use_vader_features:
+        phase_args[1].append("--use_vader_features")
+        phase_args[2].append("--use_vader_features")
+    if args.use_afinn_features:
+        phase_args[1].append("--use_afinn_features")
+        phase_args[2].append("--use_afinn_features")
     if args.no_class_weights:
         phase_args[2].append("--no_class_weights")
 
@@ -190,6 +198,13 @@ def main():
         print(f"Input mode:    {args.input_mode}")
         print(f"Head:          {args.head_type}")
         print(f"Loss:          {args.loss_name}")
+    if args.use_vader_features or args.use_afinn_features:
+        enabled_features = []
+        if args.use_vader_features:
+            enabled_features.append("vader")
+        if args.use_afinn_features:
+            enabled_features.append("afinn")
+        print(f"Text features: {', '.join(enabled_features)}")
 
     total_start = time.time()
     for num, script, desc in phases:

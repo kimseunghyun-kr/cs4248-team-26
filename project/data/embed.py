@@ -23,6 +23,7 @@ import torch
 
 from tqdm import tqdm
 
+from feature_utils import build_text_feature_matrix, get_requested_feature_names
 from encoder import TransformerEncoder
 from dataset import load_records
 
@@ -73,6 +74,8 @@ def main():
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--max_length", type=int, default=128)
     parser.add_argument("--pooling", default=os.environ.get("POOLING", "auto"))
+    parser.add_argument("--use_vader_features", action="store_true")
+    parser.add_argument("--use_afinn_features", action="store_true")
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -108,20 +111,36 @@ def main():
         embs, ids, masks = encode_texts_with_tokens(
             encoder, texts, args.batch_size, args.max_length, args.pooling
         )
+        payload = {
+            "embeddings":     embs,
+            "labels":         torch.tensor(labels, dtype=torch.long),
+            "input_ids":      ids,
+            "attention_mask": masks,
+            "texts":          texts,
+            "entities":       [r.get("entity") for r in records],
+            "cleaned_tokens": [r.get("cleaned_tokens") for r in records],
+            "selected_texts": [r.get("selected_text") for r in records],
+            "time_of_tweet":  [r.get("time_of_tweet") for r in records],
+            "age_of_user":    [r.get("age_of_user") for r in records],
+            "country":        [r.get("country") for r in records],
+        }
+        tweet_features = build_text_feature_matrix(
+            texts,
+            use_vader_features=args.use_vader_features,
+            use_afinn_features=args.use_afinn_features,
+        )
+        if tweet_features is not None:
+            payload["tweet_features"] = tweet_features
+            payload["tweet_feature_names"] = get_requested_feature_names(
+                use_vader_features=args.use_vader_features,
+                use_afinn_features=args.use_afinn_features,
+            )
+            print(
+                f"  Added tweet features: dim={tweet_features.shape[1]} "
+                f"({' + '.join(payload['tweet_feature_names'])})"
+            )
         torch.save(
-            {
-                "embeddings":     embs,
-                "labels":         torch.tensor(labels, dtype=torch.long),
-                "input_ids":      ids,
-                "attention_mask": masks,
-                "texts":          texts,
-                "entities":       [r.get("entity") for r in records],
-                "cleaned_tokens": [r.get("cleaned_tokens") for r in records],
-                "selected_texts": [r.get("selected_text") for r in records],
-                "time_of_tweet":  [r.get("time_of_tweet") for r in records],
-                "age_of_user":    [r.get("age_of_user") for r in records],
-                "country":        [r.get("country") for r in records],
-            },
+            payload,
             out_path,
         )
         print(f"  Saved → {out_path}  shape={tuple(embs.shape)}")

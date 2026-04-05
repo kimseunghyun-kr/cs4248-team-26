@@ -45,6 +45,8 @@ class TransformerClassifierConfig:
     use_time_of_tweet: bool = False
     use_age_of_user: bool = False
     use_country: bool = False
+    use_vader_features: bool = False
+    use_afinn_features: bool = False
     loss_name: str = "cross_entropy"  # "cross_entropy" | "focal"
     focal_gamma: float = 1.5
     head_type: str = "mlp"  # "linear" | "mlp"

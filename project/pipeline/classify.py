@@ -35,6 +35,7 @@ from dataset import (
     records_from_cached_payload,
 )
 from encoder import TransformerEncoder
+from feature_utils import build_text_feature_matrix, get_requested_feature_names
 
 
 LABEL_NAMES = ["negative", "neutral", "positive"]
@@ -65,6 +66,9 @@ class CachedTokenDataset(Dataset):
         self.attention_mask = payload["attention_mask"]
         self.labels = payload["labels"]
         self.texts = payload.get("texts") or [""] * len(self.labels)
+        self.tweet_features = payload.get("tweet_features")
+        if self.tweet_features is not None and not isinstance(self.tweet_features, torch.Tensor):
+            self.tweet_features = torch.tensor(self.tweet_features, dtype=torch.float32)
 
     def __len__(self) -> int:
         return len(self.labels)
@@ -76,6 +80,9 @@ class CachedTokenDataset(Dataset):
             "labels": self.labels[idx],
             "text": self.texts[idx],
         }
+        if self.tweet_features is not None:
+            item["tweet_features"] = self.tweet_features[idx]
+        return item
 
 
 class FocalCrossEntropyLoss(nn.Module):
@@ -161,12 +168,14 @@ class TransformerClassifier(nn.Module):
         input_mode: str = "text_plus_selected",
         head_type: str = "mlp",
         hidden_dim: int = 0,
+        tweet_feature_dim: int = 0,
     ):
         super().__init__()
         self.encoder = encoder
         self.pooling = pooling
         self.input_mode = input_mode
         feature_dim = encoder.hidden_size * (4 if input_mode == "text_selected_pair" else 1)
+        feature_dim += tweet_feature_dim
         self.classifier = ClassificationHead(
             in_dim=feature_dim,
             num_labels=num_labels,
@@ -200,6 +209,7 @@ class TransformerClassifier(nn.Module):
         attention_mask: torch.Tensor,
         selected_input_ids: torch.Tensor | None = None,
         selected_attention_mask: torch.Tensor | None = None,
+        tweet_features: torch.Tensor | None = None,
     ) -> torch.Tensor:
         primary = self._encode_view(input_ids, attention_mask)
         if self.input_mode == "text_selected_pair" and selected_input_ids is not None:
@@ -207,6 +217,9 @@ class TransformerClassifier(nn.Module):
             features = self._fuse_pair_features(primary, secondary)
         else:
             features = primary
+        if tweet_features is not None:
+            tweet_features = tweet_features.to(device=features.device, dtype=features.dtype)
+            features = torch.cat([features, tweet_features], dim=-1)
         return self.classifier(features)
 
     def num_trainable_parameters(self) -> int:
@@ -305,13 +318,82 @@ def load_cached_embedding_splits() -> dict | None:
     return payloads
 
 
+def text_features_requested(use_vader_features: bool, use_afinn_features: bool) -> bool:
+    return use_vader_features or use_afinn_features
+
+
+def get_payload_text_features(
+    payload: dict,
+    use_vader_features: bool = False,
+    use_afinn_features: bool = False,
+) -> torch.Tensor | None:
+    requested_names = get_requested_feature_names(
+        use_vader_features=use_vader_features,
+        use_afinn_features=use_afinn_features,
+    )
+    if not requested_names:
+        return None
+
+    tweet_features = payload.get("tweet_features")
+    cached_names = list(payload.get("tweet_feature_names") or [])
+    if tweet_features is not None and cached_names == requested_names:
+        if not isinstance(tweet_features, torch.Tensor):
+            tweet_features = torch.tensor(tweet_features, dtype=torch.float32)
+        return tweet_features.float()
+
+    texts = payload.get("texts")
+    if texts is None:
+        raise ValueError("Requested text features, but cached payload has no texts to recompute from.")
+
+    return build_text_feature_matrix(
+        texts,
+        use_vader_features=use_vader_features,
+        use_afinn_features=use_afinn_features,
+    )
+
+
+def augment_embeddings_with_text_features(
+    payload: dict,
+    embeddings: torch.Tensor,
+    use_vader_features: bool = False,
+    use_afinn_features: bool = False,
+) -> tuple[torch.Tensor, int]:
+    tweet_features = get_payload_text_features(
+        payload,
+        use_vader_features=use_vader_features,
+        use_afinn_features=use_afinn_features,
+    )
+    if tweet_features is None:
+        return embeddings, 0
+    return torch.cat([embeddings.float(), tweet_features.float()], dim=-1), int(tweet_features.shape[1])
+
+
+def payload_has_requested_text_features(payload: dict, cfg: TransformerClassifierConfig) -> bool:
+    requested_names = get_requested_feature_names(
+        use_vader_features=cfg.use_vader_features,
+        use_afinn_features=cfg.use_afinn_features,
+    )
+    if not requested_names:
+        return True
+    return (
+        payload.get("tweet_features") is not None
+        and list(payload.get("tweet_feature_names") or []) == requested_names
+    )
+
+
 def collate_cached_batch(batch: list[dict]) -> dict:
-    return {
+    collated = {
         "input_ids": torch.stack([item["input_ids"] for item in batch]),
         "attention_mask": torch.stack([item["attention_mask"] for item in batch]),
         "labels": torch.stack([item["labels"] for item in batch]),
         "texts": [item["text"] for item in batch],
     }
+    if "tweet_features" in batch[0]:
+        collated["tweet_features"] = torch.stack(
+            [item["tweet_features"].float() for item in batch],
+            dim=0,
+        )
+    return collated
 
 
 def resolve_transformer_device() -> str:
@@ -375,8 +457,16 @@ def should_use_cached_tokens(cfg: TransformerClassifierConfig) -> bool:
 
 def build_transformer_dataloaders(tokenizer, cfg: TransformerClassifierConfig) -> tuple[dict, str]:
     cached_payloads = {split: load_cached_split(split) for split in ["train", "val", "test"]}
+    cached_feature_ready = all(
+        payload is not None and payload_has_requested_text_features(payload, cfg)
+        for payload in cached_payloads.values()
+    )
 
-    if should_use_cached_tokens(cfg) and all(payload is not None for payload in cached_payloads.values()):
+    if (
+        should_use_cached_tokens(cfg)
+        and all(payload is not None for payload in cached_payloads.values())
+        and cached_feature_ready
+    ):
         print("Loading transformer classifier data from cached Phase 1 token splits.")
         datasets = {
             split: CachedTokenDataset(payload)
@@ -404,12 +494,18 @@ def build_transformer_dataloaders(tokenizer, cfg: TransformerClassifierConfig) -
                 use_age_of_user=cfg.use_age_of_user,
                 use_country=cfg.use_country,
             )
+            tweet_features = build_text_feature_matrix(
+                [record["text"] for record in records],
+                use_vader_features=cfg.use_vader_features,
+                use_afinn_features=cfg.use_afinn_features,
+            )
             return TextDataset(
                 texts,
                 labels,
                 tokenizer,
                 max_length=cfg.max_length,
                 secondary_texts=secondary_texts,
+                tweet_features=tweet_features,
             )
 
         datasets = {
@@ -492,6 +588,7 @@ def train_transformer_epoch(
             batch["attention_mask"].to(device),
             selected_input_ids=batch.get("selected_input_ids").to(device) if "selected_input_ids" in batch else None,
             selected_attention_mask=batch.get("selected_attention_mask").to(device) if "selected_attention_mask" in batch else None,
+            tweet_features=batch.get("tweet_features").to(device) if "tweet_features" in batch else None,
         )
         labels = batch["labels"].to(device)
         loss = criterion(logits, labels)
@@ -529,6 +626,7 @@ def evaluate_transformer_classifier(
                 batch["attention_mask"].to(device),
                 selected_input_ids=batch.get("selected_input_ids").to(device) if "selected_input_ids" in batch else None,
                 selected_attention_mask=batch.get("selected_attention_mask").to(device) if "selected_attention_mask" in batch else None,
+                tweet_features=batch.get("tweet_features").to(device) if "tweet_features" in batch else None,
             )
             labels = batch["labels"].to(device)
             loss = criterion(logits, labels)
@@ -542,7 +640,7 @@ def evaluate_transformer_classifier(
     return metrics
 
 
-def run_linear_probe_experiment():
+def run_linear_probe_experiment(args):
     os.makedirs(CACHE_DIR, exist_ok=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
@@ -553,15 +651,36 @@ def run_linear_probe_experiment():
             "Cached embeddings not found. Run data/embed.py first so z_tweet_{train,val,test}.pt exist."
         )
 
-    z_train = payloads["train"]["embeddings"]
+    z_train, text_feature_dim = augment_embeddings_with_text_features(
+        payloads["train"],
+        payloads["train"]["embeddings"],
+        use_vader_features=args.use_vader_features,
+        use_afinn_features=args.use_afinn_features,
+    )
     y_train = payloads["train"]["labels"]
-    z_val = payloads["val"]["embeddings"]
+    z_val, _ = augment_embeddings_with_text_features(
+        payloads["val"],
+        payloads["val"]["embeddings"],
+        use_vader_features=args.use_vader_features,
+        use_afinn_features=args.use_afinn_features,
+    )
     y_val = payloads["val"]["labels"]
-    z_test = payloads["test"]["embeddings"]
+    z_test, _ = augment_embeddings_with_text_features(
+        payloads["test"],
+        payloads["test"]["embeddings"],
+        use_vader_features=args.use_vader_features,
+        use_afinn_features=args.use_afinn_features,
+    )
     y_test = payloads["test"]["labels"]
 
     print(f"Loaded cached embeddings: train={len(z_train)} val={len(z_val)} test={len(z_test)} "
           f"dim={z_train.shape[1]}")
+    if text_feature_dim:
+        enabled_names = get_requested_feature_names(
+            use_vader_features=args.use_vader_features,
+            use_afinn_features=args.use_afinn_features,
+        )
+        print(f"Augmented linear probe with text features: {enabled_names}")
 
     model, best_val_f1 = train_probe(z_train, y_train, z_val, y_val, device)
     train_metrics = evaluate_probe(model, z_train, y_train, device)
@@ -582,6 +701,11 @@ def run_linear_probe_experiment():
         "cache_dir": CACHE_DIR,
         "data_source": "cache_embeddings",
         "embedding_dim": int(z_train.shape[1]),
+        "text_feature_dim": int(text_feature_dim),
+        "text_feature_names": get_requested_feature_names(
+            use_vader_features=args.use_vader_features,
+            use_afinn_features=args.use_afinn_features,
+        ),
         "best_val_f1": best_val_f1,
         "checkpoint_path": ckpt_path,
         "train": train_metrics,
@@ -615,6 +739,8 @@ def run_transformer_experiment(args):
         use_time_of_tweet=args.use_time_of_tweet,
         use_age_of_user=args.use_age_of_user,
         use_country=args.use_country,
+        use_vader_features=args.use_vader_features,
+        use_afinn_features=args.use_afinn_features,
         loss_name=args.loss_name,
         focal_gamma=args.focal_gamma,
         head_type=args.head_type,
@@ -632,6 +758,16 @@ def run_transformer_experiment(args):
     print(f"Input mode: {cfg.input_mode}")
     print(f"Head: {cfg.head_type}")
     print(f"Loss: {cfg.loss_name}")
+    if text_features_requested(cfg.use_vader_features, cfg.use_afinn_features):
+        print(
+            "Extra text features: "
+            + ", ".join(
+                get_requested_feature_names(
+                    use_vader_features=cfg.use_vader_features,
+                    use_afinn_features=cfg.use_afinn_features,
+                )
+            )
+        )
 
     tokenizer = None
     tokenizer_name = os.environ.get("TOKENIZER_NAME")
@@ -651,6 +787,10 @@ def run_transformer_experiment(args):
         f"Split sizes: train={len(loaders['train'].dataset)} | "
         f"val={len(loaders['val'].dataset)} | test={len(loaders['test'].dataset)}"
     )
+    tweet_feature_dim = 0
+    train_tweet_features = getattr(loaders["train"].dataset, "tweet_features", None)
+    if isinstance(train_tweet_features, torch.Tensor):
+        tweet_feature_dim = int(train_tweet_features.shape[1])
 
     model = TransformerClassifier(
         encoder=encoder,
@@ -662,6 +802,7 @@ def run_transformer_experiment(args):
         input_mode=cfg.input_mode,
         head_type=cfg.head_type,
         hidden_dim=cfg.hidden_dim,
+        tweet_feature_dim=tweet_feature_dim,
     ).to(device)
     print(f"Trainable parameters: {model.num_trainable_parameters():,}")
 
@@ -752,6 +893,11 @@ def run_transformer_experiment(args):
         "best_val_f1": checkpoint["best_val_f1"],
         "history": history,
         "class_weights": None if class_weights is None else class_weights.cpu().tolist(),
+        "text_feature_dim": tweet_feature_dim,
+        "text_feature_names": get_requested_feature_names(
+            use_vader_features=cfg.use_vader_features,
+            use_afinn_features=cfg.use_afinn_features,
+        ),
     }
 
     for split in ["train", "val", "test"]:
@@ -799,13 +945,15 @@ def main():
     parser.add_argument("--use_time_of_tweet", action="store_true")
     parser.add_argument("--use_age_of_user", action="store_true")
     parser.add_argument("--use_country", action="store_true")
+    parser.add_argument("--use_vader_features", action="store_true")
+    parser.add_argument("--use_afinn_features", action="store_true")
     parser.add_argument("--no_class_weights", action="store_true")
     args = parser.parse_args()
 
     if args.classifier == "transformer":
         run_transformer_experiment(args)
     else:
-        run_linear_probe_experiment()
+        run_linear_probe_experiment(args)
 
 
 if __name__ == "__main__":

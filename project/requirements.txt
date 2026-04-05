@@ -6,3 +6,5 @@ numpy>=1.24.0
 tqdm>=4.65.0
 kagglehub[pandas-datasets]>=0.3.0
 emoji==0.6.0
+vaderSentiment>=3.3.2
+afinn>=0.1

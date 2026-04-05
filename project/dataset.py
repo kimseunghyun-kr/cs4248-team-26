@@ -100,6 +100,11 @@ def records_from_cached_payload(payload: dict) -> List[Dict]:
     country = payload.get("country") or [None] * len(labels)
     entities = payload.get("entities") or [None] * len(labels)
     cleaned_tokens = payload.get("cleaned_tokens") or [None] * len(labels)
+    tweet_features = payload.get("tweet_features")
+    if tweet_features is None:
+        tweet_features = [None] * len(labels)
+    elif isinstance(tweet_features, torch.Tensor):
+        tweet_features = tweet_features.tolist()
 
     records = []
     for idx, label in enumerate(labels):
@@ -113,6 +118,7 @@ def records_from_cached_payload(payload: dict) -> List[Dict]:
                 "country": country[idx],
                 "entity": entities[idx],
                 "cleaned_tokens": cleaned_tokens[idx],
+                "tweet_features": tweet_features[idx],
             }
         )
     return records
@@ -514,15 +520,24 @@ class TextDataset(Dataset):
         tokenizer: PreTrainedTokenizer,
         max_length: int = 128,
         secondary_texts: List[str] | None = None,
+        tweet_features: torch.Tensor | List[List[float]] | None = None,
     ):
         self.texts = texts
         self.labels = labels
         self.tokenizer = tokenizer
         self.max_length = max_length
         self.secondary_texts = secondary_texts
+        self.tweet_features = None
 
         if self.secondary_texts is not None and len(self.secondary_texts) != len(self.texts):
             raise ValueError("secondary_texts must have the same length as texts")
+        if tweet_features is not None:
+            if isinstance(tweet_features, torch.Tensor):
+                self.tweet_features = tweet_features.float()
+            else:
+                self.tweet_features = torch.tensor(tweet_features, dtype=torch.float32)
+            if len(self.tweet_features) != len(self.texts):
+                raise ValueError("tweet_features must have the same length as texts")
 
     def __len__(self):
         return len(self.texts)
@@ -541,6 +556,8 @@ class TextDataset(Dataset):
             "label": self.labels[idx],
             "text": self.texts[idx],
         }
+        if self.tweet_features is not None:
+            item["tweet_features"] = self.tweet_features[idx]
         if self.secondary_texts is not None:
             secondary = self.tokenizer(
                 self.secondary_texts[idx],
@@ -593,6 +610,12 @@ def collate_fn(batch: List[Dict], pad_token_id: int = 0) -> Dict:
             fill_value=0,
         )
         collated["selected_texts"] = [b.get("selected_text", "") for b in batch]
+
+    if "tweet_features" in batch[0]:
+        collated["tweet_features"] = torch.stack(
+            [b["tweet_features"].float() for b in batch],
+            dim=0,
+        )
 
     return collated
 
