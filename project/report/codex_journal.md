@@ -2532,3 +2532,46 @@ Useful bug caught during smoke testing:
 - The first version relied indirectly on the `INCLUDE_D25` environment-sensitive artifact helper.
 - That would have made `D2.5` discovery brittle in standalone plotting runs.
 - The plotting script was updated to resolve condition slugs from its own local spec, so it now discovers cached `D2.5` outputs directly without depending on external environment flags.
+
+Cluster runtime note:
+
+- A later test on the login node failed before plotting started:
+  - `ImportError: libtorch_cuda.so: failed to map segment from shared object`
+- This is not a PCA-logic bug.
+- It happens at `import torch`, before any cache loading or plotting.
+- Since the cache is stored as `.pt`, the plotting script still needs a working PyTorch runtime even though the PCA itself is CPU-side.
+- Practical workaround:
+  - run the plotting command on an allocated compute node or inside the same Slurm environment used for training
+
+## 2026-04-05 PCA result read and 3D extension
+
+Current read from the generated 2D PCA CSV exports:
+
+- In many models, the shared 2D PCA plane appears to be dominated more by condition-level movement than by clean class separation.
+- `D1` often shows the largest centroid shift away from `B1` in the shared basis.
+- `D2` and `D2.5` often remain much closer to `B1` in the 2D PCA plane, even when the downstream prototype metrics change.
+- This means the 2D view is useful, but it should not be overinterpreted as a full summary of sentiment separability.
+
+Practical implication:
+
+- If class centroids still look nearly collapsed in 2D, that does not necessarily mean the method did nothing.
+- It can also mean the dominant shared PCA axes are tracking other large sources of variance, while the task-relevant change lives partly outside the first two components.
+
+Implementation follow-up:
+
+- Extended `pipeline/plot_pca.py` with `--n_components 3`.
+- The same shared-basis logic is preserved:
+  - normalize embeddings
+  - fit one PCA basis across selected conditions
+  - project all conditions into that same basis
+- The script now supports:
+  - 2D output with `--n_components 2`
+  - 3D output with `--n_components 3`
+  - CSV export with `pc1`, `pc2`, and optional `pc3`
+
+3D smoke-test result:
+
+- A synthetic-cache 3D run completed successfully and wrote:
+  - PNG output
+  - CSV output with `pc1`, `pc2`, `pc3`
+- Added a clearer cache-consistency check for prototype dimensionality mismatch, so inconsistent artifacts now fail with an informative error instead of a cryptic sklearn traceback.

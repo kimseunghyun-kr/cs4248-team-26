@@ -22,9 +22,24 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
-import torch
-import torch.nn.functional as F
+from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 from sklearn.decomposition import PCA
+
+try:
+    import torch
+    import torch.nn.functional as F
+except ImportError as exc:
+    raise SystemExit(
+        "Failed to import PyTorch before plotting.\n"
+        "This script loads cached '.pt' embedding files, so it needs a working "
+        "PyTorch runtime even though the PCA itself is CPU-side.\n\n"
+        "If you see an error like 'libtorch_cuda.so: failed to map segment from "
+        "shared object', that usually means the current node cannot load the "
+        "CUDA-enabled PyTorch build. On this cluster, the simplest fix is to run "
+        "the plotting command on an allocated compute node or inside the same "
+        "Slurm environment used for training.\n\n"
+        f"Original import error: {exc}"
+    ) from exc
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -132,12 +147,13 @@ def _compute_centroids(coords: torch.Tensor, labels: torch.Tensor) -> dict[int, 
     return centroids
 
 
-def _build_output_path(cache_dir: str, split: str, output: str | None) -> str:
+def _build_output_path(cache_dir: str, split: str, n_components: int, output: str | None) -> str:
     if output:
         return output
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     cache_name = os.path.basename(os.path.normpath(cache_dir))
-    return os.path.join(root, "results", f"pca_{cache_name}_{split}.png")
+    stem = "pca3d" if n_components == 3 else "pca"
+    return os.path.join(root, "results", f"{stem}_{cache_name}_{split}.png")
 
 
 def _subsample_mask(labels: torch.Tensor, max_points: int | None, seed: int) -> torch.Tensor:
@@ -183,16 +199,18 @@ def _write_coordinates_csv(
     reference_centroids: dict[int, torch.Tensor] | None,
 ) -> None:
     os.makedirs(os.path.dirname(csv_path) or ".", exist_ok=True)
+    dims = projected_embeddings[conditions[0]].shape[1]
+    pc_headers = [f"pc{i + 1}" for i in range(dims)]
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["condition", "kind", "label", "sample_index", "pc1", "pc2"])
+        writer.writerow(["condition", "kind", "label", "sample_index", *pc_headers])
 
         for condition_label in conditions:
             labels = labels_by_condition[condition_label]
             coords = projected_embeddings[condition_label]
             for idx, (coord, label_id) in enumerate(zip(coords.tolist(), labels.tolist())):
                 writer.writerow(
-                    [condition_label, "sample", LABEL_NAMES[label_id], idx, coord[0], coord[1]]
+                    [condition_label, "sample", LABEL_NAMES[label_id], idx, *coord]
                 )
 
             for label_id, centroid in centroids_by_condition[condition_label].items():
@@ -202,8 +220,7 @@ def _write_coordinates_csv(
                         "class_centroid",
                         LABEL_NAMES[label_id],
                         "",
-                        float(centroid[0]),
-                        float(centroid[1]),
+                        *[float(v) for v in centroid.tolist()],
                     ]
                 )
 
@@ -216,8 +233,7 @@ def _write_coordinates_csv(
                             "prompt_prototype",
                             LABEL_NAMES[label_id],
                             "",
-                            proto[0],
-                            proto[1],
+                            *proto,
                         ]
                     )
 
@@ -229,8 +245,7 @@ def _write_coordinates_csv(
                         "reference_centroid",
                         LABEL_NAMES[label_id],
                         "",
-                        float(centroid[0]),
-                        float(centroid[1]),
+                        *[float(v) for v in centroid.tolist()],
                     ]
                 )
 
@@ -261,6 +276,13 @@ def main() -> None:
         default="b1_raw",
         help="Reference condition whose class centroids are overlaid to show movement.",
     )
+    parser.add_argument(
+        "--n_components",
+        type=int,
+        choices=[2, 3],
+        default=2,
+        help="Number of PCA components to visualize.",
+    )
     parser.add_argument("--seed", type=int, default=13, help="Random seed for subsampling.")
     args = parser.parse_args()
 
@@ -287,7 +309,7 @@ def main() -> None:
         embeddings_by_condition[condition_label] = embeddings[mask]
 
     fit_bank = torch.cat([embeddings_by_condition[label] for label in condition_labels], dim=0).numpy()
-    pca = PCA(n_components=2)
+    pca = PCA(n_components=args.n_components)
     pca.fit(fit_bank)
 
     projected_embeddings = {
@@ -302,6 +324,11 @@ def main() -> None:
             if prototypes is None:
                 prototypes_by_condition[condition_label] = None
                 continue
+            if prototypes.shape[1] != fit_bank.shape[1]:
+                raise ValueError(
+                    f"Prototype dimensionality mismatch for {condition_label}: "
+                    f"prototype dim={prototypes.shape[1]} but embedding dim={fit_bank.shape[1]}"
+                )
             prototypes_by_condition[condition_label] = torch.from_numpy(
                 pca.transform(prototypes.numpy())
             ).float()
@@ -317,7 +344,14 @@ def main() -> None:
     n_conditions = len(condition_labels)
     ncols = min(3, n_conditions)
     nrows = math.ceil(n_conditions / ncols)
-    fig, axes = plt.subplots(nrows, ncols, figsize=(6.0 * ncols, 5.2 * nrows), squeeze=False)
+    subplot_kw = {"projection": "3d"} if args.n_components == 3 else {}
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(6.2 * ncols, 5.4 * nrows),
+        squeeze=False,
+        subplot_kw=subplot_kw,
+    )
     axes_flat = axes.flatten()
 
     for ax_idx, condition_label in enumerate(condition_labels):
@@ -330,70 +364,138 @@ def main() -> None:
             if int(mask.sum()) == 0:
                 continue
             pts = coords[mask]
-            ax.scatter(
-                pts[:, 0].numpy(),
-                pts[:, 1].numpy(),
-                s=12,
-                alpha=0.45,
-                c=LABEL_COLORS[label_id],
-                label=label_name,
-                linewidths=0,
-            )
+            if args.n_components == 3:
+                ax.scatter(
+                    pts[:, 0].numpy(),
+                    pts[:, 1].numpy(),
+                    pts[:, 2].numpy(),
+                    s=10,
+                    alpha=0.42,
+                    c=LABEL_COLORS[label_id],
+                    label=label_name,
+                    linewidths=0,
+                    depthshade=False,
+                )
+            else:
+                ax.scatter(
+                    pts[:, 0].numpy(),
+                    pts[:, 1].numpy(),
+                    s=12,
+                    alpha=0.45,
+                    c=LABEL_COLORS[label_id],
+                    label=label_name,
+                    linewidths=0,
+                )
 
         current_centroids = centroids_by_condition[condition_label]
         if reference_centroids is not None:
             for label_id, ref_centroid in reference_centroids.items():
                 if condition_label != reference_condition and label_id in current_centroids:
                     cur = current_centroids[label_id]
-                    ax.plot(
-                        [float(ref_centroid[0]), float(cur[0])],
-                        [float(ref_centroid[1]), float(cur[1])],
-                        linestyle="--",
-                        linewidth=1.2,
-                        color=LABEL_COLORS[label_id],
-                        alpha=0.8,
+                    if args.n_components == 3:
+                        ax.plot(
+                            [float(ref_centroid[0]), float(cur[0])],
+                            [float(ref_centroid[1]), float(cur[1])],
+                            [float(ref_centroid[2]), float(cur[2])],
+                            linestyle="--",
+                            linewidth=1.1,
+                            color=LABEL_COLORS[label_id],
+                            alpha=0.8,
+                        )
+                    else:
+                        ax.plot(
+                            [float(ref_centroid[0]), float(cur[0])],
+                            [float(ref_centroid[1]), float(cur[1])],
+                            linestyle="--",
+                            linewidth=1.2,
+                            color=LABEL_COLORS[label_id],
+                            alpha=0.8,
+                        )
+                if args.n_components == 3:
+                    ax.scatter(
+                        float(ref_centroid[0]),
+                        float(ref_centroid[1]),
+                        float(ref_centroid[2]),
+                        s=70,
+                        facecolors="white",
+                        edgecolors=LABEL_COLORS[label_id],
+                        linewidths=1.4,
+                        marker="o",
+                        depthshade=False,
                     )
-                ax.scatter(
-                    float(ref_centroid[0]),
-                    float(ref_centroid[1]),
-                    s=90,
-                    facecolors="white",
-                    edgecolors=LABEL_COLORS[label_id],
-                    linewidths=1.6,
-                    marker="o",
-                    zorder=5,
-                )
+                else:
+                    ax.scatter(
+                        float(ref_centroid[0]),
+                        float(ref_centroid[1]),
+                        s=90,
+                        facecolors="white",
+                        edgecolors=LABEL_COLORS[label_id],
+                        linewidths=1.6,
+                        marker="o",
+                        zorder=5,
+                    )
 
         for label_id, centroid in current_centroids.items():
-            ax.scatter(
-                float(centroid[0]),
-                float(centroid[1]),
-                s=110,
-                c=LABEL_COLORS[label_id],
-                marker="X",
-                edgecolors="black",
-                linewidths=0.6,
-                zorder=6,
-            )
+            if args.n_components == 3:
+                ax.scatter(
+                    float(centroid[0]),
+                    float(centroid[1]),
+                    float(centroid[2]),
+                    s=90,
+                    c=LABEL_COLORS[label_id],
+                    marker="X",
+                    edgecolors="black",
+                    linewidths=0.5,
+                    depthshade=False,
+                )
+            else:
+                ax.scatter(
+                    float(centroid[0]),
+                    float(centroid[1]),
+                    s=110,
+                    c=LABEL_COLORS[label_id],
+                    marker="X",
+                    edgecolors="black",
+                    linewidths=0.6,
+                    zorder=6,
+                )
 
         prototypes = prototypes_by_condition.get(condition_label)
         if prototypes is not None:
             for label_id, proto in enumerate(prototypes):
-                ax.scatter(
-                    float(proto[0]),
-                    float(proto[1]),
-                    s=150,
-                    c=LABEL_COLORS[label_id],
-                    marker="*",
-                    edgecolors="black",
-                    linewidths=0.7,
-                    zorder=7,
-                )
+                if args.n_components == 3:
+                    ax.scatter(
+                        float(proto[0]),
+                        float(proto[1]),
+                        float(proto[2]),
+                        s=125,
+                        c=LABEL_COLORS[label_id],
+                        marker="*",
+                        edgecolors="black",
+                        linewidths=0.6,
+                        depthshade=False,
+                    )
+                else:
+                    ax.scatter(
+                        float(proto[0]),
+                        float(proto[1]),
+                        s=150,
+                        c=LABEL_COLORS[label_id],
+                        marker="*",
+                        edgecolors="black",
+                        linewidths=0.7,
+                        zorder=7,
+                    )
 
         ax.set_title(condition_label)
         ax.set_xlabel("PC1")
         ax.set_ylabel("PC2")
-        ax.grid(alpha=0.15)
+        if args.n_components == 3:
+            ax.set_zlabel("PC3")
+            ax.view_init(elev=24, azim=-58)
+            ax.grid(True, alpha=0.12)
+        else:
+            ax.grid(alpha=0.15)
 
     for ax in axes_flat[n_conditions:]:
         ax.axis("off")
@@ -412,10 +514,14 @@ def main() -> None:
         )
 
     variance = pca.explained_variance_ratio_ * 100.0
+    variance_text = " | ".join(
+        f"PC{i + 1}={variance[i]:.1f}%"
+        for i in range(args.n_components)
+    )
     fig.suptitle(
         (
             f"Shared-basis PCA of normalized {args.split} embeddings\n"
-            f"PC1={variance[0]:.1f}% | PC2={variance[1]:.1f}% | cache={os.path.basename(cache_dir)}"
+            f"{variance_text} | cache={os.path.basename(cache_dir)}"
         ),
         fontsize=14,
     )
@@ -428,7 +534,7 @@ def main() -> None:
     )
     fig.tight_layout(rect=[0, 0.06, 1, 0.94])
 
-    output_path = _build_output_path(cache_dir, args.split, args.output)
+    output_path = _build_output_path(cache_dir, args.split, args.n_components, args.output)
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     fig.savefig(output_path, dpi=220, bbox_inches="tight")
     plt.close(fig)
@@ -447,10 +553,10 @@ def main() -> None:
 
     print(f"Saved PCA plot -> {output_path}")
     print(f"Saved PCA coordinates -> {csv_path}")
-    print(
-        "Explained variance: "
-        f"PC1={variance[0]:.4f}, PC2={variance[1]:.4f}"
-    )
+    print("Explained variance: " + ", ".join(
+        f"PC{i + 1}={variance[i]:.4f}"
+        for i in range(args.n_components)
+    ))
 
 
 if __name__ == "__main__":
