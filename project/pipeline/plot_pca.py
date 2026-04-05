@@ -420,6 +420,16 @@ def main() -> None:
         help="Hide class prompt prototype markers.",
     )
     parser.add_argument(
+        "--no_class_centroids",
+        action="store_true",
+        help="Hide current-condition class centroid markers (X).",
+    )
+    parser.add_argument(
+        "--no_reference_centroids",
+        action="store_true",
+        help="Hide reference-condition centroid markers (circles).",
+    )
+    parser.add_argument(
         "--reference_condition",
         default="b1_raw",
         help="Reference condition whose class centroids are overlaid to show movement.",
@@ -484,7 +494,7 @@ def main() -> None:
         label: _compute_centroids(projected_embeddings[label], labels_by_condition[label])
         for label in condition_labels
     }
-    reference_centroids = centroids_by_condition.get(reference_condition)
+    reference_centroids = None if args.no_reference_centroids else centroids_by_condition.get(reference_condition)
 
     n_conditions = len(condition_labels)
     ncols = min(3, n_conditions)
@@ -580,30 +590,31 @@ def main() -> None:
                         zorder=5,
                     )
 
-        for label_id, centroid in current_centroids.items():
-            if args.n_components == 3:
-                ax.scatter(
-                    float(centroid[0]),
-                    float(centroid[1]),
-                    float(centroid[2]),
-                    s=90,
-                    c=LABEL_COLORS[label_id],
-                    marker="X",
-                    edgecolors="black",
-                    linewidths=0.5,
-                    depthshade=False,
-                )
-            else:
-                ax.scatter(
-                    float(centroid[0]),
-                    float(centroid[1]),
-                    s=110,
-                    c=LABEL_COLORS[label_id],
-                    marker="X",
-                    edgecolors="black",
-                    linewidths=0.6,
-                    zorder=6,
-                )
+        if not args.no_class_centroids:
+            for label_id, centroid in current_centroids.items():
+                if args.n_components == 3:
+                    ax.scatter(
+                        float(centroid[0]),
+                        float(centroid[1]),
+                        float(centroid[2]),
+                        s=90,
+                        c=LABEL_COLORS[label_id],
+                        marker="X",
+                        edgecolors="black",
+                        linewidths=0.5,
+                        depthshade=False,
+                    )
+                else:
+                    ax.scatter(
+                        float(centroid[0]),
+                        float(centroid[1]),
+                        s=110,
+                        c=LABEL_COLORS[label_id],
+                        marker="X",
+                        edgecolors="black",
+                        linewidths=0.6,
+                        zorder=6,
+                    )
 
         prototypes = prototypes_by_condition.get(condition_label)
         if prototypes is not None:
@@ -649,10 +660,15 @@ def main() -> None:
         Line2D([0], [0], marker="o", linestyle="", markerfacecolor=LABEL_COLORS[idx], markeredgecolor="none", markersize=7, label=name)
         for idx, name in enumerate(LABEL_NAMES)
     ]
-    marker_handles = [
-        Line2D([0], [0], marker="o", linestyle="", markerfacecolor="white", markeredgecolor="black", markersize=8, label=f"{reference_condition} centroid"),
-        Line2D([0], [0], marker="X", linestyle="", markerfacecolor="black", markeredgecolor="black", markersize=8, label="Current class centroid"),
-    ]
+    marker_handles = []
+    if reference_centroids is not None:
+        marker_handles.append(
+            Line2D([0], [0], marker="o", linestyle="", markerfacecolor="white", markeredgecolor="black", markersize=8, label=f"{reference_condition} centroid")
+        )
+    if not args.no_class_centroids:
+        marker_handles.append(
+            Line2D([0], [0], marker="X", linestyle="", markerfacecolor="black", markeredgecolor="black", markersize=8, label="Current class centroid")
+        )
     if not args.no_prototypes:
         marker_handles.append(
             Line2D([0], [0], marker="*", linestyle="", markerfacecolor="black", markeredgecolor="black", markersize=10, label="Prompt prototype")

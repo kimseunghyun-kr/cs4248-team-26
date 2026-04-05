@@ -2692,3 +2692,204 @@ t-SNE smoke-test status:
   - PNG output
   - CSV output
 - So the nonlinear plotting path is working locally.
+
+## 2026-04-05 Read of actual t-SNE results
+
+After switching the `t-SNE` path to cosine distance and generating real plots on the cached model outputs, the overall pattern is still:
+
+- class bundling exists only weakly
+- most backbones do **not** show clean three-cluster sentiment separation
+
+Interpretation:
+
+- This makes the result more convincing, not less.
+- If even cosine-based `t-SNE` does not produce dramatic class bundles, then the lack of clean separation is probably not just a PCA-axis artifact.
+- It suggests the sentiment representation is genuinely entangled with other latent factors such as:
+  - topic
+  - style
+  - backbone-specific geometry
+
+High-level model read:
+
+- `roberta`:
+  - only mild local bundling
+  - `D2` looks somewhat healthier than `B1`, but not cleanly separable
+- `roberta-large`:
+  - very weak separability
+  - this is consistent with the earlier class-collapse / calibration concerns
+- `bert`:
+  - among the healthier cases
+  - `D1` and `D3` show somewhat stronger local structure than raw
+  - still not a clean three-cluster picture
+- `qwen25_3b`:
+  - remains entangled even in cosine `t-SNE`
+  - so the decoder-family issue is not solved by changing visualization method
+- `bertweet`:
+  - mixed behavior
+  - some views suggest more spacing, but local class purity is not consistently improved
+
+Safe conclusion:
+
+- `t-SNE` helps more than PCA for showing local neighborhood structure.
+- But even `t-SNE` does not make the sentiment classes cleanly separable for most models.
+- So the current evidence supports:
+  - real representation movement
+  - but only weak-to-moderate visual class separability
+  - and substantial entanglement in the learned sentiment geometry
+
+PI-safe wording:
+
+- "We also tried cosine-based t-SNE to avoid the PCA-axis issue. The classes still do not separate cleanly for most backbones, which suggests the sentiment geometry is genuinely entangled rather than merely hidden by the wrong linear projection axes."
+
+## 2026-04-05 PI follow-up: visualization semantics, checkpoint meaning, and benchmark framing
+
+Recent PI questions focused less on whether the plotting code runs and more on what exactly is being visualized and whether the current task framing is the right one.
+
+### 1. What the markers mean in the nonlinear plots
+
+In the current plotting script:
+
+- colored dots:
+  - actual sample embeddings for the selected condition and split
+- white circles:
+  - `B1(raw)` reference centroids, overlaid only for comparison
+- `X` markers:
+  - current-condition class centroids
+- stars:
+  - class prompt prototypes
+
+Important caveat:
+
+- circles and `X` markers are overlays and do **not** define the t-SNE axes
+- prompt prototypes are currently embedded jointly with the sample points when prototypes are enabled, so they can influence the final t-SNE map
+
+So if a PI wants the cleanest possible "are the sample clouds themselves bundled?" figure, the safest follow-up is a sample-only cosine t-SNE with:
+
+- no prototypes
+- no class centroids
+- no reference centroids
+
+### 2. What vector is actually being visualized
+
+The plots do **not** show all token vectors. They show the final sentence-level pooled embedding used by the pipeline.
+
+- encoder-family models (`bert`, `roberta`, `xlm-roberta`, `distilbert`):
+  - pooled from the first token of the final hidden state
+- decoder-family models (`qwen2`, `llama`):
+  - pooled from the last non-pad token hidden state
+
+So the decoder-family answer is:
+
+- yes, the visualization is using the pooled vector from the last non-pad token side
+
+This matters for PI interpretation:
+
+- the point cloud is a sentence-level representation cloud
+- not a token-level geometric trajectory
+- not the raw PGD perturbation vector itself
+
+### 3. Why a `B1(raw)` centroid can appear outside a `D1` cloud in t-SNE
+
+The white circle that appears on a `D1` plot is not the `D1` centroid. It is the `B1(raw)` reference centroid.
+
+So if the `D1` cloud moved and the raw centroid stayed behind, seeing the circle outside the `D1` cloud is not inherently contradictory.
+
+There is also a more subtle t-SNE issue:
+
+- t-SNE is a nonlinear local-neighborhood visualization
+- the centroid is computed after projection in the low-dimensional map
+- for curved or crescent-shaped point clouds, the arithmetic mean can easily fall outside the visibly dense region
+
+Safe interpretation rule:
+
+- use PCA for centroid-shift / global-geometry discussion
+- use t-SNE for local bundling / neighborhood discussion
+
+### 4. Whether `D2/D2.5/D3` are real CBDC conditions or just PGD
+
+They are not PGD-only ablations.
+
+`D2`, `D2.5`, and `D3` are learned CBDC-style conditions:
+
+- PGD is used inside the training loop to generate perturbation directions
+- then the trainable tail is optimized with the CBDC losses
+- then the full split is re-encoded using the resulting condition-specific encoder state
+
+So the final visualization for `D2/D2.5/D3` is:
+
+- not just "what happens if PGD is applied once"
+- but the re-encoded embedding space after the CBDC-style training procedure
+
+By contrast:
+
+- `D1` is a DebiasVL-style projection condition, not an epoch-trained tail
+
+### 5. How many epochs are trained, and what checkpoint is plotted
+
+The current CBDC conditions train for up to `100` epochs.
+
+The plotted condition embeddings are based on the selected best checkpoint, not always the final epoch.
+
+- `D2`:
+  - best epoch selected by labeled validation centroid macro-F1
+- `D2.5`:
+  - best epoch selected by lowest prompt loss only
+- `D3`:
+  - best epoch selected by labeled validation centroid macro-F1
+
+Then the script re-encodes the split using that selected checkpoint and plots those embeddings.
+
+So if the PI asks whether the plot is from the best validation checkpoint, the answer is:
+
+- yes for `D2` and `D3`
+- `D2.5` uses a label-free best-loss criterion instead of validation F1
+
+`D1` does not have this best-epoch concept because it is a projection transform rather than a trained checkpointed tail.
+
+### 6. Current task framing: not financial sentiment analysis
+
+An important framing clarification for PI conversations:
+
+- the current task is **not** financial sentiment analysis
+- it is closer to general tweet / general sentiment classification with:
+  - negative
+  - neutral
+  - positive
+
+So if the discussion shifts to benchmark positioning, the more appropriate family is:
+
+- TweetEval sentiment
+- SemEval Twitter sentiment
+- Sentiment140
+
+rather than finance-specific sentiment benchmarks.
+
+### 7. Current primary concern: `prompts.py`, not a dead optimizer
+
+At this point, the strongest concern is not that the optimizer is doing nothing.
+
+The runs already show:
+
+- strong loss movement in Phase 2
+- real centroid / geometry movement
+- backbone-dependent class-collapse behavior
+
+So the more plausible bottleneck is:
+
+- prompt / prototype / bias-anchor geometry
+
+In practice, this points back to:
+
+- `cbdc/prompts.py`
+
+as a major remaining source of mismatch, especially for:
+
+- larger backbones
+- decoder-family models
+- cases where the representation clearly moves but the final sentiment calibration remains poor
+
+Safe PI-facing summary:
+
+- the method appears to be doing real latent-space work
+- but the current prompt bank is likely under-calibrated for some backbone families
+- so the main bottleneck now is prompt/prototype geometry rather than simple absence of learning
