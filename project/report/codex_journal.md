@@ -2516,3 +2516,19 @@ Why this should be useful:
   - neutral collapse on some larger backbones
   - backbone-specific geometry differences
   - whether `D2` / `D2.5` move the class clouds in the same direction as their prompt prototypes
+
+Smoke-test status:
+
+- `python -m py_compile pipeline/plot_pca.py` passed.
+- Synthetic cache smoke tests passed for:
+  - full condition set including `D2.5`
+  - cache without `D2.5`
+  - subset plotting with `--no_prototypes`
+  - subsampling via `--max_points_per_condition`
+- The script successfully wrote both PNG and CSV outputs in each smoke test.
+
+Useful bug caught during smoke testing:
+
+- The first version relied indirectly on the `INCLUDE_D25` environment-sensitive artifact helper.
+- That would have made `D2.5` discovery brittle in standalone plotting runs.
+- The plotting script was updated to resolve condition slugs from its own local spec, so it now discovers cached `D2.5` outputs directly without depending on external environment flags.
