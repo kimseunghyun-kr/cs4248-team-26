@@ -49,7 +49,7 @@ Matrix format:
 Built-in presets:
   starter    Small sanity sweep.
   report6h   Curated report-ready sweep sized for roughly a half-day run.
-  feature_top5  Feature-augmented sample on the strongest existing configs.
+  feature_top5  Feature-augmented sample on the strongest configs, paired on raw and cleaned datasets.
   full       Broad practical sweep across models, unfreeze depth, head, loss, and metadata.
   exhaustive Larger combinatorial sweep; intended for long overnight runs.
 
@@ -172,6 +172,11 @@ feature_presets = {
     "vader_afinn": {"USE_VADER_FEATURES": "1", "USE_AFINN_FEATURES": "1"},
 }
 
+dataset_presets = {
+    "raw": {},
+    "cleaned": {"USE_CLEANED_DATASET": "1"},
+}
+
 lr_presets = {
     "std": {"ENCODER_LR": "2e-5", "CLASSIFIER_LR": "1e-4"},
     "low": {"ENCODER_LR": "1e-5", "CLASSIFIER_LR": "5e-5"},
@@ -180,13 +185,27 @@ lr_presets = {
 def emit(spec):
     print(" ".join(f"{k}={v}" for k, v in spec.items()))
 
-def append_feature_suffix(run_name, feature_name):
-    if not feature_name or feature_name == "none":
-        return run_name
-    return f"{run_name}_{feature_name}"
+def append_run_suffixes(run_name, dataset_name="raw", feature_name="none"):
+    pieces = [run_name]
+    if dataset_name:
+        pieces.append(dataset_name)
+    if feature_name and feature_name != "none":
+        pieces.append(feature_name)
+    return "_".join(pieces)
 
 
-def build_run_name(model, input_mode, unfreeze, head, loss, meta_name, lr_name=None, pooling=None, feature_name="none"):
+def build_run_name(
+    model,
+    input_mode,
+    unfreeze,
+    head,
+    loss,
+    meta_name,
+    lr_name=None,
+    pooling=None,
+    feature_name="none",
+    dataset_name="raw",
+):
     pieces = [model]
     if input_mode != "text":
         pieces.append(input_mode.replace("text_", "").replace("selected_", "sel_"))
@@ -199,7 +218,7 @@ def build_run_name(model, input_mode, unfreeze, head, loss, meta_name, lr_name=N
         pieces.append(lr_name)
     if pooling and pooling != "auto":
         pieces.append(pooling)
-    return append_feature_suffix("_".join(pieces), feature_name)
+    return append_run_suffixes("_".join(pieces), dataset_name, feature_name)
 
 def emit_transformer(
     model,
@@ -212,9 +231,21 @@ def emit_transformer(
     lr_name="std",
     pooling="auto",
     feature_name="none",
+    dataset_name="raw",
 ):
     spec = {
-        "RUN_NAME": build_run_name(model, input_mode, unfreeze, head, loss, meta_name, lr_name, pooling, feature_name),
+        "RUN_NAME": build_run_name(
+            model,
+            input_mode,
+            unfreeze,
+            head,
+            loss,
+            meta_name,
+            lr_name,
+            pooling,
+            feature_name,
+            dataset_name,
+        ),
         "CLASSIFIER": "transformer",
         "MODEL": model,
         "START_PHASE": "1",
@@ -226,6 +257,7 @@ def emit_transformer(
     }
     spec.update(lr_presets[lr_name])
     spec.update(meta_presets[meta_name])
+    spec.update(dataset_presets[dataset_name])
     spec.update(feature_presets[feature_name])
     emit(spec)
 
@@ -239,13 +271,14 @@ def add_linear_runs():
         })
 
 
-def emit_linear(model, *, feature_name="none"):
+def emit_linear(model, *, feature_name="none", dataset_name="raw"):
     spec = {
-        "RUN_NAME": append_feature_suffix(f"{model}_linear", feature_name),
+        "RUN_NAME": append_run_suffixes(f"{model}_linear", dataset_name, feature_name),
         "CLASSIFIER": "linear",
         "MODEL": model,
         "START_PHASE": "1",
     }
+    spec.update(dataset_presets[dataset_name])
     spec.update(feature_presets[feature_name])
     emit(spec)
 
@@ -351,6 +384,7 @@ elif preset == "report6h":
         emit_transformer(model, pooling="mean")
 elif preset == "feature_top5":
     feature_modes = ["vader", "afinn", "vader_afinn"]
+    dataset_modes = ["raw", "cleaned"]
 
     # Chosen for diversity + strength:
     # - finbert_linear: best frozen baseline
@@ -358,12 +392,49 @@ elif preset == "feature_top5":
     # - bertweet_u12_mlp_ce_std: strongest conventional backbone
     # - finbert_u12_mlp_ce_std: strongest FinBERT fine-tuned run
     # - tinyllama_u12_mlp_ce_std: strongest decoder-style backbone
-    for feature_name in feature_modes:
-        emit_linear("finbert", feature_name=feature_name)
-        emit_transformer("bert", unfreeze=4, head="mlp", loss="focal", lr_name="std", pooling="auto", feature_name=feature_name)
-        emit_transformer("bertweet", unfreeze=12, head="mlp", loss="cross_entropy", lr_name="std", pooling="auto", feature_name=feature_name)
-        emit_transformer("finbert", unfreeze=12, head="mlp", loss="cross_entropy", lr_name="std", pooling="auto", feature_name=feature_name)
-        emit_transformer("tinyllama", unfreeze=12, head="mlp", loss="cross_entropy", lr_name="std", pooling="auto", feature_name=feature_name)
+    for dataset_name in dataset_modes:
+        for feature_name in feature_modes:
+            emit_linear("finbert", feature_name=feature_name, dataset_name=dataset_name)
+            emit_transformer(
+                "bert",
+                unfreeze=4,
+                head="mlp",
+                loss="focal",
+                lr_name="std",
+                pooling="auto",
+                feature_name=feature_name,
+                dataset_name=dataset_name,
+            )
+            emit_transformer(
+                "bertweet",
+                unfreeze=12,
+                head="mlp",
+                loss="cross_entropy",
+                lr_name="std",
+                pooling="auto",
+                feature_name=feature_name,
+                dataset_name=dataset_name,
+            )
+            emit_transformer(
+                "finbert",
+                unfreeze=12,
+                head="mlp",
+                loss="cross_entropy",
+                lr_name="std",
+                pooling="auto",
+                feature_name=feature_name,
+                dataset_name=dataset_name,
+            )
+            emit_transformer(
+                "tinyllama",
+                unfreeze=12,
+                head="mlp",
+                loss="cross_entropy",
+                lr_name="std",
+                pooling="auto",
+                feature_name=feature_name,
+                dataset_name=dataset_name,
+            )
 elif preset == "exhaustive":
     add_linear_runs()
     input_modes = ["text"]
@@ -726,6 +797,10 @@ def build_label(row):
         feature_pieces.append("afinn")
     if feature_pieces:
         pieces.append("+".join(feature_pieces))
+    if row.get("use_cleaned_dataset") == "1":
+        pieces.append("cleaned")
+    elif feature_pieces:
+        pieces.append("raw")
     return " | ".join(pieces)
 
 
@@ -767,6 +842,7 @@ def parse_log(path):
         "use_time_of_tweet": args.get("use_time_of_tweet", ""),
         "use_age_of_user": args.get("use_age_of_user", ""),
         "use_country": args.get("use_country", ""),
+        "use_cleaned_dataset": args.get("use_cleaned_dataset", ""),
         "use_vader_features": args.get("use_vader_features", ""),
         "use_afinn_features": args.get("use_afinn_features", ""),
         "data_source": data_source[0].strip() if data_source else "",
@@ -865,6 +941,7 @@ fieldnames = [
     "use_time_of_tweet",
     "use_age_of_user",
     "use_country",
+    "use_cleaned_dataset",
     "use_vader_features",
     "use_afinn_features",
     "label",
@@ -987,7 +1064,7 @@ if not best_by_model.empty:
     plt.close()
     print(f"[analyze] wrote {model_plot}")
 
-for field in ["classifier", "model", "input_mode", "unfreeze_layers", "head_type", "loss_name", "pooling", "use_vader_features", "use_afinn_features"]:
+for field in ["classifier", "model", "input_mode", "unfreeze_layers", "head_type", "loss_name", "pooling", "use_cleaned_dataset", "use_vader_features", "use_afinn_features"]:
     if field not in df.columns:
         continue
     sub = df[[field, "test_macro_f1"]].dropna()

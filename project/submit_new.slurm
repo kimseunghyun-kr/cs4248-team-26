@@ -211,6 +211,7 @@ TRAIN_EMBEDDINGS="${TRAIN_EMBEDDINGS:-0}"
 USE_TIME_OF_TWEET="${USE_TIME_OF_TWEET:-0}"
 USE_AGE_OF_USER="${USE_AGE_OF_USER:-0}"
 USE_COUNTRY="${USE_COUNTRY:-0}"
+USE_CLEANED_DATASET="${USE_CLEANED_DATASET:-0}"
 USE_VADER_FEATURES="${USE_VADER_FEATURES:-0}"
 USE_AFINN_FEATURES="${USE_AFINN_FEATURES:-0}"
 NO_CLASS_WEIGHTS="${NO_CLASS_WEIGHTS:-0}"
@@ -269,6 +270,9 @@ if [ "${USE_AGE_OF_USER}" = "1" ]; then
 fi
 if [ "${USE_COUNTRY}" = "1" ]; then
     CMD+=(--use_country)
+fi
+if [ "${USE_CLEANED_DATASET}" = "1" ]; then
+    CMD+=(--use_cleaned_dataset)
 fi
 if [ "${USE_VADER_FEATURES}" = "1" ]; then
     CMD+=(--use_vader_features)

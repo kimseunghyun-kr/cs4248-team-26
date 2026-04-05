@@ -98,6 +98,7 @@ def main():
     parser.add_argument("--use_time_of_tweet", action="store_true")
     parser.add_argument("--use_age_of_user", action="store_true")
     parser.add_argument("--use_country", action="store_true")
+    parser.add_argument("--use_cleaned_dataset", action="store_true")
     parser.add_argument("--use_vader_features", action="store_true")
     parser.add_argument("--use_afinn_features", action="store_true")
     parser.add_argument("--no_class_weights", action="store_true")
@@ -113,6 +114,8 @@ def main():
         "MODEL_NAME": hf_model_name,
         "CACHE_DIR": cache_dir,
     }
+    if args.use_cleaned_dataset:
+        extra_env["USE_CLEANED_DATASET"] = "1"
     if args.run_name:
         extra_env["RUN_NAME"] = args.run_name
         extra_env["LINEAR_REPORT_FILE"] = f"{args.run_name}_linear_eval_report.txt"
@@ -192,6 +195,8 @@ def main():
     print(f"Cache dir:     {cache_dir}")
     print(f"Max length:    {args.max_length}")
     print(f"Running phases: {[p[0] for p in phases]}")
+    if args.use_cleaned_dataset:
+        print("Dataset path:   cleaned local CSVs")
     if args.classifier == "transformer":
         print(f"Epochs:        {args.epochs}")
         print(f"Unfreeze last: {args.unfreeze_layers} layer(s)")

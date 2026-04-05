@@ -33,6 +33,17 @@ LOCAL_TEST_FILES = [
     "test.csv",
 ]
 
+CLEANED_LOCAL_TWEET_FILES = [
+    "train_cleaned.csv",
+    "cleaned_train.csv",
+]
+
+CLEANED_LOCAL_TEST_FILES = [
+    "test_clean.csv",
+    "test_cleaned.csv",
+    "cleaned_test.csv",
+]
+
 
 def _find_first_column(columns, candidates):
     for cand in candidates:
@@ -289,8 +300,30 @@ def _maybe_find_local_test_csv():
     return None
 
 
+def _use_cleaned_dataset() -> bool:
+    return os.environ.get("USE_CLEANED_DATASET", "0") == "1"
+
+
+def _maybe_find_cleaned_local_test_csv():
+    for name in CLEANED_LOCAL_TEST_FILES:
+        path = os.path.join(LOCAL_DATA_DIR, name)
+        if os.path.exists(path):
+            return path
+    return None
+
+
 
 def _find_local_csv():
+    if _use_cleaned_dataset():
+        for name in CLEANED_LOCAL_TWEET_FILES:
+            path = os.path.join(LOCAL_DATA_DIR, name)
+            if os.path.exists(path):
+                return path
+        raise FileNotFoundError(
+            "USE_CLEANED_DATASET=1 but no cleaned train CSV was found. "
+            f"Looked for: {CLEANED_LOCAL_TWEET_FILES}"
+        )
+
     for name in LOCAL_TWEET_FILES:
         path = os.path.join(LOCAL_DATA_DIR, name)
         if os.path.exists(path):
@@ -354,7 +387,16 @@ def load_records(
                 train_df, _ = _read_csv_with_encodings(local_path)
                 train_records = _records_from_dataframe(train_df, source_name="Local train dataset")
 
-                local_test_path = _maybe_find_local_test_csv()
+                local_test_path = (
+                    _maybe_find_cleaned_local_test_csv()
+                    if _use_cleaned_dataset()
+                    else _maybe_find_local_test_csv()
+                )
+                if _use_cleaned_dataset() and local_test_path is None:
+                    raise FileNotFoundError(
+                        "USE_CLEANED_DATASET=1 but no cleaned test CSV was found. "
+                        f"Looked for: {CLEANED_LOCAL_TEST_FILES}"
+                    )
                 if local_test_path is not None and os.path.abspath(local_test_path) != os.path.abspath(local_path):
                     print(f"Loading local test dataset from '{local_test_path}' ...")
                     test_df, _ = _read_csv_with_encodings(local_test_path)
