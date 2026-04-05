@@ -1,0 +1,457 @@
+"""
+Visualize cached condition embeddings in a shared 2D PCA space.
+
+The PCA basis is fit once on normalized embeddings pooled across conditions,
+so before/after panels stay in the same coordinate system and actual movement
+is visible.
+
+Run from project/ directory:
+  python pipeline/plot_pca.py --cache_dir /path/to/cache/roberta
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import math
+import os
+import sys
+from collections import OrderedDict
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+import torch
+import torch.nn.functional as F
+from sklearn.decomposition import PCA
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+LABEL_NAMES = ["negative", "neutral", "positive"]
+LABEL_COLORS = {
+    0: "#d55e00",
+    1: "#7f7f7f",
+    2: "#009e73",
+}
+CONDITION_SPECS = OrderedDict(
+    [
+        ("B1 (raw)", {"slug": "b1_raw"}),
+        ("D1 (debias_vl)", {"slug": "d1_debias_vl"}),
+        ("D2 (CBDC)", {"slug": "d2_cbdc"}),
+        ("D2.5 (CBDC no-label-select)", {"slug": "d25_cbdc_no_label_select"}),
+        ("D3 (debias_vl->CBDC)", {"slug": "d3_debias_vl_cbdc"}),
+    ]
+)
+LABEL_ALIASES = {
+    label.lower(): label
+    for label in CONDITION_SPECS
+}
+LABEL_ALIASES.update(
+    {
+        spec["slug"]: label
+        for label, spec in CONDITION_SPECS.items()
+    }
+)
+
+
+def _default_cache_dir() -> str:
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.environ.get("CACHE_DIR", os.path.join(root, "cache"))
+
+
+def _condition_slug(condition_label: str) -> str:
+    return CONDITION_SPECS[condition_label]["slug"]
+
+
+def _raw_split_path(cache_dir: str, split: str) -> str:
+    return os.path.join(cache_dir, f"z_tweet_{split}.pt")
+
+
+def _condition_dir(cache_dir: str, condition_label: str) -> str:
+    return os.path.join(cache_dir, "conditions", _condition_slug(condition_label))
+
+
+def _condition_artifact_path(cache_dir: str, condition_label: str, filename: str) -> str:
+    return os.path.join(_condition_dir(cache_dir, condition_label), filename)
+
+
+def _split_path(cache_dir: str, condition_label: str, split: str) -> str:
+    if condition_label == "B1 (raw)":
+        return _raw_split_path(cache_dir, split)
+    return os.path.join(_condition_dir(cache_dir, condition_label), f"z_tweet_{split}.pt")
+
+
+def _normalize(x: torch.Tensor) -> torch.Tensor:
+    return F.normalize(x.float(), dim=-1)
+
+
+def _resolve_condition_labels(requested: list[str] | None, cache_dir: str, split: str) -> list[str]:
+    if requested:
+        resolved = []
+        for item in requested:
+            key = item.strip().lower()
+            if key not in LABEL_ALIASES:
+                raise KeyError(f"Unknown condition: {item}")
+            resolved.append(LABEL_ALIASES[key])
+        return resolved
+
+    available = []
+    for label in CONDITION_SPECS:
+        if os.path.exists(_split_path(cache_dir, label, split)):
+            available.append(label)
+    if not available:
+        raise FileNotFoundError(
+            f"No cached split embeddings found for split='{split}' under {cache_dir}."
+        )
+    return available
+
+
+def _load_condition_payload(cache_dir: str, condition_label: str, split: str) -> dict:
+    path = _split_path(cache_dir, condition_label, split)
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Missing cached split for {condition_label}: {path}")
+    return torch.load(path, map_location="cpu")
+
+
+def _load_condition_prototypes(cache_dir: str, condition_label: str) -> torch.Tensor | None:
+    path = _condition_artifact_path(cache_dir, condition_label, "class_prompt_prototypes.pt")
+    if not os.path.exists(path):
+        return None
+    return _normalize(torch.load(path, map_location="cpu"))
+
+
+def _compute_centroids(coords: torch.Tensor, labels: torch.Tensor) -> dict[int, torch.Tensor]:
+    centroids = {}
+    for label_id in range(len(LABEL_NAMES)):
+        mask = labels == label_id
+        if int(mask.sum()) == 0:
+            continue
+        centroids[label_id] = coords[mask].mean(dim=0)
+    return centroids
+
+
+def _build_output_path(cache_dir: str, split: str, output: str | None) -> str:
+    if output:
+        return output
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cache_name = os.path.basename(os.path.normpath(cache_dir))
+    return os.path.join(root, "results", f"pca_{cache_name}_{split}.png")
+
+
+def _subsample_mask(labels: torch.Tensor, max_points: int | None, seed: int) -> torch.Tensor:
+    if max_points is None or len(labels) <= max_points:
+        return torch.ones(len(labels), dtype=torch.bool)
+
+    gen = torch.Generator()
+    gen.manual_seed(seed)
+    chosen = []
+    per_class = max(1, max_points // len(LABEL_NAMES))
+
+    for label_id in range(len(LABEL_NAMES)):
+        idx = torch.nonzero(labels == label_id, as_tuple=False).flatten()
+        if len(idx) <= per_class:
+            chosen.append(idx)
+            continue
+        perm = torch.randperm(len(idx), generator=gen)[:per_class]
+        chosen.append(idx[perm])
+
+    mask = torch.zeros(len(labels), dtype=torch.bool)
+    merged = torch.cat(chosen).unique()
+    if len(merged) < max_points:
+        mask[merged] = True
+        remainder = max_points - int(mask.sum())
+        if remainder > 0:
+            available = torch.nonzero(~mask, as_tuple=False).flatten()
+            perm = torch.randperm(len(available), generator=gen)[:remainder]
+            mask[available[perm]] = True
+        return mask
+
+    mask[merged[:max_points]] = True
+    return mask
+
+
+def _write_coordinates_csv(
+    csv_path: str,
+    conditions: list[str],
+    projected_embeddings: dict[str, torch.Tensor],
+    labels_by_condition: dict[str, torch.Tensor],
+    centroids_by_condition: dict[str, dict[int, torch.Tensor]],
+    prototypes_by_condition: dict[str, torch.Tensor | None],
+    reference_condition: str | None,
+    reference_centroids: dict[int, torch.Tensor] | None,
+) -> None:
+    os.makedirs(os.path.dirname(csv_path) or ".", exist_ok=True)
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["condition", "kind", "label", "sample_index", "pc1", "pc2"])
+
+        for condition_label in conditions:
+            labels = labels_by_condition[condition_label]
+            coords = projected_embeddings[condition_label]
+            for idx, (coord, label_id) in enumerate(zip(coords.tolist(), labels.tolist())):
+                writer.writerow(
+                    [condition_label, "sample", LABEL_NAMES[label_id], idx, coord[0], coord[1]]
+                )
+
+            for label_id, centroid in centroids_by_condition[condition_label].items():
+                writer.writerow(
+                    [
+                        condition_label,
+                        "class_centroid",
+                        LABEL_NAMES[label_id],
+                        "",
+                        float(centroid[0]),
+                        float(centroid[1]),
+                    ]
+                )
+
+            prototypes = prototypes_by_condition.get(condition_label)
+            if prototypes is not None:
+                for label_id, proto in enumerate(prototypes.tolist()):
+                    writer.writerow(
+                        [
+                            condition_label,
+                            "prompt_prototype",
+                            LABEL_NAMES[label_id],
+                            "",
+                            proto[0],
+                            proto[1],
+                        ]
+                    )
+
+        if reference_condition and reference_centroids:
+            for label_id, centroid in reference_centroids.items():
+                writer.writerow(
+                    [
+                        reference_condition,
+                        "reference_centroid",
+                        LABEL_NAMES[label_id],
+                        "",
+                        float(centroid[0]),
+                        float(centroid[1]),
+                    ]
+                )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Plot shared-basis PCA for cached condition embeddings.")
+    parser.add_argument("--cache_dir", default=_default_cache_dir(), help="Condition cache directory.")
+    parser.add_argument("--split", default="test", choices=["train", "val", "test"], help="Split to visualize.")
+    parser.add_argument(
+        "--conditions",
+        nargs="+",
+        help="Condition labels or slugs to plot. Defaults to all available cached conditions.",
+    )
+    parser.add_argument("--output", help="Output PNG path.")
+    parser.add_argument(
+        "--max_points_per_condition",
+        type=int,
+        default=None,
+        help="Optional per-condition subsample cap for cleaner scatter plots.",
+    )
+    parser.add_argument(
+        "--no_prototypes",
+        action="store_true",
+        help="Hide class prompt prototype markers.",
+    )
+    parser.add_argument(
+        "--reference_condition",
+        default="b1_raw",
+        help="Reference condition whose class centroids are overlaid to show movement.",
+    )
+    parser.add_argument("--seed", type=int, default=13, help="Random seed for subsampling.")
+    args = parser.parse_args()
+
+    cache_dir = os.path.abspath(args.cache_dir)
+    condition_labels = _resolve_condition_labels(args.conditions, cache_dir, args.split)
+
+    ref_key = args.reference_condition.strip().lower()
+    reference_condition = LABEL_ALIASES.get(ref_key)
+    if reference_condition not in condition_labels:
+        reference_condition = condition_labels[0]
+
+    payloads = {
+        label: _load_condition_payload(cache_dir, label, args.split)
+        for label in condition_labels
+    }
+
+    embeddings_by_condition = {}
+    labels_by_condition = {}
+    for idx, condition_label in enumerate(condition_labels):
+        labels = payloads[condition_label]["labels"].long().cpu()
+        embeddings = _normalize(payloads[condition_label]["embeddings"].cpu())
+        mask = _subsample_mask(labels, args.max_points_per_condition, args.seed + idx)
+        labels_by_condition[condition_label] = labels[mask]
+        embeddings_by_condition[condition_label] = embeddings[mask]
+
+    fit_bank = torch.cat([embeddings_by_condition[label] for label in condition_labels], dim=0).numpy()
+    pca = PCA(n_components=2)
+    pca.fit(fit_bank)
+
+    projected_embeddings = {
+        label: torch.from_numpy(pca.transform(embeddings.numpy())).float()
+        for label, embeddings in embeddings_by_condition.items()
+    }
+
+    prototypes_by_condition = {}
+    if not args.no_prototypes:
+        for condition_label in condition_labels:
+            prototypes = _load_condition_prototypes(cache_dir, condition_label)
+            if prototypes is None:
+                prototypes_by_condition[condition_label] = None
+                continue
+            prototypes_by_condition[condition_label] = torch.from_numpy(
+                pca.transform(prototypes.numpy())
+            ).float()
+    else:
+        prototypes_by_condition = {label: None for label in condition_labels}
+
+    centroids_by_condition = {
+        label: _compute_centroids(projected_embeddings[label], labels_by_condition[label])
+        for label in condition_labels
+    }
+    reference_centroids = centroids_by_condition.get(reference_condition)
+
+    n_conditions = len(condition_labels)
+    ncols = min(3, n_conditions)
+    nrows = math.ceil(n_conditions / ncols)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(6.0 * ncols, 5.2 * nrows), squeeze=False)
+    axes_flat = axes.flatten()
+
+    for ax_idx, condition_label in enumerate(condition_labels):
+        ax = axes_flat[ax_idx]
+        coords = projected_embeddings[condition_label]
+        labels = labels_by_condition[condition_label]
+
+        for label_id, label_name in enumerate(LABEL_NAMES):
+            mask = labels == label_id
+            if int(mask.sum()) == 0:
+                continue
+            pts = coords[mask]
+            ax.scatter(
+                pts[:, 0].numpy(),
+                pts[:, 1].numpy(),
+                s=12,
+                alpha=0.45,
+                c=LABEL_COLORS[label_id],
+                label=label_name,
+                linewidths=0,
+            )
+
+        current_centroids = centroids_by_condition[condition_label]
+        if reference_centroids is not None:
+            for label_id, ref_centroid in reference_centroids.items():
+                if condition_label != reference_condition and label_id in current_centroids:
+                    cur = current_centroids[label_id]
+                    ax.plot(
+                        [float(ref_centroid[0]), float(cur[0])],
+                        [float(ref_centroid[1]), float(cur[1])],
+                        linestyle="--",
+                        linewidth=1.2,
+                        color=LABEL_COLORS[label_id],
+                        alpha=0.8,
+                    )
+                ax.scatter(
+                    float(ref_centroid[0]),
+                    float(ref_centroid[1]),
+                    s=90,
+                    facecolors="white",
+                    edgecolors=LABEL_COLORS[label_id],
+                    linewidths=1.6,
+                    marker="o",
+                    zorder=5,
+                )
+
+        for label_id, centroid in current_centroids.items():
+            ax.scatter(
+                float(centroid[0]),
+                float(centroid[1]),
+                s=110,
+                c=LABEL_COLORS[label_id],
+                marker="X",
+                edgecolors="black",
+                linewidths=0.6,
+                zorder=6,
+            )
+
+        prototypes = prototypes_by_condition.get(condition_label)
+        if prototypes is not None:
+            for label_id, proto in enumerate(prototypes):
+                ax.scatter(
+                    float(proto[0]),
+                    float(proto[1]),
+                    s=150,
+                    c=LABEL_COLORS[label_id],
+                    marker="*",
+                    edgecolors="black",
+                    linewidths=0.7,
+                    zorder=7,
+                )
+
+        ax.set_title(condition_label)
+        ax.set_xlabel("PC1")
+        ax.set_ylabel("PC2")
+        ax.grid(alpha=0.15)
+
+    for ax in axes_flat[n_conditions:]:
+        ax.axis("off")
+
+    class_handles = [
+        Line2D([0], [0], marker="o", linestyle="", markerfacecolor=LABEL_COLORS[idx], markeredgecolor="none", markersize=7, label=name)
+        for idx, name in enumerate(LABEL_NAMES)
+    ]
+    marker_handles = [
+        Line2D([0], [0], marker="o", linestyle="", markerfacecolor="white", markeredgecolor="black", markersize=8, label=f"{reference_condition} centroid"),
+        Line2D([0], [0], marker="X", linestyle="", markerfacecolor="black", markeredgecolor="black", markersize=8, label="Current class centroid"),
+    ]
+    if not args.no_prototypes:
+        marker_handles.append(
+            Line2D([0], [0], marker="*", linestyle="", markerfacecolor="black", markeredgecolor="black", markersize=10, label="Prompt prototype")
+        )
+
+    variance = pca.explained_variance_ratio_ * 100.0
+    fig.suptitle(
+        (
+            f"Shared-basis PCA of normalized {args.split} embeddings\n"
+            f"PC1={variance[0]:.1f}% | PC2={variance[1]:.1f}% | cache={os.path.basename(cache_dir)}"
+        ),
+        fontsize=14,
+    )
+    fig.legend(
+        handles=class_handles + marker_handles,
+        loc="lower center",
+        ncol=min(6, len(class_handles) + len(marker_handles)),
+        frameon=False,
+        bbox_to_anchor=(0.5, -0.01),
+    )
+    fig.tight_layout(rect=[0, 0.06, 1, 0.94])
+
+    output_path = _build_output_path(cache_dir, args.split, args.output)
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    fig.savefig(output_path, dpi=220, bbox_inches="tight")
+    plt.close(fig)
+
+    csv_path = os.path.splitext(output_path)[0] + ".csv"
+    _write_coordinates_csv(
+        csv_path=csv_path,
+        conditions=condition_labels,
+        projected_embeddings=projected_embeddings,
+        labels_by_condition=labels_by_condition,
+        centroids_by_condition=centroids_by_condition,
+        prototypes_by_condition=prototypes_by_condition,
+        reference_condition=reference_condition,
+        reference_centroids=reference_centroids,
+    )
+
+    print(f"Saved PCA plot -> {output_path}")
+    print(f"Saved PCA coordinates -> {csv_path}")
+    print(
+        "Explained variance: "
+        f"PC1={variance[0]:.4f}, PC2={variance[1]:.4f}"
+    )
+
+
+if __name__ == "__main__":
+    main()

@@ -2471,3 +2471,48 @@ Practical consequence:
   - test `text_unit=\"tweet\"` for tweet-native and decoder models
   - replace riskier style-bias pairs with safer topic / structure pairs
   - redesign `keep_text` so it preserves content without over-encoding neutrality
+
+## 2026-04-05 PCA diagnostic requested by PI
+
+PI request:
+
+- If the method relies on cosine similarity, then the vectors already encode similarity geometry.
+- If those vectors are projected with PCA and colored by sentiment class, we should be able to see whether the representation actually moved.
+
+What I checked in code:
+
+- `pipeline/prototype_classify.py` normalizes both embeddings and class prompt prototypes, then scores them with a dot product.
+- So the prototype evaluation stage is explicitly cosine-similarity based.
+- `encoder.py` also returns normalized sentence embeddings for the encoder path.
+
+Important conclusion:
+
+- The project already had the right vectors for this diagnostic.
+- It did **not** yet have the PCA visualization implemented.
+
+Important design choice:
+
+- A separate PCA per condition would be misleading, because each panel could rotate differently.
+- To make "movement" interpretable, the PCA basis should be fit once on pooled normalized embeddings across conditions, then all conditions should be projected into that shared 2D basis.
+
+Implementation added:
+
+- Added `pipeline/plot_pca.py`.
+- It:
+  - loads cached split embeddings for `B1`, `D1`, `D2`, optional `D2.5`, and `D3`
+  - normalizes embeddings before PCA so the view stays closer to the cosine-geometry used by prototype classification
+  - fits one shared 2D PCA basis across the selected conditions
+  - plots each condition in its own panel using the same coordinate system
+  - colors points by sentiment class
+  - overlays class centroids
+  - overlays class prompt prototypes when available
+  - overlays `B1` centroids as a reference so class-level movement is visible directly
+  - saves both a PNG figure and a CSV of the projected coordinates
+
+Why this should be useful:
+
+- It directly answers the PI's question about whether the representation space actually moved.
+- It should also help diagnose current failure modes:
+  - neutral collapse on some larger backbones
+  - backbone-specific geometry differences
+  - whether `D2` / `D2.5` move the class clouds in the same direction as their prompt prototypes
