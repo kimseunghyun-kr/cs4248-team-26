@@ -74,7 +74,7 @@ class CachedTokenDataset(Dataset):
         return len(self.labels)
 
     def __getitem__(self, idx: int) -> dict:
-        return {
+        item = {
             "input_ids": self.input_ids[idx],
             "attention_mask": self.attention_mask[idx],
             "labels": self.labels[idx],
@@ -791,6 +791,19 @@ def run_transformer_experiment(args):
     train_tweet_features = getattr(loaders["train"].dataset, "tweet_features", None)
     if isinstance(train_tweet_features, torch.Tensor):
         tweet_feature_dim = int(train_tweet_features.shape[1])
+    expected_feature_names = get_requested_feature_names(
+        use_vader_features=cfg.use_vader_features,
+        use_afinn_features=cfg.use_afinn_features,
+    )
+    expected_feature_dim = len(expected_feature_names)
+    if expected_feature_dim and tweet_feature_dim != expected_feature_dim:
+        raise RuntimeError(
+            "Requested text features "
+            f"{expected_feature_names} (dim={expected_feature_dim}), but the phase-2 dataloader "
+            f"provided dim={tweet_feature_dim}. This usually means the cached token payload or "
+            "batch path did not carry tweet_features through correctly, or the run is mixing "
+            "cache/config from a different feature setting. Use a fresh RUN_NAME and START_PHASE=1."
+        )
 
     model = TransformerClassifier(
         encoder=encoder,
