@@ -1,0 +1,17 @@
+analysis_scope: manifest
+ranking_note: ranking only fixed_test_csv runs
+Best run
+job_id: 547620
+run_name: bertweet_u12_mlp_ce_std_cleaned_afinn
+label: bertweet | text | L12 | mlp | cross_entropy | afinn | cleaned
+classifier: transformer
+model: bertweet
+data_source: cache_tokens
+split_regime: fixed_test_csv
+uses_fixed_test_csv: 1
+test_size: 3534
+test_macro_f1: 0.8089
+val_macro_f1: 0.8020
+test_accuracy: 0.8056
+log_path: /home/k/kimsh/cs4248/project/results/slurm_new_547620.log
+command: python -u run_all.py --classifier transformer --model bertweet --max_length 128 --embed_batch_size 64 --batch_size 32 --eval_batch_size 64 --encoder_lr 2e-5 --classifier_lr 1e-4 --weight_decay 1e-2 --warmup_ratio 0.1 --pooling auto --dropout 0.1 --run_name bertweet_u12_mlp_ce_std_cleaned_afinn --epochs 5 --unfreeze_layers 12 --input_mode text --head_type mlp --hidden_dim 0 --loss_name cross_entropy --focal_gamma 1.5 --patience 2 --label_smoothing 0.0 --grad_clip_norm 1.0 --use_cleaned_dataset --use_afinn_features --start_phase 1

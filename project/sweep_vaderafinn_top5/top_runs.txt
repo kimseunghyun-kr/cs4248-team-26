@@ -1,0 +1,13 @@
+analysis_scope: manifest
+ranking only fixed_test_csv runs
+
+1. bertweet | text | L12 | mlp | cross_entropy | afinn | cleaned | test_f1=0.8089 | val_f1=0.8020 | acc=0.8056 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_547620.log
+2. bertweet | text | L12 | mlp | cross_entropy | afinn | raw | test_f1=0.8080 | val_f1=0.8043 | acc=0.8053 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_547324.log
+3. bertweet | text | L12 | mlp | cross_entropy | vader | raw | test_f1=0.8079 | val_f1=0.8022 | acc=0.8050 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_547182.log
+4. bertweet | text | L12 | mlp | cross_entropy | vader+afinn | cleaned | test_f1=0.8063 | val_f1=0.8033 | acc=0.8031 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_547727.log
+5. tinyllama | text | L12 | mlp | cross_entropy | afinn | raw | test_f1=0.8010 | val_f1=0.7967 | acc=0.7974 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_547400.log
+6. bertweet | text | L12 | mlp | cross_entropy | test_f1=0.8008 | val_f1=0.7991 | acc=0.7977 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_540018.log
+7. bertweet | text | L12 | mlp | cross_entropy | vader+afinn | raw | test_f1=0.8001 | val_f1=0.8064 | acc=0.7968 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_547448.log
+8. tinyllama | text | L12 | mlp | cross_entropy | test_f1=0.7999 | val_f1=0.7980 | acc=0.7960 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_541719.log
+9. finbert | text | L12 | mlp | cross_entropy | vader | cleaned | test_f1=0.7998 | val_f1=0.7888 | acc=0.7971 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_547552.log
+10. bertweet | text | L12 | mlp | cross_entropy | vader | cleaned | test_f1=0.7992 | val_f1=0.8056 | acc=0.7954 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_547544.log
