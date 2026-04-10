@@ -14,17 +14,21 @@ from .data import (
     build_dataloaders,
     build_media_records,
 )
+from .iccv import ImageICCVArtifacts, MultimodalEmbedder, TextICCVArtifacts
 from .projection import project_out
 from .prompts import NuisanceAxis, PersonalizationPromptBank, build_prompt_bank
 from .trainer import PersonalizationConfig, PersonalizationTrainer
 
 __all__ = [
     "ConceptMediaRecord",
+    "ImageICCVArtifacts",
+    "MultimodalEmbedder",
     "NuisanceAxis",
     "PersonalizationConfig",
     "PersonalizationDataset",
     "PersonalizationPromptBank",
     "PersonalizationTrainer",
+    "TextICCVArtifacts",
     "build_dataloaders",
     "build_media_records",
     "build_prompt_bank",

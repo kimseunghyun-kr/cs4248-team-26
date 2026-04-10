@@ -14,6 +14,7 @@ MODEL_REGISTRY = {
     "qwen25-0.5b": "Qwen/Qwen2.5-0.5B",
     "qwen25-1.5b": "Qwen/Qwen2.5-1.5B",
     "qwen25-3b": "Qwen/Qwen2.5-3B",
+    "qwen25-vl-3b": "Qwen/Qwen2.5-VL-3B-Instruct",
     "llama32-1b": "meta-llama/Llama-3.2-1B",
     "llama32-3b": "meta-llama/Llama-3.2-3B",
     "gemma4-26b": "google/gemma-4-26B-A4B",

@@ -20,17 +20,24 @@ python run_personalization.py \
   --instance_dir data/my_subject/instance \
   --class_dir data/my_subject/class \
   --concept_token "sks dog" \
-  --class_name "a dog"
+  --class_name "a dog" \
+  --mode discover
 ```
 
-## What The Current Runner Does
+## Available Modes
 
-`run_personalization.py` performs four things:
+`run_personalization.py` now has three stage families:
 
-1. Loads a frozen backbone through `encoder.py`
-2. Adapts instance and optional class-prior media into loaders
-3. Builds identity, keep, target, and nuisance prompt banks
-4. Runs upstream-style bipolar PGD nuisance discovery
+- `--mode discover`
+  Prompt-only nuisance mining with the salvaged `encoder.py` path
+- `--mode text_iccv`
+  ICCV-style text steering on frozen text embeddings plus a trainable target head
+- `--mode img_iccv`
+  ICCV-style image steering on frozen VLM / CLIP image features plus a trainable target head
+- `--mode iccv`
+  Runs `text_iccv` then `img_iccv`
+- `--mode all`
+  Runs discovery plus both ICCV stages
 
 Artifacts are written under:
 
@@ -71,6 +78,8 @@ Use `--media_mode video_frames` for the second layout.
   Reusable frozen transformer loader plus latent-tail perturbation path
 - `losses.py`
   Generic contrastive and semantic-preservation losses
+- `personalization/iccv.py`
+  ICCV-style text/image steering loops and VLM / CLIP embedding wrapper
 - `personalization/data.py`
   Adapted instance/class media loader
 - `personalization/prompts.py`
@@ -97,11 +106,54 @@ They expect environment variables such as:
 - `CONCEPT_TOKEN`
 - `CLASS_NAME`
 - `RUN_MODEL`
+- `RUN_MODE`
+- `IMAGE_MODEL` (optional for `img_iccv`)
 
 ## Current Scope
 
 This repo is now an image-first, video-next personalization scaffold.
-Qwen, Gemma, Llama, BERT-family, and related backbones can be used as frozen
-text-side encoders or latent-tail adaptation targets, but actual DreamBooth-like
-generation still requires a separate generator backbone to be added on top.
-tries to materialize them from the Phase 2 artifacts automatically.
+Qwen, Gemma, BERT-family, and CLIP-style backbones can now be used in two ways:
+
+- text-side discovery / `text_iccv` through frozen text embeddings
+- image-side `img_iccv` through multimodal `get_image_features` or CLIP fallback
+
+The current implementation is a steering scaffold, not a generator trainer.
+
+## Example Commands
+
+Prompt-only discovery:
+
+```bash
+python run_personalization.py \
+  --instance_dir data/my_subject/instance \
+  --class_dir data/my_subject/class \
+  --concept_token "sks dog" \
+  --class_name "a dog" \
+  --model bert \
+  --mode discover
+```
+
+Text-side ICCV steering:
+
+```bash
+python run_personalization.py \
+  --instance_dir data/my_subject/instance \
+  --class_dir data/my_subject/class \
+  --concept_token "sks dog" \
+  --class_name "a dog" \
+  --model bert \
+  --mode text_iccv
+```
+
+Image-side ICCV steering with a VLM or CLIP-style backend:
+
+```bash
+python run_personalization.py \
+  --instance_dir data/my_subject/instance \
+  --class_dir data/my_subject/class \
+  --concept_token "sks dog" \
+  --class_name "a dog" \
+  --model bert \
+  --image_model Qwen/Qwen2.5-VL-3B-Instruct \
+  --mode img_iccv
+```
