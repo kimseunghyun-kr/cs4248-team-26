@@ -2,6 +2,7 @@ references
 *.log
 *.err
 cache
+cache_bak
 results
 .claude
 __pycache__
