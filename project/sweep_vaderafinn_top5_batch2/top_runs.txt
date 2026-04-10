@@ -1,0 +1,13 @@
+analysis_scope: manifest
+ranking only fixed_test_csv runs
+
+1. bertweet | text | L12 | mlp | cross_entropy | vader+afinn | raw | test_f1=0.8129 | val_f1=0.8068 | acc=0.8101 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_553184.log
+2. bertweet | text | L12 | mlp | cross_entropy | vader | cleaned | test_f1=0.8129 | val_f1=0.8054 | acc=0.8098 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_553489.log
+3. bertweet | text | L12 | mlp | cross_entropy | vader+afinn | cleaned | test_f1=0.8092 | val_f1=0.8055 | acc=0.8056 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_554302.log
+4. bertweet | text | L12 | mlp | cross_entropy | afinn | cleaned | test_f1=0.8091 | val_f1=0.8010 | acc=0.8059 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_553905.log
+5. bertweet | text | L12 | mlp | cross_entropy | afinn | raw | test_f1=0.8075 | val_f1=0.8048 | acc=0.8045 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_552926.log
+6. bertweet | text | L12 | mlp | cross_entropy | vader | raw | test_f1=0.8024 | val_f1=0.8072 | acc=0.7985 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_552567.log
+7. tinyllama | text | L12 | mlp | cross_entropy | afinn | cleaned | test_f1=0.8022 | val_f1=0.8022 | acc=0.7988 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_554105.log
+8. tinyllama | text | L12 | mlp | cross_entropy | afinn | raw | test_f1=0.8007 | val_f1=0.7950 | acc=0.7968 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_553056.log
+9. tinyllama | text | L12 | mlp | cross_entropy | vader+afinn | cleaned | test_f1=0.8000 | val_f1=0.7913 | acc=0.7960 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_554480.log
+10. tinyllama | text | L12 | mlp | cross_entropy | vader+afinn | raw | test_f1=0.7992 | val_f1=0.8023 | acc=0.7960 | split=fixed_test_csv | test_size=3534 | log=/home/k/kimsh/cs4248/project/results/slurm_new_553312.log
