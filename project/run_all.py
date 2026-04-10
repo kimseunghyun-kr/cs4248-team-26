@@ -22,6 +22,7 @@ Usage:
   python run_all.py --model roberta-large      # larger safe encoder shortcut
   python run_all.py --model xlmr-large         # multilingual large encoder shortcut
   python run_all.py --model qwen25-3b          # decoder-only Qwen2.5 path
+  python run_all.py --model gemma4-26b-it      # scoped Gemma 4 CBDC path (26B A4B)
   python run_all.py --tokenizer custom-tok     # custom tokenizer
 """
 

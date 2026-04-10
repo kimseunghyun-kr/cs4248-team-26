@@ -2893,3 +2893,595 @@ Safe PI-facing summary:
 - the method appears to be doing real latent-space work
 - but the current prompt bank is likely under-calibrated for some backbone families
 - so the main bottleneck now is prompt/prototype geometry rather than simple absence of learning
+
+## 2026-04-09 Professor-facing brief generated
+
+Created a concise-but-sufficient professor-facing project brief that is meant to explain:
+
+- what the project is trying to do
+- how the codebase is organized
+- what each condition (`B1`, `D1`, `D2`, `D2.5`, `D3`) means
+- what is actually being debiased
+- how the CBDC training loop works in the local NLP adaptation
+- what the current empirical interpretation is
+- what the next practical steps are
+
+Outputs:
+
+- `report/cbdc_professor_brief.md`
+- `report/cbdc_professor_brief.docx`
+
+Important design choice:
+
+- The document is written for "assignment-level but direction-setting" communication.
+- It avoids overclaiming novelty.
+- It also avoids stale hard-coded metric narratives and instead summarizes the current stable project understanding:
+  - the method is active
+  - the transfer is backbone-dependent
+  - the main bottleneck is now prompt/prototype geometry calibration, especially in `cbdc/prompts.py`
+
+## 2026-04-10 Gemma 4 support attempt
+
+The codebase was extended to prepare for Gemma 4 support, but there is an important environment blocker.
+
+### 1. Official model family status
+
+From the official Google Gemma 4 model card and Hugging Face pages:
+
+- Gemma 4 is now a real family, not just a placeholder idea.
+- The main variants are:
+  - `E2B`
+  - `E4B`
+  - `26B A4B`
+  - `31B`
+- The official docs describe them as multimodal decoder-style models with hybrid local/global attention and long context.
+
+This matters for the local project because they are much closer to the existing decoder-family path (`qwen2`, `llama`) than to the encoder-family BERT/RoBERTa path.
+
+### 2. Local code changes made
+
+Added registry shortcuts in `config.py`:
+
+- `gemma4-e2b`
+- `gemma4-e2b-it`
+- `gemma4-e4b`
+- `gemma4-e4b-it`
+- `gemma4-26b`
+- `gemma4-26b-it`
+- `gemma4-26b-a4b`
+- `gemma4-26b-a4b-it`
+- `gemma4-31b`
+- `gemma4-31b-it`
+
+Extended `encoder.py` so that:
+
+- `gemma4` is treated as a decoder-family latent-tail model
+- Gemma 4 names are recognized by the decoder-family detection logic
+- the decoder tail uses the same last-non-pad-token pooling path as the current Qwen/Llama support
+- sliding/global attention selection is generalized so non-Qwen decoder families can use the same infrastructure when they expose layer-level attention type metadata
+
+Also added a Gemma-specific dtype policy:
+
+- default load dtype is now `bfloat16` for Gemma 4
+- other backbones stay on the previous `float32` default unless overridden with `MODEL_DTYPE`
+
+Reason:
+
+- without this, larger Gemma 4 variants would be unrealistic on a single GPU even if the architecture loaded successfully
+
+### 3. Current blocker: installed Transformers build
+
+The current environment can tokenize Gemma 4 but cannot load the model body.
+
+Observed behavior:
+
+- `AutoTokenizer.from_pretrained('google/gemma-4-E2B-it')` succeeds
+- `AutoModel.from_pretrained(...)` fails because the installed Transformers build does not recognize `model_type='gemma4'`
+
+The local code now raises a clearer error message explaining that:
+
+- Gemma 4 needs a newer Transformers build on the H100 node before Phase 1 / Phase 2 can run
+
+So the current state is:
+
+- code path prepared
+- registry added
+- decoder-family adaptation logic added
+- but actual Gemma 4 runs are blocked by library support, not by the project code anymore
+
+### 4. H100 feasibility read
+
+Using the official Gemma 4 model card as the rough size guide:
+
+- `E2B`:
+  - should be comfortably feasible on a 96 GB H100
+- `E4B`:
+  - should also be comfortably feasible on a 96 GB H100
+- `26B A4B`:
+  - plausible on a 96 GB H100 if loaded in `bfloat16`
+  - not something the previous all-`float32` pipeline would safely support
+- `31B`:
+  - plausible but not yet "safe" enough to promise without a real run
+  - the weights alone are large enough that this should be treated as a borderline case until validated in the actual cluster environment
+
+So the practical recommendation is:
+
+- first try `gemma4-e2b-it`
+- then `gemma4-e4b-it`
+- then, if the upgraded Transformers build works cleanly, test `gemma4-26b-it`
+- treat `gemma4-31b-it` as experimental until memory is verified on the real H100 job
+
+### 5. Relation to the current CBDC method
+
+Conceptually, Gemma 4 fits the local CBDC adaptation reasonably well:
+
+- frozen decoder backbone
+- intermediate latent extraction
+- perturbation injected before the final decoder block(s)
+- last-token-side pooled embedding used for sentence-level representation
+
+So if the environment issue is removed, the same decoder-family CBDC path should be the right first attempt for Gemma 4.
+
+The remaining uncertainty is not the high-level method shape; it is:
+
+- exact architecture support in the installed Transformers version
+- whether Gemma 4's hybrid attention implementation exposes the same layer metadata that the generalized decoder-tail path expects
+
+### Follow-up: practical support fix
+
+The most realistic way to "fix Gemma 4 support" for this project was not a Kaggle-specific fallback loader, but upgrading the Transformers build itself.
+
+Observed update:
+
+- upgraded local environment from `transformers 5.3.0` to `transformers 5.5.3`
+- after the upgrade:
+  - `AutoConfig.from_pretrained('google/gemma-4-E2B-it')` succeeds
+  - config type is now recognized as `Gemma4Config`
+  - the real text decoder dimensions are exposed under `config.text_config`
+
+Important architecture clarification:
+
+- Gemma 4 is exposed through a multimodal wrapper config (`Gemma4Config`)
+- the actual text decoder lives under:
+  - `backbone.language_model`
+- the real decoder hidden size and layer count live under:
+  - `config.text_config.hidden_size`
+  - `config.text_config.num_hidden_layers`
+
+So the local encoder path was updated again to:
+
+- use the multimodal wrapper only as the outer checkpoint container
+- treat `backbone.language_model` as the true text core for:
+  - hidden-size discovery
+  - layer resolution
+  - rotary embeddings
+  - final norm
+  - intermediate hidden-state extraction
+
+This is a better fit than trying to run the entire multimodal wrapper as if it were a plain decoder-only text model.
+
+Requirements update:
+
+- `requirements.txt` now pins `transformers>=5.5.3`
+
+Interpretation:
+
+- for this project, upgrading Transformers is the right primary fix
+- not writing a custom Kaggle-only Gemma 4 loader
+
+Reason:
+
+- the current CBDC port depends on:
+  - tokenizer access
+  - hidden-state extraction
+  - partial-layer tail execution
+  - architecture-aware causal masking
+
+These are natural in a supported Transformers implementation, but would require a much larger custom integration effort in a separate runtime.
+
+### Alternative runtimes: why they are not the main path here
+
+Possible alternatives considered:
+
+- Kaggle / Google Gemma examples
+- Hugging Face collection
+- official `google/gemma_pytorch` style routes
+
+Current conclusion:
+
+- Kaggle and Google docs are useful for weights and reference usage, but they are not the best direct fit for this project's latent-tail CBDC manipulation.
+- A pure inference runtime such as vLLM or llama.cpp would also be a poor fit, because the project needs:
+  - intermediate hidden states
+  - tail-layer access
+  - gradient-based latent perturbation
+
+So the practical ranking is:
+
+1. supported Transformers Gemma 4 path
+2. only if that fails badly, consider a larger custom integration around a lower-level Gemma PyTorch implementation
+
+At the moment, option 1 is clearly the right route.
+
+### Regression check after Gemma 4 support changes
+
+Follow-up task:
+
+- include the Gemma 4 code-path changes in the journal
+- verify that the refactor did not break previously working encoder / latent-tail paths
+
+What changed in code:
+
+- `config.py`
+  - added Gemma 4 shortcut aliases:
+    - `gemma4-e2b`, `gemma4-e2b-it`
+    - `gemma4-e4b`, `gemma4-e4b-it`
+    - `gemma4-26b`, `gemma4-26b-it`
+    - `gemma4-26b-a4b`, `gemma4-26b-a4b-it`
+    - `gemma4-31b`, `gemma4-31b-it`
+- `encoder.py`
+  - added `gemma4` to the supported decoder-family latent-tail types
+  - introduced a `core_model` abstraction so the code can treat:
+    - plain encoders normally
+    - `Gemma4Config` checkpoints through `backbone.language_model`
+  - generalized decoder tail execution so Llama / Qwen2 / Gemma4 all go through the same terminal-token latent-tail path
+  - added dtype resolution:
+    - Gemma 4 defaults to `bfloat16`
+    - existing models remain `float32` unless `MODEL_DTYPE` is explicitly set
+- `requirements.txt`
+  - now requires `transformers>=5.5.3`
+
+Sanity checks run:
+
+- `python -m py_compile encoder.py config.py run_all.py data/embed.py cbdc/refine.py pipeline/prototype_classify.py pipeline/evaluate.py report/make_report.py`
+  - passed
+- registry resolution check:
+  - `bert -> bert-base-cased`
+  - `roberta -> roberta-base`
+  - `distilbert -> distilbert-base-cased`
+  - `qwen25-0.5b -> Qwen/Qwen2.5-0.5B`
+  - `gemma4-e2b-it -> google/gemma-4-E2B-it`
+- Gemma-capability check after upgrading Transformers:
+  - local env now reports `transformers 5.5.3`
+  - `AutoConfig.from_pretrained('google/gemma-4-E2B-it')` succeeds
+  - `AutoConfig.from_pretrained('google/gemma-4-E4B-it')` succeeds
+  - both expose `Gemma4Config`, with text-core dimensions under `config.text_config`
+
+Runtime smoke test for old pipeline families:
+
+- built tiny local models and ran the local `TransformerEncoder` against them with:
+  - `encode_text(...)`
+  - `get_intermediate_features(...)`
+  - `encode_with_delta_from_hidden(...)`
+- passed for:
+  - `bert`
+  - `roberta`
+  - `distilbert`
+  - `llama`
+  - `qwen2`
+
+Interpretation:
+
+- the Gemma 4 refactor does **not** appear to have broken the previously supported encoder-family paths
+- the existing decoder-family latent-tail logic for Llama and Qwen2 also still executes correctly after the refactor
+- so the current code state is:
+  - Gemma 4 support path added
+  - older pipelines still smoke-test cleanly
+
+Remaining caveat:
+
+- this was a targeted smoke test, not a full re-run of all historical training jobs
+- actual full Gemma 4 experiment runs still depend on the real cluster environment having:
+  - updated `transformers`
+  - enough VRAM for the selected Gemma variant
+
+Current confidence level:
+
+- high confidence that the code refactor itself did not regress the old architecture paths
+- moderate confidence on full Gemma 4 execution until an actual H100 run is launched
+
+### Gemma 4: reviving the `text_iccv` path more faithfully
+
+Question raised:
+
+- since Gemma 4 is multimodal and therefore closer to a VLM wrapper than a plain decoder LM, can the local `text_iccv` path be revived so it mirrors the original CBDC text-stage path more faithfully?
+
+Short answer:
+
+- yes, partially
+- but the right fix was **not** "route through the vision tower"
+- the right fix was to restore Gemma 4's missing text-layer side-channel inputs inside the latent-tail execution path
+
+What was discovered from the installed Transformers Gemma 4 code:
+
+- `Gemma4ForConditionalGeneration` is a multimodal wrapper with:
+  - `model = Gemma4Model(config)`
+  - `lm_head`
+- `Gemma4Model` contains:
+  - `language_model`
+  - `vision_tower`
+  - multimodal embedders for image/audio soft tokens
+- for a text-only run, the actual sentence representation still comes from the text stack inside:
+  - `backbone.language_model`
+
+Important architectural nuance:
+
+- Gemma 4 text is **not** just a plain "last token decoder" in the simple Llama/Qwen sense
+- its text layers can consume:
+  - `per_layer_input`
+  - `shared_kv_states`
+  - layer-type-specific rotary embeddings and attention masks
+- the local first-pass Gemma support had treated the text core as an ordinary decoder tail
+- that meant the manual latent-tail execution in `encode_with_delta_from_hidden(...)` was missing the per-layer side inputs that Gemma 4 uses internally
+
+This matters specifically for `text_iccv`, because the whole Phase 2 method depends on:
+
+- extracting an intermediate hidden state
+- injecting `delta`
+- manually executing the trainable tail block(s)
+
+If that tail execution omits Gemma's extra inputs, the path is only a rough approximation.
+
+What was changed to revive the path:
+
+- `encoder.py`
+  - `encode_with_delta_from_hidden(...)` now accepts `input_ids`
+  - for `gemma4`, `_prepare_decoder_tail_inputs(...)` now reconstructs:
+    - projected `per_layer_inputs`
+    - layer-type-specific rotary embeddings
+    - layer-type-specific attention routing
+    - shared KV state container
+  - the Gemma tail now feeds each decoder layer with:
+    - `per_layer_input`
+    - `shared_kv_states`
+    - `position_embeddings[layer_type]`
+    - `attention_mask[layer_type]`
+- `cbdc/refine.py`
+  - all `text_iccv` / `_pgd_bipolar` / class-prototype call sites now pass `input_ids` through to `encode_with_delta_from_hidden(...)`
+
+Interpretation:
+
+- this is a materially better match to Gemma 4's actual text path than the earlier generic decoder-only adaptation
+- it is still not "CLIP text path unchanged", because Gemma 4 remains a generative multimodal decoder family, not a contrastive CLIP encoder
+- but for the text-only CBDC adaptation, this is the correct architectural direction
+
+Verification run:
+
+- tiny synthetic `Gemma4Model` checkpoint created locally
+- smoke test passed for:
+  - `encode_text(...)`
+  - `get_intermediate_features(...)`
+  - `encode_with_delta_from_hidden(..., input_ids=...)`
+- stronger smoke test also passed:
+  - 1-epoch synthetic `text_iccv(...)` run on tiny Gemma 4 with `selector_mode='last'`
+  - completed end-to-end and produced:
+    - final directions tensor
+    - final class prototype tensor
+
+Also rechecked after this patch:
+
+- tiny `qwen2` latent-tail smoke test still passes
+
+Best wording:
+
+- Gemma 4 being multimodal did **not** mean "use the full VLM path with vision features" for this project
+- it meant the text-side latent-tail path needed to respect Gemma's richer text-layer mechanics
+- after this patch, the local `text_iccv` path is revived for Gemma 4 in the way that is most faithful to the current text-only CBDC adaptation
+
+### CLIP text path vs current NLP / Gemma path
+
+Important clarification:
+
+- the remembered CLIP sketch:
+
+  - token embedding
+  - positional embedding
+  - all transformer blocks frozen
+  - `ln_final`
+  - `[token_max]`
+  - `text_projection`
+  - normalize
+
+  is closer to the original code's `proj` mode than to its default CBDC text-training path
+
+What the original CLIP code actually defaults to:
+
+- `train_bafa.py` sets:
+  - `txt_learn_mode="linear"`
+- `SetTarget(..., modal='txt', learn_mode='linear')` then:
+  - freezes the whole text tower
+  - unfreezes the last text transformer block
+  - keeps `ln_final` and `text_projection` as the fixed readout
+
+So the original default text-stage CBDC shape is better summarized as:
+
+- frozen token embedding / positional embedding / early text blocks
+- extract intermediate text latent
+- apply PGD in latent space
+- run the last text transformer block (trainable)
+- `ln_final`
+- `[token_max]`
+- fixed `text_projection`
+- normalize
+
+That is closer to the local NLP adaptation than the projection-only memory sketch.
+
+Current local NLP/Gemma path:
+
+- encoder-style models:
+  - frozen early layers
+  - latent perturbation before the final layer
+  - trainable last encoder block
+  - pooled sentence representation
+  - normalize
+- decoder-style models:
+  - frozen early decoder stack
+  - latent perturbation at the terminal pooled-token position
+  - trainable last decoder block
+  - final norm
+  - last non-pad token pooling
+  - normalize
+
+So the safest comparison remains:
+
+- original CBDC default text path:
+  - frozen body + perturbed latent + trainable last text block
+- current NLP/Gemma path:
+  - frozen body + perturbed latent + trainable last text/decoder block
+
+### Gemma 4 decoder-layer training feasibility
+
+Question checked:
+
+- is decoder-layer training actually possible for Gemma 4, given:
+  - RoPE / p-RoPE style rotary handling
+  - hybrid sliding/global attention
+  - per-layer embeddings in the small dense models
+  - the `26B A4B` variant naming, which could be confused with a quantized format
+
+Architecture reading:
+
+- from the official Gemma 4 Hugging Face model card:
+  - Gemma 4 uses hybrid attention
+  - small dense models (`E2B`, `E4B`) use Per-Layer Embeddings (PLE)
+  - `26B A4B` is a Mixture-of-Experts model where "A" means **active parameters**
+  - it is **not** a "TurboQuant" style quantized checkpoint name
+
+Current interpretation:
+
+- `A4B` = active-parameter MoE naming
+- not a reason by itself that tail-layer training would be impossible
+
+What was verified locally from the real released configs:
+
+- `google/gemma-4-E2B-it`
+  - `num_kv_shared_layers = 20`
+  - `hidden_size_per_layer_input = 256`
+- `google/gemma-4-E4B-it`
+  - `num_kv_shared_layers = 18`
+  - `hidden_size_per_layer_input = 256`
+- `google/gemma-4-26B-A4B-it`
+  - `num_kv_shared_layers = 0`
+  - `enable_moe_block = True`
+  - `hidden_size_per_layer_input = 0`
+- `google/gemma-4-31B-it`
+  - `num_kv_shared_layers = 0`
+  - `hidden_size_per_layer_input = 0`
+
+This split matters:
+
+- `E2B / E4B`
+  - need the local tail path to carry:
+    - per-layer inputs
+    - shared-KV state
+    - layer-type-specific rotary embeddings / masks
+  - a pure one-layer tail starting only at the final layer is **not** enough
+  - the final layer is shared-KV and needs the provider layer to run first
+- `26B A4B / 31B`
+  - do **not** use the same shared-KV / PLE setup at the tail
+  - so the local last-block decoder-tail assumption is much closer to adequate
+
+Additional patch made:
+
+- `encoder.py`
+  - now computes an architecture-aware default Gemma tail start layer
+  - for shared-KV Gemma variants, it backs up to the provider layer needed to populate the final layer's shared KV state
+  - this keeps only the last layer trainable, but runs enough frozen tail context to make the final layer executable
+
+Concrete check:
+
+- synthetic tiny Gemma 4 config built with:
+  - hybrid attention
+  - per-layer inputs
+  - shared-KV
+  - MoE block enabled
+- after the tail-start fix:
+  - backward pass through `encode_with_delta_from_hidden(...)` succeeds
+  - gradients reach:
+    - the last decoder layer parameters
+    - the injected `delta`
+
+Interpretation:
+
+- yes, decoder-layer training is genuinely possible
+- RoPE / hybrid attention / MoE do not make the method impossible
+- but:
+  - small dense Gemma (`E2B`, `E4B`) needs a deeper architecture-aware tail start
+  - `26B A4B` and `31B` are structurally simpler for this specific text-only latent-tail adaptation
+
+Current best practical recommendation:
+
+- if the goal is "most faithful Gemma 4 CBDC run with least architectural friction":
+  - `gemma4-26b-it` or `gemma4-31b-it` are conceptually cleaner targets
+- if the goal is "cheapest first Gemma experiment":
+  - `gemma4-e2b-it` is still viable, but its tail path is more architecture-sensitive because of shared-KV + PLE
+
+Support-scope decision:
+
+- there is no need to present all Gemma 4 variants as equally supported
+- the practical support story should be intentionally narrower:
+  - primary recommended Gemma target: `gemma4-26b-it`
+  - no need to stretch the codebase to claim all Gemma 4 variants
+  - small `E2B/E4B` variants are intentionally out of scope in the cleaned-up path
+
+Implementation note:
+
+- the registry and code were cleaned up accordingly:
+  - keep the `26B A4B` aliases
+  - remove the extra small/large alias clutter that is not needed for the current experiments
+  - remove the small-Gemma-specific latent-tail machinery that was only there to support `E2B/E4B`
+
+### Gemma support cleanup
+
+Follow-up cleanup decision:
+
+- simplify the Gemma integration to only what is needed for:
+  - existing pipelines
+  - current Gemma experiments
+
+Code cleanup made:
+
+- `config.py`
+  - trimmed Gemma aliases down to the `26B A4B` path:
+    - `gemma4-26b`
+    - `gemma4-26b-it`
+- `run_all.py`
+  - example usage now points only to:
+    - `gemma4-26b-it`
+- `encoder.py`
+  - removed the small-Gemma-specific handling for:
+    - reconstructed `per_layer_inputs`
+    - deeper shared-KV tail-start fallback
+  - kept only the necessary Gemma 4 text-core logic for the cleaner 26B-style path:
+    - resolve `backbone.language_model`
+    - layer-type-specific rotary embeddings
+    - sliding/full attention routing
+  - added an explicit guard:
+    - Gemma 4 variants with per-layer inputs or shared-KV text layers now fail early with a clear `NotImplementedError`
+- `cbdc/refine.py`
+  - removed the extra `input_ids` plumbing that had only been introduced for the small-Gemma path
+
+Interpretation:
+
+- this makes the Gemma integration smaller and easier to reason about
+- it avoids leaving half-supported special cases in the code
+- it keeps the path that is actually relevant to the current experiments
+
+Verification after cleanup:
+
+- `python -m py_compile encoder.py cbdc/refine.py config.py run_all.py`
+  - passed
+- tiny smoke tests passed for existing pipelines:
+  - `bert`
+  - `qwen2`
+- tiny `26B/31B`-style Gemma smoke test passed:
+  - no per-layer inputs
+  - no shared-KV text layers
+- tiny 1-epoch `text_iccv(...)` run on cleaned Gemma path passed end-to-end
+- tiny `E2B/E4B`-style Gemma now fails early with the intended message:
+  - current support is intentionally scoped to `26B/31B`-style text variants
+
+Current project-facing wording:
+
+- Gemma 4 support is intentionally narrow
+- the maintained path is the `26B A4B` CBDC experiment path
+- existing non-Gemma pipelines remain intact after the cleanup

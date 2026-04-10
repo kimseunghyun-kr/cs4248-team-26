@@ -18,6 +18,10 @@ MODEL_REGISTRY = {
     "qwen25-3b": "Qwen/Qwen2.5-3B",
     "llama32-1b": "meta-llama/Llama-3.2-1B",
     "llama32-3b": "meta-llama/Llama-3.2-3B",
+    # Gemma 4 support is intentionally scoped to the cleaner 26B path.
+    # If needed later, other Gemma 4 checkpoints can still be passed as full HF IDs.
+    "gemma4-26b": "google/gemma-4-26B-A4B",
+    "gemma4-26b-it": "google/gemma-4-26B-A4B-it",
     "distilbert": "distilbert-base-cased", # <--- changed to cased
 }
 
