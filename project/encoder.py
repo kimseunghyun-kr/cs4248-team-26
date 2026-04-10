@@ -15,11 +15,12 @@ Phase 2 latent-tail CBDC training supports:
 """
 
 import os
+import gc
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import AutoTokenizer, AutoModel
+from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM
 from transformers.masking_utils import create_causal_mask, create_sliding_window_causal_mask
 
 
@@ -57,10 +58,7 @@ class TransformerEncoder(nn.Module):
         if self.model_name and self._looks_decoder_model_name(model_name):
             self.tokenizer.padding_side = "right"
         try:
-            self.backbone = AutoModel.from_pretrained(
-                model_name,
-                dtype=self.load_dtype,
-            )
+            self.backbone = self._load_backbone(model_name)
         except ValueError as exc:
             if "model type `gemma4`" in str(exc):
                 raise RuntimeError(
@@ -70,13 +68,18 @@ class TransformerEncoder(nn.Module):
                     "node first, then rerun Phase 1/2."
                 ) from exc
             raise
-        self.backbone.to(device)
         self.core_model = self._resolve_core_model(self.backbone)
-        if self.load_dtype == torch.float32:
+        self.model_type = self._canonical_model_type(
+            getattr(self._core_config(), "model_type", getattr(self.backbone.config, "model_type", "unknown"))
+        )
+        self._trim_unused_output_head()
+        self._disable_decoder_cache()
+        self.backbone.to(device)
+        current_dtype = next(self.backbone.parameters()).dtype
+        if self.load_dtype == torch.float32 and current_dtype != torch.float32:
             self.backbone.float()
-        else:
+        elif self.load_dtype != torch.float32 and current_dtype != self.load_dtype:
             self.backbone.to(dtype=self.load_dtype)
-        self.model_type = getattr(self.backbone.config, "model_type", "unknown")
         self.hidden_size = self._core_config().hidden_size
         self.backbone_dtype = next(self.core_model.parameters()).dtype
         self._validate_gemma_variant_support()
@@ -93,6 +96,32 @@ class TransformerEncoder(nn.Module):
     def _looks_decoder_model_name(model_name: str) -> bool:
         lower = model_name.lower()
         return "llama" in lower or "qwen" in lower or "gemma-4" in lower or "gemma4" in lower
+
+    @staticmethod
+    def _is_gemma4_model_name(model_name: str) -> bool:
+        lower = model_name.lower()
+        return "gemma-4" in lower or "gemma4" in lower
+
+    @staticmethod
+    def _canonical_model_type(model_type: str) -> str:
+        if model_type in {"gemma4", "gemma4_text"}:
+            return "gemma4"
+        return model_type
+
+    def _load_backbone(self, model_name: str) -> nn.Module:
+        load_kwargs = {
+            "dtype": self.load_dtype,
+            "low_cpu_mem_usage": True,
+        }
+        if self._is_gemma4_model_name(model_name):
+            return AutoModelForCausalLM.from_pretrained(
+                model_name,
+                **load_kwargs,
+            )
+        return AutoModel.from_pretrained(
+            model_name,
+            **load_kwargs,
+        )
 
     @staticmethod
     def _resolve_load_dtype(model_name: str) -> torch.dtype:
@@ -120,9 +149,35 @@ class TransformerEncoder(nn.Module):
 
     @staticmethod
     def _resolve_core_model(backbone: nn.Module) -> nn.Module:
-        if getattr(backbone.config, "model_type", None) == "gemma4" and hasattr(backbone, "language_model"):
-            return backbone.language_model
+        model_type = getattr(backbone.config, "model_type", None)
+        if model_type in {"gemma4", "gemma4_text"}:
+            if hasattr(backbone, "language_model"):
+                return backbone.language_model
+            if hasattr(backbone, "model"):
+                return backbone.model
         return backbone
+
+    def _trim_unused_output_head(self) -> None:
+        # For Gemma4 text-only use we never use LM logits, so dropping lm_head can
+        # save a material amount of GPU memory before the model is moved to device.
+        if self.model_type != "gemma4":
+            return
+        if hasattr(self.backbone, "set_output_embeddings"):
+            try:
+                self.backbone.set_output_embeddings(None)
+            except Exception:
+                pass
+        if hasattr(self.backbone, "lm_head"):
+            try:
+                delattr(self.backbone, "lm_head")
+            except Exception:
+                pass
+        gc.collect()
+
+    def _disable_decoder_cache(self) -> None:
+        for cfg_obj in (getattr(self.backbone, "config", None), self._core_config()):
+            if cfg_obj is not None and hasattr(cfg_obj, "use_cache"):
+                cfg_obj.use_cache = False
 
     def _core_config(self):
         return self.core_model.config
@@ -270,7 +325,10 @@ class TransformerEncoder(nn.Module):
         enc = self.tokenize(texts, max_length)
         input_ids = enc["input_ids"].to(self.device)
         attention_mask = enc["attention_mask"].to(self.device)
-        out = self.core_model(input_ids=input_ids, attention_mask=attention_mask)
+        model_kwargs = {"input_ids": input_ids, "attention_mask": attention_mask}
+        if self.is_decoder_family():
+            model_kwargs["use_cache"] = False
+        out = self.core_model(**model_kwargs)
         pooled = self._pool_hidden_states(out.last_hidden_state, attention_mask)
         return F.normalize(pooled.float(), dim=-1)
 
@@ -286,7 +344,10 @@ class TransformerEncoder(nn.Module):
         """Encode pre-tokenized ids → normalized sentence vectors (B × H)."""
         input_ids = input_ids.to(self.device)
         attention_mask = attention_mask.to(self.device)
-        out = self.core_model(input_ids=input_ids, attention_mask=attention_mask)
+        model_kwargs = {"input_ids": input_ids, "attention_mask": attention_mask}
+        if self.is_decoder_family():
+            model_kwargs["use_cache"] = False
+        out = self.core_model(**model_kwargs)
         pooled = self._pool_hidden_states(out.last_hidden_state, attention_mask)
         return F.normalize(pooled.float(), dim=-1)
 
@@ -317,11 +378,14 @@ class TransformerEncoder(nn.Module):
             n_layers = self._num_hidden_layers() - 1
 
         with torch.no_grad():
-            out = self.core_model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                output_hidden_states=True,
-            )
+            model_kwargs = {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "output_hidden_states": True,
+            }
+            if self.is_decoder_family():
+                model_kwargs["use_cache"] = False
+            out = self.core_model(**model_kwargs)
             return out.hidden_states[n_layers]
 
     # ------------------------------------------------------------------
