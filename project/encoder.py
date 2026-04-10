@@ -8,8 +8,10 @@ Architecture correspondence (RN50 ↔ BERT-derivative):
 Both tails are single-attention-layer structures. Gradients flow through
 the tail to delta; backbone weights remain frozen.
 
-Phase 1 embedding extraction works with many HuggingFace backbones.
-Phase 2 latent-tail CBDC training supports:
+This branch uses the encoder as a reusable base for VLM-guided
+personalization and nuisance-direction discovery.
+
+Supported latent-tail adaptation families:
   - encoder-style bidirectional models with CLS-style pooling
   - decoder-only Llama/Qwen2/Gemma4-style models via a terminal-token tail path
 """
@@ -65,7 +67,7 @@ class TransformerEncoder(nn.Module):
                     "Gemma 4 checkpoints require a Transformers build that recognizes "
                     "`model_type=gemma4`. The current environment can tokenize Gemma 4, "
                     "but cannot load the model body yet. Upgrade Transformers on the H100 "
-                    "node first, then rerun Phase 1/2."
+                    "node first, then rerun the personalization setup."
                 ) from exc
             raise
         self.core_model = self._resolve_core_model(self.backbone)
@@ -212,10 +214,10 @@ class TransformerEncoder(nn.Module):
         if self.supports_latent_tail():
             return
         raise NotImplementedError(
-            f"Phase 2 latent-tail CBDC is not yet implemented for model_type='{self.model_type}' "
+            f"Latent-tail adaptation is not yet implemented for model_type='{self.model_type}' "
             f"({self.model_name}). Supported families: "
             f"{sorted(SUPPORTED_LATENT_TAIL_MODEL_TYPES)}. "
-            "Phase 1 embedding extraction may still work, but Phase 2 needs an architecture-specific tail path."
+            "Basic embedding extraction may still work, but perturbation-through-tail needs an architecture-specific path."
         )
 
     # ------------------------------------------------------------------

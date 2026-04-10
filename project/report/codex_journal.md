@@ -4264,3 +4264,179 @@ Practical retry expectation:
 
 - retry Gemma 26B once with the cleaned text-only path and smaller Phase 1 batch
 - if it still OOMs with about `46 GiB` visible, treat `gemma4-26b-it` as effectively blocked on the current allocation
+
+## 2026-04-10 Connor (PI) feedback on decoder experiments
+
+Connor's main point was that the decoder-family path is fundamentally much less aligned with the original CBDC intuition than the encoder-family path.
+
+Key points from Connor:
+
+- CLIP is a contrastive encoder-style text tower, so the original method is naturally easier to port to encoder-style text models.
+- For encoder models:
+  - using the `CLS` token as the intervention / pooling point is comparatively natural
+  - because bidirectional attention lets that token aggregate the full sequence
+- For decoder models:
+  - we hacked the intervention point onto the last non-pad token
+  - that was a pragmatic adaptation, not something Connor considered theoretically well-grounded
+- Decoder LMs are trained for generation, not for the kind of sentence-level representation geometry the method assumes.
+- So even if we can technically inject PGD into a decoder latent state, that does **not** mean the resulting latent direction has the same semantic meaning it has in an encoder / CLIP-style tower.
+- Connor's view was essentially:
+  - the current decoder adaptation is exploratory
+  - and if it works at all, it may be because PGD is acting like generic noise / perturbation rather than because the original CBDC mechanism is faithfully transferring
+
+Connor also pointed out a deeper issue:
+
+- if decoder-family adaptation is to be made serious, the first thing to rethink is the **loss used for PGD**
+- not just the token / state where the perturbation is injected
+
+So the decoder-family failure mode should not be summarized only as:
+
+- "Qwen performed badly"
+
+The more accurate interpretation is:
+
+- the method is structurally much better matched to encoder-style representation models
+- decoder-family experiments were worth trying as an adaptation exercise
+- but they are not currently the right backbone family for the main claim
+
+Connor's broader reasoning for suggesting image-generation / VLM-side work:
+
+- large VLMs still often have a CLIP-like image encoder or encoder-style representation component
+- those components are closer to the original CBDC setting
+- decoder-heavy VLM / LLM components are less visually interpretable and less obviously aligned with the method's original representational assumptions
+
+Project implication:
+
+- keep decoder-family results (`Qwen`, attempted `Gemma`) in the journal as exploratory adaptation attempts
+- do **not** make them central evidence for whether the CBDC text adaptation works
+- the mainline empirical story should stay with encoder-style backbones:
+  - `BERT`
+  - `RoBERTa`
+  - `BERTweet`
+  - similar encoder-family models
+
+Short distilled takeaway from Connor:
+
+- encoder path:
+  - methodologically plausible
+- decoder path:
+  - technically implementable, but conceptually mismatched enough that failure is not surprising
+
+## 2026-04-10 Decoder follow-up results: Qwen25-3B D4 and Gemma4-26B-it
+
+### Qwen25-3B with D4
+
+Important correction:
+
+- Qwen25-3B was already a bad raw baseline before `D4`
+- so `D4` did **not** create the main pathology from scratch
+- rather, it failed to escape the already-collapsed raw geometry and slightly worsened it
+
+Prototype summary:
+
+- `B1`: `0.4049` acc, `0.2058` macro-F1
+- `D1`: `0.3953` acc, `0.2889` macro-F1
+- `D2`: `0.4049` acc, `0.2192` macro-F1
+- `D2.5`: `0.4027` acc, `0.2186` macro-F1
+- `D3`: `0.4032` acc, `0.2381` macro-F1
+- `D4`: `0.4029` acc, `0.1963` macro-F1
+
+Raw `B1` class behavior was already close to total neutral collapse:
+
+- negative recall: `0.0000`
+- neutral recall: `0.9832`
+- positive recall: `0.0227`
+
+`D4` made that collapse even sharper:
+
+- negative recall: `0.0040`
+- neutral recall: `0.9902`
+- positive recall: `0.0036`
+
+Interpretation:
+
+- `D4` discovery is definitely active on Qwen:
+  - selected hard examples: `192`
+  - delta bank: `(576, 2048)`
+  - top adversarial SVD value: `15.85`
+  - `ck` starts extremely large: `40.1`
+- but the discovered directions are not useful debiasing anchors
+- they appear to track the dominant neutral-collapse / generic error direction in the raw prototype space
+
+So for Qwen25-3B:
+
+- `D1` remains the best decoder-side condition tried so far
+- `D3` is second-best
+- `D4-v1` is actively bad, not just flat
+
+### Gemma4-26B-it
+
+Gemma4-26B-it is the first decoder-family run that looks at least somewhat usable, unlike Qwen.
+
+Prototype summary:
+
+- `B1`: `0.3430` acc, `0.2958` macro-F1
+- `D1`: `0.3557` acc, `0.3129` macro-F1
+- `D2`: `0.3469` acc, `0.2960` macro-F1
+- `D2.5`: `0.3449` acc, `0.2957` macro-F1
+- `D3`: `0.3130` acc, `0.2441` macro-F1
+- `D4`: `0.3217` acc, `0.2613` macro-F1
+
+Important qualitative difference from Qwen:
+
+- Gemma raw is **not** neutral-collapsed
+- instead its raw distribution is skewed in a different way:
+  - negative recall: `0.6114`
+  - neutral recall: `0.3797`
+  - positive recall: `0.0517`
+
+So Gemma is not "bad in the same way as Qwen"; it has a different decoder-side latent bias geometry.
+
+Method effects:
+
+- `D1` gives a real, modest improvement over raw:
+  - best overall Gemma condition in this run
+- `D2` and `D2.5` are basically flat relative to raw
+- `D3` and `D4` are clearly harmful
+
+Per-class read:
+
+- `D1` improves:
+  - neutral recall (`0.3797 -> 0.4559`)
+  - positive recall (`0.0517 -> 0.0716`)
+  - with only moderate drop in negative recall
+- `D3` and `D4` swing the distribution much more toward negative-heavy behavior
+  - and almost eliminate positive recall again
+
+Interpretation:
+
+- this does **not** mean decoder-family transfer suddenly works well
+- it means Gemma is less pathological than Qwen under the current adaptation
+- the adapted pipeline can produce a small but real `D1 > B1` effect on Gemma
+- but the stronger CBDC-style variants still do not transfer cleanly
+
+### Decoder family takeaway after Qwen + Gemma
+
+The decoder-side story is now more nuanced than simply "decoder bad":
+
+- decoders are still a conceptually mismatched home for the method relative to encoder-style backbones
+- but different decoder families fail in different ways
+- `Qwen25-3B`:
+  - near-total neutral-collapse geometry
+- `Gemma4-26B-it`:
+  - not collapsed in the same way
+  - somewhat usable raw geometry
+  - small `D1` gain over `B1`
+
+So the useful result here is not just the macro-F1 table:
+
+- the **class distributions themselves** are informative
+- decoder-family models have backbone-specific pathologies
+- and the current debiasing variants deform those pathologies differently
+
+Best practical conclusion:
+
+- keep decoder-family results in the report as exploratory adaptation evidence
+- do not make them the core validation of the method
+- if mentioned positively, the most defensible sentence is:
+  - `Gemma4-26B-it showed a small D1 gain over raw, suggesting the decoder path is not completely vacuous, but encoder-family backbones remain clearly more stable and methodologically aligned.`

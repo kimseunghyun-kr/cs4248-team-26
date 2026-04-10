@@ -1,9 +1,9 @@
 """
-Loss functions for CBDC direction discovery and encoder training.
+Loss functions for PGD-based direction discovery and latent-tail adaptation.
 
 L_B   — contrastive bias alignment (CLIP-style multi-anchor cross-entropy)
-L_s   — multi-axis semantic preservation (matches original exactly)
-L_ck  — cross-knowledge loss (penalizes bias-class alignment)
+L_s   — multi-axis semantic preservation
+L_ck  — cross-anchor orthogonality penalty retained from the upstream method
 """
 
 import torch

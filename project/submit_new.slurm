@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=cbdc-sentiment
+#SBATCH --job-name=vlm-personalization
 #SBATCH --output=results/slurm_new_%j.log
 #SBATCH --error=results/slurm_new_%j.err
 #SBATCH --partition=gpu
@@ -10,18 +10,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
 
-# -------------------------------------------------------
-# SAE + CBDC Financial Sentiment Pipeline
-#
-# Usage:
-#   sbatch submit_new.slurm
-#   sbatch --export=ALL,START_PHASE=4 submit_new.slurm
-#   sbatch --export=ALL,ONLY_PHASE=4 submit_new.slurm
-#   sbatch --export=ALL,CLASSIFIER=prototype submit_new.slurm
-#   sbatch --export=ALL,CLASSIFIER=prototype,INCLUDE_D25=1 submit_new.slurm
-#   sbatch --export=ALL,CLASSIFIER=prototype,INCLUDE_D4=1 submit_new.slurm
-#   sbatch --export=ALL,RUN_MODEL=bert,CLASSIFIER=prototype,INCLUDE_D4=1 submit_new.slurm
-# -------------------------------------------------------
+# Personalization launcher for the `vlm-personalization-pgd` branch.
 
 set -euo pipefail
 echo "Job ID:  ${SLURM_JOB_ID}"
@@ -29,15 +18,12 @@ echo "Node:    $(hostname)"
 echo "Time:    $(date)"
 echo "GPU:     $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || echo 'N/A')"
 
-# ---- Activate conda env -------------------------------------------------------
-ENV_NAME="cbdc"
+ENV_NAME="${ENV_NAME:-cbdc}"
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "${ENV_NAME}"
 
-# ---- Install any new dependencies (idempotent) --------------------------------
-pip install -q "kagglehub[pandas-datasets]>=0.3.0" 2>/dev/null || true
+pip install -q "Pillow>=10.0.0" 2>/dev/null || true
 
-# Help large-model loads fragment less on single-GPU jobs.
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 echo "Packages ready."
@@ -50,33 +36,49 @@ if torch.cuda.is_available():
     print(f"torch-visible GPU: {props.name} | total_memory={props.total_memory / 1024**2:.0f} MiB")
 PY
 
-# ---- Make output dirs ---------------------------------------------------------
-mkdir -p results checkpoints cache
-
-# ---- Run pipeline -------------------------------------------------------------
 export PYTHONUNBUFFERED=1
+export TRANSFORMERS_CACHE=./cache
+export HF_HOME=./cache
 
-START_PHASE="${START_PHASE:-1}"
-ONLY_PHASE="${ONLY_PHASE:-}"
-CLASSIFIER="${CLASSIFIER:-probe}"
-RUN_MODEL="${RUN_MODEL:-roberta}"
-INCLUDE_D25="${INCLUDE_D25:-0}"
-INCLUDE_D4="${INCLUDE_D4:-0}"
+INSTANCE_DIR="${INSTANCE_DIR:?Set INSTANCE_DIR to the instance image or frame directory}"
+CONCEPT_TOKEN="${CONCEPT_TOKEN:?Set CONCEPT_TOKEN, for example 'sks dog'}"
+CLASS_NAME="${CLASS_NAME:?Set CLASS_NAME, for example 'a dog'}"
 
-RUN_ARGS=(--model "${RUN_MODEL}" --classifier "${CLASSIFIER}")
-if [ "${INCLUDE_D25}" = "1" ]; then
-    RUN_ARGS+=(--include_d25)
+RUN_MODEL="${RUN_MODEL:-qwen25-3b}"
+MEDIA_MODE="${MEDIA_MODE:-image}"
+BATCH_SIZE="${BATCH_SIZE:-4}"
+MAX_LENGTH="${MAX_LENGTH:-128}"
+NUM_WORKERS="${NUM_WORKERS:-0}"
+SKIP_DISCOVERY="${SKIP_DISCOVERY:-0}"
+OUTPUT_DIR="${OUTPUT_DIR:-}"
+
+RUN_ARGS=(
+    --instance_dir "${INSTANCE_DIR}"
+    --concept_token "${CONCEPT_TOKEN}"
+    --class_name "${CLASS_NAME}"
+    --model "${RUN_MODEL}"
+    --media_mode "${MEDIA_MODE}"
+    --batch_size "${BATCH_SIZE}"
+    --max_length "${MAX_LENGTH}"
+    --num_workers "${NUM_WORKERS}"
+)
+
+if [ -n "${CLASS_DIR:-}" ]; then
+    RUN_ARGS+=(--class_dir "${CLASS_DIR}")
 fi
-if [ "${INCLUDE_D4}" = "1" ]; then
-    RUN_ARGS+=(--include_d4)
+if [ -n "${TOKENIZER_NAME:-}" ]; then
+    RUN_ARGS+=(--tokenizer "${TOKENIZER_NAME}")
+fi
+if [ -n "${OUTPUT_DIR}" ]; then
+    RUN_ARGS+=(--output_dir "${OUTPUT_DIR}")
+fi
+if [ "${SKIP_DISCOVERY}" = "1" ]; then
+    RUN_ARGS+=(--skip_discovery)
 fi
 
-if [ -n "${ONLY_PHASE}" ]; then
-    echo "Running only phase ${ONLY_PHASE} with classifier=${CLASSIFIER} model=${RUN_MODEL} include_d4=${INCLUDE_D4}"
-    python -u run_all.py "${RUN_ARGS[@]}" --only_phase "${ONLY_PHASE}"
-else
-    echo "Running phases from ${START_PHASE} with classifier=${CLASSIFIER} model=${RUN_MODEL} include_d4=${INCLUDE_D4}"
-    python -u run_all.py "${RUN_ARGS[@]}" --start_phase "${START_PHASE}"
-fi
+mkdir -p results cache
+
+echo "Running personalization setup with model=${RUN_MODEL} media_mode=${MEDIA_MODE}"
+python -u run_personalization.py "${RUN_ARGS[@]}"
 
 echo "Done. $(date)"
