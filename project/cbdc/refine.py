@@ -20,6 +20,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import argparse
+import gc
 import json
 
 import torch
@@ -84,6 +85,26 @@ def _load_raw_split(split: str) -> dict:
             f"Required cached split not found: {path}. Run data/embed.py first."
         )
     return torch.load(path, map_location="cpu")
+
+
+def _release_cuda_memory(*objs) -> None:
+    for obj in objs:
+        if obj is None:
+            continue
+        if isinstance(obj, TransformerEncoder):
+            try:
+                obj.backbone.to("cpu")
+            except Exception:
+                pass
+            continue
+        if isinstance(obj, torch.nn.Module):
+            try:
+                obj.to("cpu")
+            except Exception:
+                pass
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def _save_condition_split(condition_label: str, split: str, payload: dict) -> None:
@@ -1183,6 +1204,8 @@ def main():
         encoder=encoder_b1,
         prompt_bank=cbdc_prompt_bank,
     )
+    _release_cuda_memory(encoder_b1)
+    del encoder_b1
 
     encoder_d1 = _load_encoder(model_name=model_name, device=device, tokenizer_name=tokenizer_name)
     materialize_debias_vl_condition(
@@ -1191,6 +1214,8 @@ def main():
         prompt_bank=debias_prompt_bank,
         class_prompt_bank=cbdc_prompt_bank,
     )
+    _release_cuda_memory(encoder_d1)
+    del encoder_d1
 
     encoder_d2 = _load_encoder(model_name=model_name, device=device, tokenizer_name=tokenizer_name)
     prompt_encodings_d2 = encode_all_prompts(encoder_d2, cbdc_prompt_bank)
@@ -1204,6 +1229,9 @@ def main():
         prompt_bank_payload=cbdc_prompt_bank,
         selector_mode="val_f1",
     )
+    del prompt_encodings_d2
+    _release_cuda_memory(encoder_d2)
+    del encoder_d2
 
     if include_d25:
         encoder_d25 = _load_encoder(model_name=model_name, device=device, tokenizer_name=tokenizer_name)
@@ -1218,6 +1246,9 @@ def main():
             prompt_bank_payload=cbdc_prompt_bank,
             selector_mode="loss",
         )
+        del prompt_encodings_d25
+        _release_cuda_memory(encoder_d25)
+        del encoder_d25
 
     encoder_d3 = _load_encoder(model_name=model_name, device=device, tokenizer_name=tokenizer_name)
     P_debias_d3, svd_dirs_d3, bias_anchors_d3, anti_anchors_d3, anchor_info_d3 = discover_confound_map(
@@ -1242,6 +1273,9 @@ def main():
         },
         selector_mode="val_f1",
     )
+    del P_debias_d3, svd_dirs_d3, bias_anchors_d3, anti_anchors_d3, anchor_info_d3
+    _release_cuda_memory(encoder_d3)
+    del encoder_d3
 
     if include_d4:
         encoder_d4 = _load_encoder(model_name=model_name, device=device, tokenizer_name=tokenizer_name)
@@ -1268,6 +1302,9 @@ def main():
             },
             selector_mode="val_f1",
         )
+        del adv_dirs_d4, bias_anchors_d4, anti_anchors_d4, discovery_meta_d4
+        _release_cuda_memory(encoder_d4)
+        del encoder_d4
 
     print("\nPhase 2 materialization complete.")
 
