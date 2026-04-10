@@ -12,6 +12,7 @@ Outputs (saved to cache directory):
 
 Run from project/ directory:
   python data/embed.py [--batch_size 64] [--max_length 128]
+  EMBED_BATCH_SIZE=4 python data/embed.py
 """
 
 import sys
@@ -69,8 +70,8 @@ def encode_texts_with_tokens(
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name", default=os.environ.get("MODEL_NAME", "bert-base-uncased"))
-    parser.add_argument("--batch_size", type=int, default=64)
-    parser.add_argument("--max_length", type=int, default=128)
+    parser.add_argument("--batch_size", type=int, default=int(os.environ.get("EMBED_BATCH_SIZE", "64")))
+    parser.add_argument("--max_length", type=int, default=int(os.environ.get("EMBED_MAX_LENGTH", "128")))
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"

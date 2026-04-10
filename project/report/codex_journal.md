@@ -3821,6 +3821,256 @@ Current caveat:
   - adversarial shortcut-direction discovery for CBDC
 - not yet a full BiasAdv replica with a separate explicitly biased auxiliary predictor
 
+### D4 exact methodology as currently implemented
+
+This is the exact `D4` flow in code right now, not the broader BiasAdv idealization.
+
+#### Inputs used
+
+- split source:
+  - raw cached `train` split only
+- sample-level inputs loaded from the raw split cache:
+  - `embeddings`
+  - `labels`
+  - `input_ids`
+  - `attention_mask`
+  - optional `texts` for preview metadata
+- prompt bank used for discovery:
+  - `cbdc_prompt_bank`
+- no `DebiasVL` topic miner
+- no handcrafted bias-pair prompts from `prompts.py` are used in the discovery stage
+
+#### Step A: build prototype decision rule on the raw train split
+
+1. Build class prompt prototypes from the standard CBDC class prompt groups.
+2. Normalize both:
+   - raw train embeddings
+   - class prompt prototypes
+3. Compute prototype logits as:
+
+```text
+logits = temperature * normalize(z) @ normalize(proto)^T
+```
+
+where:
+
+- `temperature = cfg.d4_ce_temperature`
+- default:
+  - `100.0`
+
+So the D4 discovery stage uses the **same cosine-style prototype geometry** as the rest of the prototype pipeline.
+
+#### Step B: select hard examples in a class-balanced way
+
+For each class `c ∈ {negative, neutral, positive}`:
+
+1. Compute predicted class from the prototype logits.
+2. Compute the true-class margin:
+
+```text
+margin(x) = score_true(x) - max_{k != y} score_k(x)
+```
+
+3. Partition samples of that class into:
+   - misclassified
+   - correctly classified
+4. Sort both groups by ascending margin:
+   - smaller margin = harder / less confident
+5. Select up to `cfg.d4_max_hard_per_class` samples:
+   - misclassified samples first
+   - if there are not enough, fill the remainder with lowest-margin correct samples
+
+Default:
+
+- `d4_max_hard_per_class = 64`
+
+So D4 is not attacking all train samples. It attacks a balanced bank of the hardest raw examples under the current prototype view.
+
+#### Step C: extract latent state and clean embedding
+
+For the selected hard examples only:
+
+1. Reuse cached tokenization:
+   - `input_ids`
+   - `attention_mask`
+2. Run:
+   - `h_target = encoder.get_intermediate_features(...)`
+3. Compute the clean embedding with zero latent perturbation:
+
+```text
+z_orig = encoder.encode_with_delta_from_hidden(h_target, mask, delta=0)
+```
+
+4. Encode the standard `keep_text` prompts to form `keep_cb`
+
+So D4 discovery happens at the same latent intervention point already used by the current CBDC text path.
+
+#### Step D: PGD discovery objective
+
+For each restart:
+
+- initialize latent perturbation `delta`
+  - restart 0: zeros
+  - later restarts: uniform random init inside `[-random_eps, random_eps]`
+- defaults:
+  - `d4_num_samples = 3`
+  - `n_pgd_steps = 20`
+  - `step_lr = 0.0037`
+  - `epsilon = 1.0`
+
+At each PGD step:
+
+1. Form perturbed embedding:
+
+```text
+z_pert = encoder.encode_with_delta_from_hidden(h_target, mask, delta)
+```
+
+2. Compute prototype CE loss against the true sentiment labels:
+
+```text
+L_ce = CE(prototype_logits(z_pert), y)
+```
+
+3. Compute semantic preservation penalty using the existing keep-loss:
+
+```text
+L_sem = l_semantic_preservation(z_pert, z_orig, keep_cb) / 100
+```
+
+4. Maximize the objective:
+
+```text
+L_adv = L_ce - keep_weight * L_sem
+```
+
+with default:
+
+- `keep_weight = 0.92`
+
+Interpretation:
+
+- increase the current sentiment classification error
+- while discouraging a completely arbitrary semantic drift away from the original embedding
+
+#### Step E: optional sentiment-orthogonal PGD constraint
+
+If `cfg.sent_orthogonal_pgd = True`:
+
+1. Construct an orthonormal basis from the class prompt prototypes.
+2. Project the PGD gradient to the orthogonal complement of that sentiment span before the sign step.
+
+So the PGD update becomes:
+
+```text
+grad <- grad - Proj_sentiment(grad)
+delta <- clamp(delta + step_lr * sign(grad), -epsilon, +epsilon)
+```
+
+Interpretation:
+
+- D4 tries to find directions that worsen the decision
+- but not by simply moving directly along the class-prototype sentiment axes
+
+#### Step F: convert adversarial failures into a direction bank
+
+After each restart:
+
+1. Re-encode the attacked sample:
+
+```text
+z_adv = encoder.encode_with_delta_from_hidden(h_target, mask, delta*)
+```
+
+2. Store the normalized embedding-space shift:
+
+```text
+d = normalize(z_adv - z_orig)
+```
+
+All such shifts across all selected samples and restarts are concatenated into the D4 delta bank.
+
+So the object being factorized is not the raw perturbed embedding itself, but the **direction of adversarial movement** in embedding space.
+
+#### Step G: SVD-based anchor discovery
+
+Given the full delta bank:
+
+1. Mean-center it.
+2. Run SVD:
+
+```text
+Delta_centered = U S V^T
+```
+
+3. Take the top `cfg.n_bias_dirs` right-singular vectors.
+4. L2-normalize them.
+
+Defaults:
+
+- `n_bias_dirs = 4`
+
+Then define:
+
+- `bias_anchors = top_svd_dirs`
+- `anti_anchors = -top_svd_dirs`
+
+So unlike `D3`, where discovery comes from `DebiasVL/topic-mining -> projection residual -> SVD`, `D4` discovers anchors from **SVD over adversarial error directions**.
+
+#### Step H: hand discovered anchors to the ordinary CBDC trainer
+
+After discovery, D4 does **not** train on the attacked samples directly.
+
+Instead it calls the existing:
+
+- `materialize_cbdc_condition(...)`
+- which internally runs:
+  - `text_iccv(...)`
+
+using:
+
+- `condition_label = D4`
+- `bias_anchors = discovered adversarial directions`
+- `anti_anchors = sign-flipped directions`
+- `selector_mode = "val_f1"`
+
+So the second half of D4 is just the standard CBDC tail training loop:
+
+- frozen body
+- trainable last layer / tail
+- PGD bipolar matching
+- `match_loss + ck_loss`
+- validation-centroid macro-F1 checkpoint selection
+
+This is why D4 should be described as:
+
+- adversarial bias-direction discovery
+- followed by ordinary CBDC training
+
+not:
+
+- direct adversarial fine-tuning
+
+#### Step I: what gets saved
+
+When `INCLUDE_D4=1`, the pipeline writes:
+
+- condition split embeddings under:
+  - `conditions/d4_adv_discovery_cbdc/`
+- discovered directions artifact:
+  - `adv_discovery_directions.pt`
+- JSON metadata:
+  - hard-sample selection summary
+  - total misclassification count under the raw prototype view
+  - top singular values
+  - PGD restart objective summary
+  - preview examples
+  - CE temperature used for discovery
+
+#### Short one-line summary
+
+`D4` = **use latent PGD on hard raw train examples to discover adversarial error directions, compress those directions into SVD anchors, then train the usual CBDC tail with those anchors.**
+
 ## 2026-04-10 BiasAdv methodology reference (Lim et al., CVPR 2023)
 
 Paper: "BiasAdv: Bias-Adversarial Augmentation for Model Debiasing"
@@ -3912,3 +4162,105 @@ Full BiasAdv adaptation would require:
 3. PGD in embedding space: maximize L(z̃, y; φ) − λ · L(z̃, y; θ)
 4. train f_θ on both clean and adversarial embeddings with correct sentiment labels
 5. optionally combine with re-weighting (ω_x / ω_adv trade-off)
+
+## 2026-04-10 D4 next-step note after first BERT run
+
+Initial `D4` on `bert` looks like a near-`B1` result rather than a meaningful win:
+
+- `B1`: `0.4287` acc, `0.3785` macro-F1
+- `D4`: `0.4298` acc, `0.3790` macro-F1
+
+Interpretation:
+
+- the current D4 pipeline appears to be running stably
+- but on BERT it is discovering directions that behave much more like:
+  - generic hard / vulnerability directions
+- than:
+  - useful shortcut-debiasing directions that materially improve sentiment geometry
+
+Because of that, the next decision should **not** be made from the BERT result alone.
+
+Planned next validation backbones:
+
+- `qwen25-3b`
+- `gemma4-26b-it`
+
+Reasoning:
+
+- `qwen25-3b` is useful because the raw prototype geometry is already collapsed / badly calibrated there
+  - if `D4` breaks that collapse even a little, that is interesting
+- `gemma4-26b-it` is useful because it is closer to the decoder / generative side and may fit the latent-PGD discovery idea better than BERT
+
+Practical decision rule:
+
+- if `qwen25-3b` and/or `gemma4-26b-it` show a clearer `D4 > B1` effect,
+  then D4 may still be worth describing as backbone-dependent
+- if both are also near-`B1`,
+  then `D4-v1` is probably not yet discovering the right bias anchors
+
+So the current status is:
+
+- do **not** write a definitive sentence about D4 from the BERT run alone
+- check `qwen25-3b` and `gemma4-26b-it` first
+
+## 2026-04-10 Gemma 4 26B memory-fix pass
+
+Observed failure pattern on cluster:
+
+- `gemma4-26b-it` failed during Phase 1 load with CUDA OOM
+- cluster header reported:
+  - `NVIDIA H100 NVL, 95830 MiB`
+- but PyTorch reported only about:
+  - `46.38 GiB total capacity`
+
+So there are two distinct issues to keep in mind:
+
+1. the earlier Gemma path was using the wrong loader shape for text-only use
+2. the actual visible VRAM to PyTorch may still be only about half of the nominal H100-96 capacity
+
+Code-side memory fixes applied:
+
+- switched Gemma 4 loading in `encoder.py` from generic `AutoModel` to:
+  - `AutoModelForCausalLM`
+- this follows the official HF Gemma 4 text-only loading recommendation
+- canonicalized Gemma text-only config handling so `gemma4_text` still routes through the Gemma latent-tail path
+- dropped the unused `lm_head` before moving the model to device
+  - this should save a material amount of GPU memory because the output head is large and unused in our embedding/CBDC pipeline
+- disabled decoder `use_cache`
+  - both at config level
+  - and in the actual forward calls for:
+    - `encode_text`
+    - `encode_ids`
+    - `get_intermediate_features`
+- enabled `low_cpu_mem_usage=True` on load
+- added `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` in `submit_new.slurm`
+- added a `torch`-visible GPU-memory printout in `submit_new.slurm`
+- added a safer default:
+  - `EMBED_BATCH_SIZE=4`
+  - for Gemma runs via `run_all.py`
+
+Why these changes matter:
+
+- the previous path likely loaded more model than needed for text-only use
+- Phase 1 default batch size `64` is unrealistically large for Gemma 26B even if the weights load successfully
+- `use_cache=False` avoids wasting memory on KV-cache outputs that this project does not use
+
+Local verification:
+
+- `python -m py_compile` passed after the patch
+- a tiny local `Gemma4ForCausalLM` text-only checkpoint smoke test passed through:
+  - `TransformerEncoder(...)`
+  - `encode_text(...)`
+  - `get_intermediate_features(...)`
+  - `encode_with_delta_from_hidden(...)`
+- ordinary BERT smoke test still passed
+
+Important remaining caveat:
+
+- if the cluster job really exposes only about `46 GiB` to PyTorch, even the cleaned text-only Gemma 26B path may still be too large
+- so this patch is a **best-effort memory reduction**, not a guarantee that `26B` will fit under that effective VRAM ceiling
+
+Practical retry expectation:
+
+- retry Gemma 26B once with the cleaned text-only path and smaller Phase 1 batch
+- if it still OOMs with about `46 GiB` visible, treat `gemma4-26b-it` as effectively blocked on the current allocation

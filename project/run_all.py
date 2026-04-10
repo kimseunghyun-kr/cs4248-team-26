@@ -121,6 +121,12 @@ def main():
     if args.include_d4:
         extra_env["INCLUDE_D4"] = "1"
 
+    # Large Gemma 4 runs are mostly weight-memory-bound, but once they load,
+    # Phase 1 batch size can still trip OOMs. Give Gemma a conservative default
+    # that users can still override via EMBED_BATCH_SIZE in the environment.
+    if "gemma-4" in hf_model_name.lower() or "gemma4" in hf_model_name.lower():
+        extra_env.setdefault("EMBED_BATCH_SIZE", os.environ.get("EMBED_BATCH_SIZE", "4"))
+
     if args.classifier == "prototype":
         extra_env["RESULTS_FILE"] = "results_prototype.pt"
         extra_env["REPORT_FILE"] = "eval_report_prototype.txt"
@@ -163,6 +169,8 @@ def main():
     print(f"Running phases: {[p[0] for p in phases]}")
     print(f"Include D2.5:  {args.include_d25}")
     print(f"Include D4:    {args.include_d4}")
+    if "EMBED_BATCH_SIZE" in extra_env:
+        print(f"Embed batch:   {extra_env['EMBED_BATCH_SIZE']}")
     if args.no_sent_orthogonal_pgd:
         print(f"Sent-ortho PGD: OFF (ablation)")
     if args.skip_cbdc:
