@@ -1,0 +1,46 @@
+======================================================================
+Transformer Sentiment Classifier — Evaluation Report
+======================================================================
+Model: vinai/bertweet-base
+Cache dir: /home/k/kimsh/cs4248/project/cache/bertweet/bertweet_u12_mlp_ce_std_raw_vader_afinn
+Data source: cache_tokens
+Best epoch: 1 | best val_f1=0.7973
+
+--- Split Summary ---
+Split          Loss   Macro F1   Accuracy
+------------------------------------------
+train        0.4310     0.8331     0.8306
+val          0.5067     0.7973     0.7943
+test         0.4876     0.8013     0.7985
+
+--- VAL Classification Report ---
+precision    recall  f1-score   support
+
+    negative     0.8336    0.7558    0.7928      1167
+     neutral     0.7497    0.7776    0.7634      1668
+    positive     0.8208    0.8508    0.8356      1287
+
+    accuracy                         0.7943      4122
+   macro avg     0.8014    0.7947    0.7973      4122
+weighted avg     0.7957    0.7943    0.7943      4122
+
+VAL confusion matrix:
+    882   259    26
+    158  1297   213
+     18   174  1095
+
+--- TEST Classification Report ---
+precision    recall  f1-score   support
+
+    negative     0.8270    0.7642    0.7944      1001
+     neutral     0.7564    0.7818    0.7689      1430
+    positive     0.8302    0.8513    0.8406      1103
+
+    accuracy                         0.7985      3534
+   macro avg     0.8046    0.7991    0.8013      3534
+weighted avg     0.7995    0.7985    0.7985      3534
+
+TEST confusion matrix:
+    765   215    21
+    141  1118   171
+     19   145   939

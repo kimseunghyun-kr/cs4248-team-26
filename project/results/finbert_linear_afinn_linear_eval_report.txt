@@ -1,0 +1,29 @@
+======================================================================
+Linear Probe Sentiment Baseline — Evaluation Report
+======================================================================
+Cache dir: /home/k/kimsh/cs4248/project/cache/finbert/finbert_linear_afinn
+Best val macro-F1: 0.7159
+Checkpoint: /home/k/kimsh/cs4248/project/cache/finbert/finbert_linear_afinn/linear_probe.pt
+
+--- Split Summary ---
+Split        Macro F1   Accuracy
+----------------------------------
+train          0.7276     0.7245
+val            0.7159     0.7118
+test           0.7236     0.7199
+
+--- TEST Classification Report ---
+precision    recall  f1-score   support
+
+    negative     0.7350    0.7203    0.7275      1001
+     neutral     0.6719    0.7119    0.6913      1430
+    positive     0.7755    0.7298    0.7520      1103
+
+    accuracy                         0.7199      3534
+   macro avg     0.7275    0.7207    0.7236      3534
+weighted avg     0.7221    0.7199    0.7205      3534
+
+TEST confusion matrix:
+    721   240    40
+    219  1018   193
+     41   257   805
