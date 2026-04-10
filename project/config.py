@@ -63,6 +63,11 @@ class CBDCConfig:
     selector_train_per_class: int = 512   # balanced train subset size per class
     selector_batch_size: int = 128        # batch size for selector re-encoding
 
+    # D4 adversarial-discovery stage
+    d4_max_hard_per_class: int = 64       # hard/misclassified examples kept per class
+    d4_num_samples: int = 3               # PGD restarts for D4 direction discovery
+    d4_ce_temperature: float = 100.0      # prototype-logit scale during D4 adversarial discovery
+
     # debias_vl topic mining / pole instantiation
     use_mined_topics: bool = True
     mine_max_topics: int = 32

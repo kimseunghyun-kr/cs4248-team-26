@@ -1,11 +1,13 @@
 """
-Phase 3 alternative: prototype-based evaluation for the four official conditions.
+Phase 3 alternative: prototype-based evaluation for the official conditions.
 
 Conditions:
   B1 (raw)              : raw encoder embeddings + raw class prompt prototypes
   D1 (debias_vl)        : debias_vl-projected embeddings + debiased class prompt prototypes
   D2 (CBDC)             : CBDC embeddings + CBDC class prompt prototypes
+  D2.5 (CBDC no-label-select) : CBDC embeddings + label-free-selected CBDC prototypes
   D3 (debias_vl->CBDC)  : combined embeddings + combined class prompt prototypes
+  D4 (adv-discovery->CBDC) : adversarial-discovery-fed CBDC embeddings + CBDC class prompt prototypes
 
 No classifier head is trained. Predictions come from cosine similarity between
 example embeddings and the condition-matched class prompt prototypes.

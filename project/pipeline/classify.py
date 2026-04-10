@@ -1,11 +1,12 @@
 """
-Phase 3: supervised linear-probe evaluation for the four official conditions.
+Phase 3: supervised linear-probe evaluation for the official conditions.
 
 Conditions:
   B1 (raw)              : raw encoder embeddings
   D1 (debias_vl)        : debias_vl-projected embeddings
   D2 (CBDC)             : pure prompt-driven CBDC encoder embeddings
   D3 (debias_vl->CBDC)  : combined debias_vl-fed CBDC encoder embeddings
+  D4 (adv-discovery->CBDC) : adversarial-discovery-fed CBDC encoder embeddings
 
 Each condition trains a lightweight linear probe on train embeddings,
 selects by validation accuracy, and reports accuracy + macro F1 on val/test.
@@ -180,7 +181,7 @@ def train_linear_probe(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Supervised linear-probe evaluation for B1 / D1 / D2 / D3."
+        description="Supervised linear-probe evaluation for B1 / D1 / D2 / D3 / D4."
     )
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--lr", type=float, default=1e-2)

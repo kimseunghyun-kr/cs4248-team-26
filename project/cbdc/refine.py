@@ -6,6 +6,7 @@ Conditions:
   D2 (CBDC)             : pure prompt-driven CBDC training
   D2.5 (CBDC no-label-select) : pure CBDC with label-free checkpoint selection
   D3 (debias_vl->CBDC)  : debias_vl discovery feeding CBDC training
+  D4 (adv-discovery->CBDC) : adversarial hard-example discovery feeding CBDC training
 
 Each condition writes only into its own method-scoped directory under:
   cache/conditions/<condition-slug>/
@@ -54,6 +55,7 @@ D1_LABEL = "D1 (debias_vl)"
 D2_LABEL = "D2 (CBDC)"
 D25_LABEL = "D2.5 (CBDC no-label-select)"
 D3_LABEL = "D3 (debias_vl->CBDC)"
+D4_LABEL = "D4 (adv-discovery->CBDC)"
 
 
 def _save_json(path: str, payload: dict) -> None:
@@ -417,6 +419,245 @@ def _selector_val_f1(
         selector_data["train_labels"],
         z_val,
         selector_data["val_labels"],
+    )
+
+
+def _prototype_logits(
+    z: torch.Tensor,
+    prototypes: torch.Tensor,
+    temperature: float = 100.0,
+) -> torch.Tensor:
+    z = F.normalize(z.float(), dim=-1)
+    prototypes = F.normalize(prototypes.float(), dim=-1)
+    return (z @ prototypes.T) * temperature
+
+
+def _select_balanced_hard_indices(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    max_per_class: int,
+) -> tuple[torch.Tensor, dict]:
+    preds = logits.argmax(dim=-1)
+    true_scores = logits.gather(1, labels.unsqueeze(1)).squeeze(1)
+    masked = logits.clone()
+    masked[torch.arange(len(labels)), labels] = float("-inf")
+    other_scores = masked.max(dim=-1).values
+    margins = true_scores - other_scores
+
+    selected_chunks = []
+    class_stats = []
+    for c in [0, 1, 2]:
+        class_idx = torch.where(labels == c)[0]
+        if len(class_idx) == 0:
+            continue
+
+        mis_idx = class_idx[preds[class_idx] != labels[class_idx]]
+        cor_idx = class_idx[preds[class_idx] == labels[class_idx]]
+
+        if len(mis_idx) > 0:
+            mis_idx = mis_idx[torch.argsort(margins[mis_idx])]
+        if len(cor_idx) > 0:
+            cor_idx = cor_idx[torch.argsort(margins[cor_idx])]
+
+        chosen = mis_idx[:max_per_class]
+        supplemented = 0
+        if len(chosen) < max_per_class:
+            need = max_per_class - len(chosen)
+            extra = cor_idx[:need]
+            supplemented = int(len(extra))
+            chosen = torch.cat([chosen, extra], dim=0)
+
+        selected_chunks.append(chosen)
+        class_stats.append(
+            {
+                "label": c,
+                "available": int(len(class_idx)),
+                "misclassified": int(len(mis_idx)),
+                "selected": int(len(chosen)),
+                "supplemented_with_low_margin_correct": supplemented,
+                "selected_margin_mean": float(margins[chosen].mean().item()) if len(chosen) > 0 else None,
+            }
+        )
+
+    if not selected_chunks:
+        raise ValueError("Could not select any hard examples for D4 discovery.")
+
+    selected_idx = torch.cat(selected_chunks, dim=0)
+    selection_meta = {
+        "selected_total": int(len(selected_idx)),
+        "misclassified_total": int((preds != labels).sum().item()),
+        "per_class": class_stats,
+    }
+    return selected_idx.sort().values, selection_meta
+
+
+def _pgd_error_discovery(
+    h_target: torch.Tensor,
+    attention_mask: torch.Tensor,
+    labels: torch.Tensor,
+    z_orig: torch.Tensor,
+    cls_prototypes: torch.Tensor,
+    keep_cb: torch.Tensor,
+    encoder: TransformerEncoder,
+    cfg: CBDCConfig,
+) -> tuple[torch.Tensor, list[dict]]:
+    device = cfg.device
+    n_target = h_target.shape[0]
+    H = encoder.hidden_size
+
+    cls_prototypes = F.normalize(cls_prototypes.to(device), dim=-1)
+    keep_cb = F.normalize(keep_cb.to(device), dim=-1)
+    labels = labels.to(device)
+
+    sentiment_basis = None
+    if cfg.sent_orthogonal_pgd:
+        Q, _ = torch.linalg.qr(cls_prototypes.T)
+        sentiment_basis = Q.T
+
+    delta_banks = []
+    restart_meta = []
+    num_restarts = max(1, cfg.d4_num_samples)
+
+    for restart in range(num_restarts):
+        if restart == 0:
+            delta = torch.zeros(n_target, H, device=device)
+        else:
+            delta = (torch.rand(n_target, H, device=device) * 2 - 1) * cfg.random_eps
+        delta.requires_grad_(True)
+
+        last_ce = None
+        last_sem = None
+        for _ in range(cfg.n_pgd_steps):
+            if delta.grad is not None:
+                delta.grad.zero_()
+            z_pert = encoder.encode_with_delta_from_hidden(h_target, attention_mask, delta)
+            logits = _prototype_logits(z_pert, cls_prototypes, temperature=cfg.d4_ce_temperature)
+            ce_loss = F.cross_entropy(logits, labels)
+            semantic_penalty = l_semantic_preservation(z_pert, z_orig, keep_cb) / 100.0
+            objective = ce_loss - cfg.keep_weight * semantic_penalty
+            objective.backward()
+            with torch.no_grad():
+                grad = delta.grad.data
+                if sentiment_basis is not None:
+                    grad = grad - (grad @ sentiment_basis.T) @ sentiment_basis
+                delta.data += cfg.step_lr * grad.sign()
+                delta.data.clamp_(-cfg.epsilon, cfg.epsilon)
+                last_ce = float(ce_loss.item())
+                last_sem = float(semantic_penalty.item())
+
+        with torch.no_grad():
+            z_adv = encoder.encode_with_delta_from_hidden(h_target, attention_mask, delta.detach())
+            delta_banks.append(F.normalize((z_adv - z_orig).float(), dim=-1).cpu())
+        restart_meta.append(
+            {
+                "restart": restart,
+                "ce_loss": last_ce,
+                "semantic_penalty": last_sem,
+            }
+        )
+
+    return torch.cat(delta_banks, dim=0), restart_meta
+
+
+def _svd_direction_bank(delta_bank: torch.Tensor, n_bias_dirs: int) -> tuple[torch.Tensor, list[float]]:
+    delta_bank = delta_bank.float()
+    if delta_bank.dim() != 2:
+        raise ValueError(f"Expected a 2D delta bank, got shape {tuple(delta_bank.shape)}")
+
+    centered = delta_bank - delta_bank.mean(0, keepdim=True)
+    if centered.shape[0] == 1:
+        direction = centered[0]
+        if direction.norm() < 1e-8:
+            direction = delta_bank[0]
+        direction = F.normalize(direction.unsqueeze(0), dim=-1)
+        return direction, [float(direction.norm(dim=-1).item())]
+
+    _, singular_values, Vh = torch.linalg.svd(centered, full_matrices=False)
+    k = max(1, min(n_bias_dirs, Vh.shape[0]))
+    return F.normalize(Vh[:k], dim=-1), [float(v) for v in singular_values[:k].tolist()]
+
+
+def discover_adv_bias_map(
+    encoder: TransformerEncoder,
+    cfg: CBDCConfig,
+    prompt_bank: dict,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict]:
+    print("\n=== D4 adversarial bias discovery ===")
+
+    train_data = _load_raw_split("train")
+    train_embeddings = F.normalize(train_data["embeddings"].float(), dim=-1)
+    train_labels = train_data["labels"].long()
+
+    cls_prototypes = _build_class_prompt_prototypes(
+        encoder=encoder,
+        prompt_bank=prompt_bank,
+    ).float()
+    train_logits = _prototype_logits(
+        train_embeddings,
+        cls_prototypes,
+        temperature=cfg.d4_ce_temperature,
+    )
+    selected_idx, selection_meta = _select_balanced_hard_indices(
+        train_logits,
+        train_labels,
+        max_per_class=cfg.d4_max_hard_per_class,
+    )
+
+    target_ids = train_data["input_ids"][selected_idx].to(cfg.device)
+    target_mask = train_data["attention_mask"][selected_idx].to(cfg.device)
+    target_labels = train_labels[selected_idx].to(cfg.device)
+
+    with torch.no_grad():
+        h_target = encoder.get_intermediate_features(target_ids, target_mask)
+        z_orig = encoder.encode_with_delta_from_hidden(
+            h_target,
+            target_mask,
+            torch.zeros(len(target_ids), encoder.hidden_size, device=cfg.device),
+        )
+        keep_cb = encoder.encode_text(prompt_bank["keep_text"]).to(cfg.device)
+
+    delta_bank, restart_meta = _pgd_error_discovery(
+        h_target=h_target,
+        attention_mask=target_mask,
+        labels=target_labels,
+        z_orig=z_orig,
+        cls_prototypes=cls_prototypes.to(cfg.device),
+        keep_cb=keep_cb,
+        encoder=encoder,
+        cfg=cfg,
+    )
+    adv_dirs, singular_values = _svd_direction_bank(delta_bank, cfg.n_bias_dirs)
+    bias_anchors = adv_dirs.clone()
+    anti_anchors = -adv_dirs.clone()
+
+    preview_texts = train_data.get("texts") or []
+    preview = []
+    for idx in selected_idx[: min(5, len(selected_idx))].tolist():
+        preview.append(
+            {
+                "index": int(idx),
+                "label": int(train_labels[idx].item()),
+                "text": preview_texts[idx] if idx < len(preview_texts) else None,
+            }
+        )
+
+    print(f"  selected hard examples: {selection_meta['selected_total']}")
+    print(f"  total train misclassifications (prototype view): {selection_meta['misclassified_total']}")
+    print(f"  direction bank: {tuple(delta_bank.shape)}")
+    print(f"  Top-{len(singular_values)} adversarial SVD values: {singular_values}")
+
+    return (
+        adv_dirs,
+        bias_anchors,
+        anti_anchors,
+        {
+            "discovery_method": "adv-hard-example-svd",
+            "selection": selection_meta,
+            "singular_values": singular_values,
+            "restart_objective_summary": restart_meta,
+            "preview_examples": preview,
+            "ce_temperature": cfg.d4_ce_temperature,
+        },
     )
 
 
@@ -842,7 +1083,7 @@ def materialize_cbdc_condition(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Materialize D1 / D2 / D2.5 / D3 with isolated method-scoped artifacts."
+        description="Materialize D1 / D2 / D2.5 / D3 / D4 with isolated method-scoped artifacts."
     )
     parser.add_argument("--n_epochs", type=int, default=100)
     parser.add_argument("--lr", type=float, default=1e-5)
@@ -859,6 +1100,12 @@ def main():
     parser.add_argument("--eval_every", type=int, default=10)
     parser.add_argument("--selector_train_per_class", type=int, default=512)
     parser.add_argument("--selector_batch_size", type=int, default=128)
+    parser.add_argument("--d4_max_hard_per_class", type=int, default=64,
+                        help="Hard/misclassified examples kept per class for D4 discovery.")
+    parser.add_argument("--d4_num_samples", type=int, default=3,
+                        help="PGD restarts for D4 adversarial direction discovery.")
+    parser.add_argument("--d4_ce_temperature", type=float, default=100.0,
+                        help="Prototype logit scale during D4 adversarial discovery.")
     parser.add_argument("--use_static_topics", action="store_true",
                         help="Disable topic mining for debias_vl and use the static fallback bank.")
     parser.add_argument("--mine_max_topics", type=int, default=32)
@@ -889,6 +1136,9 @@ def main():
         eval_every=args.eval_every,
         selector_train_per_class=args.selector_train_per_class,
         selector_batch_size=args.selector_batch_size,
+        d4_max_hard_per_class=args.d4_max_hard_per_class,
+        d4_num_samples=args.d4_num_samples,
+        d4_ce_temperature=args.d4_ce_temperature,
         use_mined_topics=not args.use_static_topics,
         mine_max_topics=args.mine_max_topics,
         mine_min_doc_freq=args.mine_min_doc_freq,
@@ -900,6 +1150,7 @@ def main():
         device=device,
     )
     include_d25 = os.environ.get("INCLUDE_D25") == "1"
+    include_d4 = os.environ.get("INCLUDE_D4") == "1"
 
     model_name = os.environ.get("MODEL_NAME", "bert-base-uncased")
     tokenizer_name = os.environ.get("TOKENIZER_NAME")
@@ -991,6 +1242,32 @@ def main():
         },
         selector_mode="val_f1",
     )
+
+    if include_d4:
+        encoder_d4 = _load_encoder(model_name=model_name, device=device, tokenizer_name=tokenizer_name)
+        adv_dirs_d4, bias_anchors_d4, anti_anchors_d4, discovery_meta_d4 = discover_adv_bias_map(
+            encoder_d4,
+            cfg,
+            cbdc_prompt_bank,
+        )
+        d4_prompt_bank = dict(cbdc_prompt_bank)
+        d4_prompt_bank["discovery_method"] = "adv-hard-example-svd"
+        materialize_cbdc_condition(
+            condition_label=D4_LABEL,
+            encoder=encoder_d4,
+            cfg=cfg,
+            cbdc_prompt_bank=cbdc_prompt_bank,
+            bias_anchors=bias_anchors_d4,
+            anti_anchors=anti_anchors_d4,
+            prompt_bank_payload=d4_prompt_bank,
+            extra_artifacts={
+                "adv_discovery_directions.pt": adv_dirs_d4,
+            },
+            extra_json={
+                "adv_discovery_meta.json": discovery_meta_d4,
+            },
+            selector_mode="val_f1",
+        )
 
     print("\nPhase 2 materialization complete.")
 

@@ -1,5 +1,5 @@
 """
-Phase 4: evaluation report for the supervised B1 / D1 / D2 / D3 pipeline.
+Phase 4: evaluation report for the supervised B1 / D1 / D2 / D3 / D4 pipeline.
 
 Reads `results.pt`, summarizes supervised accuracy/F1, and reports
 direction-interpretability diagnostics only when a condition-specific direction
@@ -139,6 +139,7 @@ def main():
     d2_acc = _metric("D2 (CBDC)", "test_accuracy")
     d25_acc = _metric("D2.5 (CBDC no-label-select)", "test_accuracy")
     d3_acc = _metric("D3 (debias_vl->CBDC)", "test_accuracy")
+    d4_acc = _metric("D4 (adv-discovery->CBDC)", "test_accuracy")
 
     if b1_acc is not None and d1_acc is not None:
         delta = d1_acc - b1_acc
@@ -161,6 +162,12 @@ def main():
     if d1_acc is not None and d3_acc is not None:
         delta = d3_acc - d1_acc
         log(f"  D3 vs D1 test accuracy: {delta:+.4f}")
+    if b1_acc is not None and d4_acc is not None:
+        delta = d4_acc - b1_acc
+        log(f"  D4 vs B1 test accuracy: {delta:+.4f}")
+    if d3_acc is not None and d4_acc is not None:
+        delta = d4_acc - d3_acc
+        log(f"  D4 vs D3 test accuracy: {delta:+.4f}")
 
     report_path = os.path.join(RESULTS_DIR, REPORT_FILENAME)
     with open(report_path, "w") as f:

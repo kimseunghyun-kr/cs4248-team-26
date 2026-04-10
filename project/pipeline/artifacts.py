@@ -19,6 +19,8 @@ def _build_condition_specs() -> OrderedDict:
     if os.environ.get("INCLUDE_D25") == "1":
         specs["D2.5 (CBDC no-label-select)"] = {"slug": "d25_cbdc_no_label_select"}
     specs["D3 (debias_vl->CBDC)"] = {"slug": "d3_debias_vl_cbdc"}
+    if os.environ.get("INCLUDE_D4") == "1":
+        specs["D4 (adv-discovery->CBDC)"] = {"slug": "d4_adv_discovery_cbdc"}
     return specs
 
 

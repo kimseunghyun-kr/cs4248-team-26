@@ -3485,3 +3485,430 @@ Current project-facing wording:
 - Gemma 4 support is intentionally narrow
 - the maintained path is the `26B A4B` CBDC experiment path
 - existing non-Gemma pipelines remain intact after the cleanup
+
+## 2026-04-10 PI suggestion: pair-free hard-example PGD branch
+
+PI suggestion:
+
+- since this project is text-only, instead of hand-constructing bias pairs and prompt poles, identify samples that are currently misclassified
+- run PGD on those samples to make the classification loss larger
+- then train the model/tail to classify those hard adversarial samples correctly
+- in that setup, explicit bias-pair construction may no longer be necessary
+
+Korean paraphrase of the suggestion:
+
+- "텍스트로만 하니까 오분류되는 케이스만 PGD 적용해서"
+- "loss가 커지도록 샘플 찾아서"
+- "그걸 정분류로 학습시키면"
+- "굳이 페어 안 만들어도 될지도"
+
+Current interpretation:
+
+- yes, this is a plausible new branch
+- it is **not** the same as current `D2/D2.5/D3`
+- it would be closer to:
+  - hard-example adversarial augmentation
+  - or a text analogue of BiasAdv-style bias-conflicting augmentation
+- the appeal is that it may avoid the current `prompts.py` bottleneck
+  - especially if the main failure mode is poor prompt/prototype/bias-anchor calibration
+
+Relation to current code:
+
+- current CBDC path in `cbdc/refine.py`
+  - builds bias directions from `bias_anchors` / `anti_anchors`
+  - uses `_pgd_bipolar(...)` to push latent perturbations toward the handcrafted bias poles while preserving semantics
+  - then trains the last tail layer using `match_loss + ck_loss`
+- the PI suggestion would replace that logic with something sample-centric:
+  - use labeled samples
+  - find currently misclassified or low-margin examples under the current sentiment decision rule
+  - apply PGD in latent space to **increase classification loss**
+  - then update the tail to classify those adversarial hard examples correctly
+
+Natural implementation path in this repo:
+
+- reuse the existing latent-tail machinery:
+  - `encoder.get_intermediate_features(...)`
+  - `encoder.encode_with_delta_from_hidden(...)`
+- replace `_pgd_bipolar(...)` with a new PGD routine that maximizes:
+  - prototype cross-entropy loss on the true sentiment label
+  - or centroid/prototype margin loss
+- select hard examples using one of:
+  - actual misclassification under current prototypes
+  - low-margin samples even if still correctly classified
+  - disagreement cases already exported by `pipeline/prototype_classify.py`
+- then train the tail on:
+  - clean sample + adversarial sample consistency
+  - or directly on adversarially perturbed examples with the true label
+
+Why this is interesting:
+
+- it removes the need to manually specify bias poles such as punctuation / emoticons / length cues
+- it directly targets the model's own failure cases
+- if prompt/bias engineering is the main bottleneck, this could be a cleaner branch than continuing to tune `prompts.py`
+
+Why this is **not** automatically debiasing:
+
+- plain adversarial training on misclassified samples can improve robustness without actually removing spurious bias
+- to make the branch genuinely "debiasing", we still need a reason to believe the attacked failures are shortcut-driven rather than arbitrary hard cases
+- in BiasAdv terms, the stronger version would use:
+  - an auxiliary biased predictor
+  - and generate perturbations that attack the biased decision while preserving the debiased decision
+- the simpler first NLP version could still be worthwhile as a practical assignment-scale experiment, but should be framed carefully
+
+Practical recommendation:
+
+- treat this as a new method branch, e.g. `D4`
+- do **not** redefine current CBDC as this method
+- first version can be intentionally simple:
+  - prototype-based sentiment logits
+  - misclassified / low-margin training subset
+  - latent PGD maximizing true-label CE loss
+  - tail-layer adversarial fine-tuning to recover correct sentiment classification
+
+Most likely benefit:
+
+- if the current obstacle is really `prompts.py`, this branch may work better because it relies less on handcrafted bias phrasing
+
+Most likely risk:
+
+- if we only chase ordinary misclassification, the method may become generic adversarial hard-example training rather than a clear debiasing method
+
+Best framing at this point:
+
+- "worth trying as a separate experimental branch"
+- "closer to pair-free adversarial hard-example debiasing / augmentation"
+- "promising mainly because it may bypass the fragile prompt-pair design in the current CBDC adaptation"
+
+Clarification after re-reading the PI suggestion:
+
+- the suggestion can still be seen as **CBDC-style in mechanics**
+  - latent PGD
+  - frozen body + trainable tail
+  - adversarially generated representation shift
+- but it is **not CBDC-style in supervision source**
+  - current `D2/D2.5/D3` mostly use handcrafted prompt banks, bias poles, and prompt/prototype geometry
+  - the PI suggestion uses actual sentiment classification failures as the driver for PGD and tail updates
+
+So the clean interpretation is:
+
+- "CBDC-shaped training skeleton"
+- but with a different objective
+- namely:
+  - move from pair-defined bias perturbation
+  - to label-guided hard-example adversarial correction
+
+Supervision note:
+
+- yes, as stated, this new branch would be **more clearly supervised**
+- why:
+  - it explicitly depends on whether a sample is misclassified
+  - it needs a true label or at least a trusted target label to define "loss should get larger" and "train it back to correct classification"
+- compared to current methods:
+  - `D1` is not supervised fine-tuning
+  - `D2` is prompt-driven training with labeled validation checkpoint selection
+  - `D2.5` is the most label-light current variant because checkpoint selection is loss-only
+  - the proposed hard-example PGD branch would use labels directly in the inner/outer training objective
+
+Best wording:
+
+- not "fully unsupervised debiasing"
+- not "pure prompt debiasing"
+- more like:
+  - supervised adversarial hard-example debiasing
+  - or supervised latent-space augmentation with a CBDC-style tail path
+
+## 2026-04-10 BiasAdv notes for future reference
+
+Paper:
+
+- **BiasAdv: Bias-Adversarial Augmentation for Model Debiasing**
+- Jongin Lim, Youngdong Kim, Byungjai Kim, Chanho Ahn, Jinwoo Shin, Eunho Yang, Seungju Han
+- CVPR 2023
+
+Core idea:
+
+- train an **auxiliary biased model**
+- use adversarial attack on that biased model to generate synthetic **bias-conflicting** samples
+- train the debiased model on those synthetic samples so it relies less on spurious shortcuts
+
+Important mechanism from the paper:
+
+- BiasAdv is not just generic adversarial training
+- it has two roles:
+  - attack the prediction of the **biased auxiliary model**
+  - while preserving the prediction of the **debiased model**
+- this is the key reason the paper can claim the augmentation is "bias-conflicting" rather than merely noisy or hard
+
+Why that matters for our NLP branch:
+
+- if we only do:
+  - "find misclassified samples"
+  - "use PGD to increase true-label loss"
+  - "train on them"
+- then the branch is closer to adversarial hard-example training / robustness training
+- to make it more BiasAdv-like, we would ideally need:
+  - a deliberately shortcut-biased auxiliary sentiment predictor
+  - and an objective that attacks the shortcut-biased decision while preserving the intended sentiment signal
+
+Practical translation to our repo:
+
+- simplest first branch:
+  - use current prototype sentiment classifier
+  - identify misclassified or low-margin labeled samples
+  - perform latent PGD to increase true-label sentiment loss
+  - update the tail to recover correct classification
+- stronger BiasAdv-style branch:
+  - create an intentionally biased auxiliary prototype rule or model
+  - generate latent perturbations that specifically break that biased predictor
+  - keep the debiased sentiment decision stable
+
+Connection to current concerns:
+
+- this is attractive because it may reduce dependence on `prompts.py`
+- but if we want to call it a debiasing method rather than generic adversarial fine-tuning, the BiasAdv distinction above is important
+
+Safe summary:
+
+- PI suggestion: plausible and potentially useful
+- method label if implemented naively:
+  - supervised adversarial hard-example branch
+- method label if implemented in a BiasAdv-like way:
+  - pair-free adversarial debiasing branch with an auxiliary biased predictor
+
+BiasAdv intuition, phrased in the PI's words:
+
+- "오분류를 하는 이유를 알아서 찾아라"
+
+Important clarification:
+
+- this does **not** mean the method produces a human-readable explanation by itself
+- it means:
+  - do not hand-specify the bias type in advance
+  - let the adversarial optimization discover the direction / perturbation that most exposes the shortcut the current model is relying on
+
+So the implicit logic is:
+
+- if the model is misclassifying because of a spurious shortcut
+- and we attack the model in a way that targets that shortcut-sensitive decision rule
+- then the resulting adversarial example / latent delta is a proxy for
+  - "the reason this sample was being misclassified"
+  - or more carefully:
+  - "the shortcut-sensitive direction that explains the current error"
+
+Why this is attractive for our NLP setting:
+
+- right now we manually guess possible shortcuts in `prompts.py`
+  - punctuation
+  - emoticons
+  - short length
+  - laughter tokens
+  - style/register cues
+- the PI's suggestion is more like:
+  - stop guessing all of them by hand
+  - let the model's own adversarial failure mode reveal which direction matters
+
+Best careful wording:
+
+- not "the model truly knows the semantic reason in an interpretable symbolic sense"
+- but:
+  - "the attack discovers an error-inducing latent direction"
+  - "which can serve as a proxy for the shortcut feature causing the misclassification"
+
+This is the strongest conceptual appeal of the BiasAdv-style branch for this project:
+
+- it may replace manually engineered bias-pair design with model-discovered shortcut directions
+
+## 2026-04-10 Implemented D4: adversarial discovery -> CBDC
+
+Implementation decision:
+
+- keep `D3` unchanged as the existing:
+  - `DebiasVL/topic-mining discovery -> CBDC`
+- add a new optional condition:
+  - `D4 (adv-discovery->CBDC)`
+
+Interpretation:
+
+- this follows the stronger PI-aligned reading:
+  - use adversarial failure to **discover** shortcut-sensitive latent directions
+  - then feed those discovered directions into the existing CBDC `text_iccv(...)` stage
+- so this is **not** plain adversarial fine-tuning replacing CBDC
+- it is:
+  - adversarial bias-direction discovery
+  - followed by ordinary CBDC tail training
+
+Implemented path:
+
+1. Build raw class prompt prototypes from the CBDC class prompts.
+2. Score cached raw train embeddings with those prototypes.
+3. Select hard samples per class:
+   - misclassified first
+   - then lowest-margin correct samples as fallback
+4. Run latent PGD on those selected samples to maximize prototype CE loss,
+   while lightly preserving the original semantics through the existing keep-loss.
+5. Collect the resulting embedding-space shifts:
+   - `z_adv - z_orig`
+6. SVD that delta bank.
+7. Use the top singular directions as:
+   - `bias_anchors`
+   - and their sign-flipped copies as `anti_anchors`
+8. Feed those anchors into the existing `text_iccv(...)` loop.
+
+What changed in code:
+
+- `cbdc/refine.py`
+  - added `D4_LABEL`
+  - added hard-example prototype scoring helper
+  - added balanced hard-sample selection helper
+  - added D4-specific PGD discovery routine
+  - added SVD-based direction extraction for the discovered delta bank
+  - added `discover_adv_bias_map(...)`
+  - added optional `D4` materialization branch in `main()`
+- `config.py`
+  - added D4 discovery hyperparameters:
+    - `d4_max_hard_per_class`
+    - `d4_num_samples`
+    - `d4_ce_temperature`
+- `pipeline/artifacts.py`
+  - `D4` is now included when `INCLUDE_D4=1`
+- `run_all.py`
+  - added `--include_d4`
+- `pipeline/evaluate.py`
+  - comparative analysis now reports `D4` when present
+- `pipeline/plot_pca.py`
+  - plotting can include `D4` when `INCLUDE_D4=1`
+
+Important scope choice:
+
+- `D4` is opt-in
+- existing `B1 / D1 / D2 / D2.5 / D3` runs stay unchanged unless `INCLUDE_D4=1`
+- this keeps old comparisons stable and preserves `D3` as the DebiasVL ablation
+
+Verification:
+
+- `python -m py_compile` passed for:
+  - `cbdc/refine.py`
+  - `pipeline/artifacts.py`
+  - `pipeline/evaluate.py`
+  - `pipeline/classify.py`
+  - `pipeline/prototype_classify.py`
+  - `pipeline/plot_pca.py`
+  - `run_all.py`
+  - `config.py`
+- tiny end-to-end D4 smoke test passed:
+  - temporary tiny BERT model
+  - temporary cached raw train/val/test splits
+  - `discover_adv_bias_map(...)`
+  - `materialize_cbdc_condition(D4, ...)`
+  - condition splits successfully written under:
+    - `conditions/d4_adv_discovery_cbdc/`
+- post-change decoder-family regression smoke tests still passed for:
+  - `qwen2`
+  - `llama`
+
+Practical run command:
+
+- `python run_all.py --classifier prototype --include_d4`
+- optionally with:
+  - `--include_d25`
+  - and a model shortcut such as `--model roberta`
+
+Current caveat:
+
+- the present D4 discovery step is still a **simple first version**
+- it attacks the current prototype sentiment decision directly
+- so it is best described as:
+  - adversarial shortcut-direction discovery for CBDC
+- not yet a full BiasAdv replica with a separate explicitly biased auxiliary predictor
+
+## 2026-04-10 BiasAdv methodology reference (Lim et al., CVPR 2023)
+
+Paper: "BiasAdv: Bias-Adversarial Augmentation for Model Debiasing"
+
+### Core idea
+
+- models trained on biased data learn spurious shortcuts (e.g. topic predicts sentiment)
+- re-weighting alone overfits because bias-conflicting samples are too scarce
+- BiasAdv generates **synthetic bias-conflicting samples** via adversarial attack on a biased auxiliary model
+
+### Two-model setup
+
+1. **Auxiliary biased model g_φ**: intentionally trained to learn shortcuts
+   - trained with GCE loss so it latches onto easy/spurious correlations
+   - in our NLP context: a projector/head that predicts sentiment via topic shortcuts
+2. **Debiased model f_θ**: the model we actually want to deploy
+   - trained to make correct sentiment decisions independent of topic
+
+### Adversarial sample generation (Eq. 3)
+
+```
+x_adv = argmax_{x̃ := x + ε} [ L(x̃, y; φ) − λ · L(x̃, y; θ) ]
+```
+
+- first term `L(x̃, y; φ)`: **attack** the biased model's prediction (flip its shortcut-based decision)
+- second term `−λ · L(x̃, y; θ)`: **preserve** the debiased model's prediction (keep the correct class)
+- uses PGD to solve this; perturbation alters the bias cue while keeping intrinsic class attributes intact
+- λ > 0 is a hyperparameter controlling preservation strength
+
+### Training objective (Eq. 4)
+
+```
+R_a(θ) = E_{(x,y)~D} [ ω_x · L(x, y; θ) + ω_adv · L(x_adv, y; θ) ]
+```
+
+- ω_x = W(x, y; θ, φ) from any existing re-weighting method (LfF, JTT, etc.)
+- ω_adv = β · (1 − ω_x): adversarial weight complements the re-weighting
+- β controls importance of adversarial augmented data
+- intuition: bias-guiding samples that get down-weighted by re-weighting are instead translated into synthetic bias-conflicting samples via PGD
+
+### Key design choices from the paper
+
+- auxiliary batch normalization for adversarial images (different distribution from clean)
+- works as a plug-in on top of any re-weighting method (ERM, LfF, JTT)
+- no bias annotations or prior knowledge of bias type required
+- hyperparameters per dataset:
+  - λ ∈ {0.5, 1.0}, ε ∈ {0.3, 0.5, 0.7}, PGD steps S ∈ {3, 5, 7}, β ∈ {0.5, 1.0, 1.5}
+
+### Why it works (paper's analysis)
+
+1. **Decision boundary extension**: adversarial samples land near the biased model's decision boundary; since bias attributes are the easiest shortcut, PGD preferentially attacks the bias cue, producing synthetic bias-conflicting samples
+2. **Sample diversity**: most training data is bias-guiding, so x_adv is translated from abundant bias-guiding samples, leveraging their diverse intrinsic attributes
+3. **Prevents overfitting**: unlike pure re-weighting which over-fits on the few real bias-conflicting samples, BiasAdv provides unlimited synthetic ones
+4. **Preserves bias-guiding performance**: the λ regularization term prevents intrinsic attributes from being compromised
+
+### Ablation findings
+
+- random noise augmentation: marginal improvement
+- AdvProp (attacking f_θ instead of g_φ): **degrades** performance — attacking the debiased model hurts
+- BiasAdv (λ=0, no preservation term): significant improvement but less than full BiasAdv
+- full BiasAdv: best results — the preservation term ensures only bias cue is attacked
+
+### Relation to current D4 and the PI's suggestion
+
+The PI's suggestion maps directly to BiasAdv's two-model formulation:
+
+- **편향된 projector** (biased) = g_φ: an auxiliary head deliberately trained on shortcuts
+  - in our case: a sentiment head that learns topic→sentiment correlations
+- **비편향된 projector** (debiased) = f_θ: the head we want to deploy
+  - in our case: a sentiment head that classifies based on genuine sentiment cues
+
+The PI's flow:
+1. start with existing BERT (treat it as biased baseline)
+2. train a new BERT/head to be debiased (like debias_vl initial pass)
+3. then apply BiasAdv-style PGD: attack the biased head, preserve the debiased head
+4. train on the resulting adversarial samples with correct labels
+5. this avoids needing to manually construct bias pairs
+
+### Gap between current D4 and full BiasAdv
+
+Current D4:
+- uses **one model** (prototype classifier) — attacks its own sentiment decision
+- uses PGD deltas for **direction discovery** (SVD → anchors), then feeds into CBDC tail training
+- no separate biased auxiliary predictor
+
+Full BiasAdv adaptation would require:
+1. train an auxiliary biased head g_φ (e.g. GCE-trained sentiment head that latches onto topic)
+2. keep the debiased head f_θ (the one being improved)
+3. PGD in embedding space: maximize L(z̃, y; φ) − λ · L(z̃, y; θ)
+4. train f_θ on both clean and adversarial embeddings with correct sentiment labels
+5. optionally combine with re-weighting (ω_x / ω_adv trade-off)
