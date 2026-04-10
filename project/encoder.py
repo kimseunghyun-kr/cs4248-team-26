@@ -151,6 +151,8 @@ class TransformerEncoder(nn.Module):
     def _resolve_core_model(backbone: nn.Module) -> nn.Module:
         model_type = getattr(backbone.config, "model_type", None)
         if model_type in {"gemma4", "gemma4_text"}:
+            if hasattr(backbone, "model") and hasattr(backbone.model, "language_model"):
+                return backbone.model.language_model
             if hasattr(backbone, "language_model"):
                 return backbone.language_model
             if hasattr(backbone, "model"):
@@ -180,7 +182,12 @@ class TransformerEncoder(nn.Module):
                 cfg_obj.use_cache = False
 
     def _core_config(self):
-        return self.core_model.config
+        cfg = self.core_model.config
+        if hasattr(cfg, "hidden_size"):
+            return cfg
+        if hasattr(cfg, "text_config") and hasattr(cfg.text_config, "hidden_size"):
+            return cfg.text_config
+        return cfg
 
     def _validate_gemma_variant_support(self) -> None:
         if self.model_type != "gemma4":
