@@ -400,100 +400,6 @@ def _write_coordinates_csv(
                 )
 
 
-def _alignment_rows(
-    conditions: list[str],
-    centroids_by_condition: dict[str, dict[int, torch.Tensor]],
-    prototypes_by_condition: dict[str, torch.Tensor | None],
-) -> list[dict[str, object]]:
-    rows: list[dict[str, object]] = []
-
-    for condition_label in conditions:
-        prototypes = prototypes_by_condition.get(condition_label)
-        if prototypes is None:
-            continue
-
-        label_rows = []
-        for label_id, label_name in enumerate(LABEL_NAMES):
-            centroid = centroids_by_condition[condition_label].get(label_id)
-            if centroid is None or label_id >= len(prototypes):
-                continue
-
-            own_gap = float(torch.linalg.vector_norm(centroid - prototypes[label_id]).item())
-            other_gaps = [
-                float(torch.linalg.vector_norm(centroid - prototypes[other_id]).item())
-                for other_id in range(len(prototypes))
-                if other_id != label_id
-            ]
-            nearest_other_gap = min(other_gaps) if other_gaps else float("nan")
-            own_vs_other_margin = nearest_other_gap - own_gap
-
-            row = {
-                "condition": condition_label,
-                "kind": "label",
-                "label": label_name,
-                "centroid_to_prompt_gap": own_gap,
-                "nearest_other_prompt_gap": nearest_other_gap,
-                "own_vs_nearest_other_margin": own_vs_other_margin,
-                "mean_centroid_to_prompt_gap": "",
-                "max_centroid_to_prompt_gap": "",
-                "n_labels": "",
-            }
-            label_rows.append(row)
-            rows.append(row)
-
-        if label_rows:
-            gaps = [float(row["centroid_to_prompt_gap"]) for row in label_rows]
-            margins = [float(row["own_vs_nearest_other_margin"]) for row in label_rows]
-            rows.append(
-                {
-                    "condition": condition_label,
-                    "kind": "aggregate",
-                    "label": "macro",
-                    "centroid_to_prompt_gap": "",
-                    "nearest_other_prompt_gap": "",
-                    "own_vs_nearest_other_margin": float(np.mean(margins)),
-                    "mean_centroid_to_prompt_gap": float(np.mean(gaps)),
-                    "max_centroid_to_prompt_gap": float(np.max(gaps)),
-                    "n_labels": len(gaps),
-                }
-            )
-
-    return rows
-
-
-def _write_alignment_csv(
-    csv_path: str,
-    conditions: list[str],
-    centroids_by_condition: dict[str, dict[int, torch.Tensor]],
-    prototypes_by_condition: dict[str, torch.Tensor | None],
-) -> bool:
-    rows = _alignment_rows(
-        conditions=conditions,
-        centroids_by_condition=centroids_by_condition,
-        prototypes_by_condition=prototypes_by_condition,
-    )
-    if not rows:
-        return False
-
-    os.makedirs(os.path.dirname(csv_path) or ".", exist_ok=True)
-    fieldnames = [
-        "condition",
-        "kind",
-        "label",
-        "centroid_to_prompt_gap",
-        "nearest_other_prompt_gap",
-        "own_vs_nearest_other_margin",
-        "mean_centroid_to_prompt_gap",
-        "max_centroid_to_prompt_gap",
-        "n_labels",
-    ]
-    with open(csv_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
-    return True
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Plot shared-basis projections for cached condition embeddings.")
     parser.add_argument("--cache_dir", default=_default_cache_dir(), help="Condition cache directory.")
@@ -818,7 +724,6 @@ def main() -> None:
     plt.close(fig)
 
     csv_path = os.path.splitext(output_path)[0] + ".csv"
-    alignment_csv_path = os.path.splitext(output_path)[0] + "_alignment.csv"
     _write_coordinates_csv(
         csv_path=csv_path,
         conditions=condition_labels,
@@ -829,17 +734,9 @@ def main() -> None:
         reference_condition=reference_condition,
         reference_centroids=reference_centroids,
     )
-    wrote_alignment = _write_alignment_csv(
-        csv_path=alignment_csv_path,
-        conditions=condition_labels,
-        centroids_by_condition=centroids_by_condition,
-        prototypes_by_condition=prototypes_by_condition,
-    )
 
     print(f"Saved projection plot -> {output_path}")
     print(f"Saved projection coordinates -> {csv_path}")
-    if wrote_alignment:
-        print(f"Saved centroid/prototype alignment -> {alignment_csv_path}")
     if args.method == "pca":
         print("Explained variance: " + ", ".join(
             f"PC{i + 1}={variance[i]:.4f}"
@@ -851,4 +748,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
