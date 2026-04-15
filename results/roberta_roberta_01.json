@@ -1,0 +1,33 @@
+{
+  "job_id": "roberta_01",
+  "timestamp": "2026-04-09T08:31:36.991827",
+  "model_name": "cardiffnlp/twitter-roberta-base-sentiment-latest",
+  "device": "cuda",
+  "total_elapsed_seconds": 232.75,
+  "epochs": 5,
+  "best_epoch_val_f1": 0.8028,
+  "val_accuracy": 0.7992,
+  "val_f1_macro": 0.8028,
+  "val_f1_weighted": 0.7986,
+  "val_report": "              precision    recall  f1-score   support\n\n    negative       0.79      0.83      0.81       778\n     neutral       0.78      0.74      0.76      1112\n    positive       0.83      0.85      0.84       859\n\n    accuracy                           0.80      2749\n   macro avg       0.80      0.81      0.80      2749\nweighted avg       0.80      0.80      0.80      2749\n",
+  "test_accuracy": 0.8033,
+  "test_f1_macro": 0.8066,
+  "test_f1_weighted": 0.8028,
+  "test_report": "              precision    recall  f1-score   support\n\n    negative       0.78      0.83      0.80      1001\n     neutral       0.79      0.74      0.76      1430\n    positive       0.85      0.86      0.85      1103\n\n    accuracy                           0.80      3534\n   macro avg       0.80      0.81      0.81      3534\nweighted avg       0.80      0.80      0.80      3534\n",
+  "args": {
+    "train_csv": "data/train_cleaned.csv",
+    "test_csv": "data/test_cleaned.csv",
+    "text_col": "cleaned_text",
+    "val_size": 0.1,
+    "random_state": 42,
+    "job_id": "roberta_01",
+    "output_dir": "results",
+    "model_name": "cardiffnlp/twitter-roberta-base-sentiment-latest",
+    "max_length": 128,
+    "epochs": 5,
+    "batch_size": 32,
+    "lr": 2e-05,
+    "weight_decay": 0.01,
+    "warmup_ratio": 0.1
+  }
+}

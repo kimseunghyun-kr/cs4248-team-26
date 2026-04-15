@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.venv/
+venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+.claude/
+
+# Model checkpoints & large binaries
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.ckpt
+*.h5
+results/models/
+
+# Reference PDFs (large)
+project/references/*.pdf
+
+# Logs
+*.log
+*.err
+*.out
+logs/
+
+# Caches
+project/cache/
+.cache/

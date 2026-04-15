@@ -1,0 +1,15 @@
+{
+  "job_id": "local",
+  "timestamp": "2026-04-08T15:07:38.132869",
+  "train_csv": "data/output_file.csv",
+  "test_csv": "data/test.csv",
+  "val_size": 0.1,
+  "random_state": 42,
+  "text_col": "cleaned_text",
+  "device": "cuda",
+  "cuml_available": false,
+  "total_elapsed_seconds": 0.48,
+  "num_experiments": 0,
+  "num_failed": 0,
+  "results": []
+}

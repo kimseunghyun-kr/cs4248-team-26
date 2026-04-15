@@ -1,0 +1,122 @@
+section,name,model,features_or_components,method,tuned,data,n_models,epochs,val_acc,val_f1_macro,test_acc,test_f1_macro,elapsed_s
+classical,LightGBM__tfidf_bigram_all,LightGBM,tfidf_bigram_all,,no,cleaned,,,0.733,0.7357,0.7414,0.744,13.26
+classical,LightGBM__tfidf_bigram_vader,LightGBM,tfidf_bigram_vader,,no,cleaned,,,0.7268,0.7299,0.738,0.7408,14.8
+classical,LightGBM__tfidf_bigram_afinn,LightGBM,tfidf_bigram_afinn,,no,cleaned,,,0.7341,0.7365,0.7349,0.7371,15.22
+classical,MLP__tfidf_bigram_vader,MLP,tfidf_bigram_vader,,no,cleaned,,,0.7304,0.7334,0.7323,0.7362,38.67
+classical,MLP__tfidf_bigram_afinn,MLP,tfidf_bigram_afinn,,no,cleaned,,,0.7392,0.7414,0.7343,0.7362,37.88
+classical,MLP__tfidf_bigram_all,MLP,tfidf_bigram_all,,no,cleaned,,,0.7374,0.7371,0.7267,0.7277,42.21
+classical,LightGBM__tfidf_bigram,LightGBM,tfidf_bigram,,no,cleaned,,,0.7141,0.7164,0.717,0.7196,8.37
+classical,LogisticRegression__tfidf_bigram_all,LogisticRegression,tfidf_bigram_all,,no,cleaned,,,0.7028,0.7067,0.7111,0.715,0.83
+classical,LightGBM__tfidf_bigram_pos_broad,LightGBM,tfidf_bigram_pos_broad,,no,cleaned,,,0.7079,0.7108,0.7122,0.7149,16.27
+classical,LightGBM__tfidf_unigram,LightGBM,tfidf_unigram,,no,cleaned,,,0.7148,0.7171,0.7105,0.7129,6.24
+classical,LogisticRegression__tfidf_bigram_vader,LogisticRegression,tfidf_bigram_vader,,no,cleaned,,,0.6981,0.7018,0.7074,0.7112,0.91
+classical,MLP__tfidf_unigram,MLP,tfidf_unigram,,no,cleaned,,,0.6915,0.6958,0.7015,0.7055,39.37
+classical,MLP__tfidf_bigram,MLP,tfidf_bigram,,no,cleaned,,,0.6893,0.6933,0.6947,0.699,46.84
+classical,LogisticRegression__tfidf_unigram,LogisticRegression,tfidf_unigram,,no,cleaned,,,0.6919,0.6962,0.6944,0.6982,0.58
+classical,LogisticRegression__tfidf_bigram_afinn,LogisticRegression,tfidf_bigram_afinn,,no,cleaned,,,0.6948,0.6988,0.6893,0.6937,0.59
+classical,MLP__tfidf_bigram_pos_broad,MLP,tfidf_bigram_pos_broad,,no,cleaned,,,0.6824,0.685,0.6842,0.6871,40.73
+classical,LogisticRegression__tfidf_bigram_pos_broad,LogisticRegression,tfidf_bigram_pos_broad,,no,cleaned,,,0.6701,0.6736,0.6684,0.6725,0.62
+classical,LogisticRegression__tfidf_bigram,LogisticRegression,tfidf_bigram,,no,cleaned,,,0.6613,0.6652,0.6658,0.6699,0.81
+classical,LinearSVC__tfidf_bigram_vader,LinearSVC,tfidf_bigram_vader,,no,cleaned,,,0.6588,0.6628,0.6607,0.6652,0.51
+classical,LinearSVC__tfidf_bigram_all,LinearSVC,tfidf_bigram_all,,no,cleaned,,,0.6595,0.6634,0.6607,0.6651,0.74
+classical,LinearSVC__tfidf_unigram,LinearSVC,tfidf_unigram,,no,cleaned,,,0.6657,0.6707,0.6559,0.66,0.41
+classical,NaiveBayes(MultinomialNB)__tfidf_bigram_pos_broad,NaiveBayes(MultinomialNB),tfidf_bigram_pos_broad,,no,cleaned,,,0.637,0.6314,0.6613,0.6566,0.0
+classical,LinearSVC__tfidf_bigram_afinn,LinearSVC,tfidf_bigram_afinn,,no,cleaned,,,0.6482,0.6527,0.6432,0.6471,0.44
+classical,NaiveBayes(MultinomialNB)__tfidf_bigram,NaiveBayes(MultinomialNB),tfidf_bigram,,no,cleaned,,,0.6381,0.6317,0.6483,0.6426,0.0
+classical,LinearSVC__tfidf_bigram_pos_broad,LinearSVC,tfidf_bigram_pos_broad,,no,cleaned,,,0.6366,0.6407,0.6321,0.6358,0.51
+classical,NaiveBayes(MultinomialNB)__tfidf_unigram,NaiveBayes(MultinomialNB),tfidf_unigram,,no,cleaned,,,0.633,0.6234,0.6429,0.6336,0.0
+classical,LinearSVC__tfidf_bigram,LinearSVC,tfidf_bigram,,no,cleaned,,,0.6322,0.6355,0.6285,0.6321,0.5
+classical,NaiveBayes(GaussianNB)__tfidf_bigram_all,NaiveBayes(GaussianNB),tfidf_bigram_all,,no,cleaned,,,0.5016,0.4903,0.4992,0.4849,4.17
+classical,NaiveBayes(GaussianNB)__tfidf_bigram_afinn,NaiveBayes(GaussianNB),tfidf_bigram_afinn,,no,cleaned,,,0.5002,0.4883,0.4992,0.4847,3.91
+classical,NaiveBayes(GaussianNB)__tfidf_bigram_vader,NaiveBayes(GaussianNB),tfidf_bigram_vader,,no,cleaned,,,0.4911,0.4688,0.4844,0.4587,4.42
+classical,LightGBM__tfidf_char_all,LightGBM,tfidf_char_all,,no,cleaned,,,0.7563,0.7587,0.7487,0.7514,94.41
+classical,LightGBM__tfidf_30k_char_all,LightGBM,tfidf_30k_char_all,,no,cleaned,,,0.7515,0.7542,0.7394,0.7421,77.3
+classical,MLP__tfidf_char_all,MLP,tfidf_char_all,,no,cleaned,,,0.7428,0.746,0.7357,0.7393,77.4
+classical,LightGBM__tfidf_bigram_30k_all,LightGBM,tfidf_bigram_30k_all,,no,cleaned,,,0.7334,0.7363,0.7363,0.7391,13.52
+classical,LightGBM__tfidf_char_ngram,LightGBM,tfidf_char_ngram,,no,cleaned,,,0.7326,0.7357,0.7275,0.7303,94.93
+classical,MLP__tfidf_30k_char_all,MLP,tfidf_30k_char_all,,no,cleaned,,,0.7403,0.7431,0.723,0.7263,98.78
+classical,MLP__tfidf_bigram_30k_all,MLP,tfidf_bigram_30k_all,,no,cleaned,,,0.7264,0.7292,0.721,0.7234,55.89
+classical,LightGBM__tfidf_bigram_30k,LightGBM,tfidf_bigram_30k,,no,cleaned,,,0.7228,0.7256,0.7136,0.7161,9.01
+classical,MLP__tfidf_char_ngram,MLP,tfidf_char_ngram,,no,cleaned,,,0.7148,0.7187,0.702,0.7058,75.75
+classical,LogisticRegression__tfidf_bigram_30k_all,LogisticRegression,tfidf_bigram_30k_all,,no,cleaned,,,0.7163,0.72,0.7015,0.7054,1.22
+classical,LogisticRegression__tfidf_30k_char_all,LogisticRegression,tfidf_30k_char_all,,no,cleaned,,,0.701,0.7049,0.693,0.6975,3.41
+classical,LogisticRegression__tfidf_char_all,LogisticRegression,tfidf_char_all,,no,cleaned,,,0.6977,0.7018,0.6882,0.6927,3.37
+classical,NaiveBayes(MultinomialNB)__tfidf_char_ngram,NaiveBayes(MultinomialNB),tfidf_char_ngram,,no,cleaned,,,0.6672,0.6693,0.687,0.6887,0.01
+classical,LogisticRegression__tfidf_char_ngram,LogisticRegression,tfidf_char_ngram,,no,cleaned,,,0.6817,0.6854,0.6743,0.6787,2.43
+classical,MLP__tfidf_bigram_30k,MLP,tfidf_bigram_30k,,no,cleaned,,,0.6715,0.6745,0.6684,0.6707,56.79
+classical,LogisticRegression__tfidf_bigram_30k,LogisticRegression,tfidf_bigram_30k,,no,cleaned,,,0.665,0.6693,0.6619,0.666,0.67
+classical,LinearSVC__tfidf_30k_char_all,LinearSVC,tfidf_30k_char_all,,no,cleaned,,,0.6584,0.663,0.659,0.6636,8.92
+classical,LinearSVC__tfidf_bigram_30k_all,LinearSVC,tfidf_bigram_30k_all,,no,cleaned,,,0.6646,0.6689,0.6522,0.6569,0.61
+classical,LinearSVC__tfidf_char_all,LinearSVC,tfidf_char_all,,no,cleaned,,,0.6526,0.6566,0.6491,0.6535,10.34
+classical,NaiveBayes(MultinomialNB)__tfidf_bigram_30k,NaiveBayes(MultinomialNB),tfidf_bigram_30k,,no,cleaned,,,0.6293,0.6174,0.6466,0.6358,0.0
+classical,LinearSVC__tfidf_char_ngram,LinearSVC,tfidf_char_ngram,,no,cleaned,,,0.641,0.6448,0.6287,0.6331,7.85
+classical,LinearSVC__tfidf_bigram_30k,LinearSVC,tfidf_bigram_30k,,no,cleaned,,,0.6264,0.6302,0.6279,0.6315,0.46
+classical,NaiveBayes(GaussianNB)__tfidf_char_all,NaiveBayes(GaussianNB),tfidf_char_all,,no,cleaned,,,0.5053,0.5055,0.5048,0.5044,50.18
+classical,NaiveBayes(GaussianNB)__tfidf_30k_char_all,NaiveBayes(GaussianNB),tfidf_30k_char_all,,no,cleaned,,,0.4936,0.4953,0.4935,0.4952,97.64
+classical,NaiveBayes(GaussianNB)__tfidf_bigram_30k_all,NaiveBayes(GaussianNB),tfidf_bigram_30k_all,,no,cleaned,,,0.4805,0.4777,0.4822,0.4779,17.51
+classical,LightGBM__tfidf_bigram_all__raw,LightGBM,tfidf_bigram_all,,no,raw,,,0.737,0.7398,0.7431,0.7454,16.43
+classical,LightGBM__tfidf_char_all__raw,LightGBM,tfidf_char_all,,no,raw,,,0.7472,0.7499,0.7391,0.7422,82.64
+classical,MLP__tfidf_char_all__raw,MLP,tfidf_char_all,,no,raw,,,0.7512,0.7546,0.7385,0.742,81.25
+classical,LogisticRegression__tfidf_bigram_all__raw,LogisticRegression,tfidf_bigram_all,,no,raw,,,0.7046,0.7086,0.7108,0.7148,1.03
+classical,MLP__tfidf_bigram_all__raw,MLP,tfidf_bigram_all,,no,raw,,,0.7206,0.7238,0.7088,0.7133,41.55
+classical,LogisticRegression__tfidf_char_all__raw,LogisticRegression,tfidf_char_all,,no,raw,,,0.6941,0.6981,0.6893,0.6936,3.29
+classical,LinearSVC__tfidf_bigram_all__raw,LinearSVC,tfidf_bigram_all,,no,raw,,,0.661,0.6651,0.6653,0.6697,0.82
+classical,LinearSVC__tfidf_char_all__raw,LinearSVC,tfidf_char_all,,no,raw,,,0.645,0.6488,0.646,0.6505,7.9
+classical,NaiveBayes(GaussianNB)__tfidf_char_all__raw,NaiveBayes(GaussianNB),tfidf_char_all,,no,raw,,,0.502,0.5017,0.5054,0.5051,55.02
+classical,NaiveBayes(GaussianNB)__tfidf_bigram_all__raw,NaiveBayes(GaussianNB),tfidf_bigram_all,,no,raw,,,0.5005,0.4882,0.5014,0.4869,4.26
+classical,LightGBM__tfidf_char_all__tuned,LightGBM,tfidf_char_all,,yes,cleaned,,,0.7606,0.7634,0.7484,0.7513,29423.29
+classical,LightGBM__tfidf_bigram_all__tuned,LightGBM,tfidf_bigram_all,,yes,cleaned,,,0.7497,0.7519,0.74,0.7428,3077.6
+transformer,bertweet_01,vinai/bertweet-base,,,,raw,,5,0.813,0.8168,0.809,0.812,261.2
+transformer,bertweet_large_01,vinai/bertweet-large,,,,raw,,5,0.8057,0.8096,0.7929,0.7969,857.46
+transformer,bertweet_large_v2,vinai/bertweet-large,,,,raw,,3,0.8072,0.811,0.8081,0.8118,517.78
+transformer,bertweet_sent_01,finiteautomata/bertweet-base-sentiment-analysis,,,,raw,,5,0.8068,0.8104,0.8065,0.8098,254.22
+transformer,deberta_v3_large_fix,microsoft/deberta-v3-large,,,,raw,,5,0.809,0.8126,0.8079,0.8109,2868.92
+transformer,deberta_v3_large_v2,microsoft/deberta-v3-large,,,,raw,,3,0.8068,0.81,0.8022,0.8057,1414.24
+transformer,01,cardiffnlp/twitter-roberta-base-sentiment-latest,,,,cleaned,,5,0.7992,0.8028,0.8033,0.8066,232.75
+transformer,large_01,roberta-large,,,,cleaned,,5,0.8039,0.8064,0.7946,0.7976,860.59
+transformer,large_raw_01,roberta-large,,,,raw,,5,0.8065,0.8099,0.8042,0.8074,858.15
+transformer,raw_01,cardiffnlp/twitter-roberta-base-sentiment-latest,,,,raw,,5,0.8087,0.8124,0.8076,0.811,248.83
+transformer,seed123,cardiffnlp/twitter-roberta-base-sentiment-latest,,,,raw,,5,0.797,0.8012,0.8149,0.8182,248.46
+transformer,seed456,cardiffnlp/twitter-roberta-base-sentiment-latest,,,,raw,,5,0.7937,0.7966,0.7997,0.8026,252.99
+transformer,weighted_01,cardiffnlp/twitter-roberta-base-sentiment-latest,,,,raw,,5,0.8061,0.8096,0.8073,0.8108,248.58
+transformer,xlm_01,cardiffnlp/twitter-xlm-roberta-base,,,,raw,,5,0.8072,0.8105,0.8059,0.8083,319.72
+ensemble,ens_01,,"sent-latest-raw, roberta-large",mean,,raw,2,,0.8134,0.8171,0.8124,0.8156,
+ensemble,ens_3_diverse_max,,"bertweet, xlm, deberta-v3-large",mean,,raw,3,,0.8163,0.8197,0.8169,0.8195,
+ensemble,ens_3_no_bert,,"sent-latest-raw, roberta-large-raw, xlm",mean,,raw,3,,0.8218,0.8252,0.8147,0.8178,
+ensemble,ens_3_no_large,,"sent-latest-raw, bertweet, xlm",mean,,raw,3,,0.821,0.8245,0.8203,0.8232,
+ensemble,ens_3_no_raw,,"roberta-large-raw, bertweet, xlm",mean,,raw,3,,0.8167,0.8201,0.8166,0.8193,
+ensemble,ens_3_no_xlm,,"sent-latest-raw, roberta-large-raw, bertweet",mean,,raw,3,,0.8221,0.8257,0.8147,0.8179,
+ensemble,ens_3model,,"sent-latest-raw, roberta-large, sent-latest",mean,,raw,3,,0.8148,0.8184,0.8195,0.8227,
+ensemble,ens_4_sent_swap,,"sent-latest-raw, bertweet, xlm, bertweet-sent",mean,,raw,4,,0.8258,0.8289,0.8217,0.8248,
+ensemble,ens_4model,,"sent-latest-raw, roberta-large, sent-latest, sent-latest",mean,,raw,4,,0.8319,0.8353,0.8178,0.8209,
+ensemble,ens_4model_v2,,"sent-latest-raw, roberta-large-raw, bertweet, xlm",mean,,raw,4,,0.8218,0.8252,0.8203,0.8233,
+ensemble,ens_5model,,"sent-latest-raw, roberta-large, sent-latest, sent-latest, sent-latest",mean,,raw,5,,0.8392,0.8425,0.8178,0.8211,
+ensemble,ens_5model_deberta,,"sent-latest-raw, roberta-large-raw, bertweet, xlm, deberta-v3-large",mean,,raw,5,,0.8254,0.8286,0.8198,0.8224,
+ensemble,ens_lo_bt,,"sent-latest-raw, xlm, bertweet-sent",LOO-mean,,raw,3,,0.8236,0.8266,0.8178,0.8209,
+ensemble,ens_lo_sent,,"sent-latest-raw, bertweet, xlm",LOO-mean,,raw,3,,0.821,0.8245,0.8203,0.8232,
+ensemble,ens_lo_tr,,"bertweet, xlm, bertweet-sent",LOO-mean,,raw,3,,0.8207,0.8239,0.8195,0.8225,
+ensemble,ens_lo_xlm,,"sent-latest-raw, bertweet, bertweet-sent",LOO-mean,,raw,3,,0.8196,0.8229,0.8169,0.8202,
+ensemble,ens_raw_large_bert,,"sent-latest-raw, roberta-large(cleaned_text), bertweet",mean,,mixed,3,,0.8178,0.8213,0.8195,0.8226,
+ensemble,ens_raw_large_bert_v2,,"sent-latest-raw, roberta-large, bertweet",mean,,raw,3,,0.8185,0.822,0.8195,0.8226,
+ensemble,ens_raw_large_weighted,,"sent-latest-raw, roberta-large(cleaned_text), sent-latest",weighted,,mixed,3,,0.8148,0.8184,0.8189,0.8223,
+ensemble,ens_raw_large_weighted_v2,,"sent-latest-raw, roberta-large, sent-latest",weighted,,raw,3,,0.8148,0.8184,0.8195,0.8227,
+ensemble,4model,,"sent-latest-raw, roberta-large-raw, bertweet, xlm",stacking-LR,,raw,4,,0.8207,0.824,0.8209,0.8238,
+ensemble,wens_4model,,"sent-latest-raw, roberta-large-raw, bertweet, xlm",weighted,,raw,4,,0.825,0.8284,0.8158,0.8188,
+transformer,deberta_v3_large_cleaned_fix,microsoft/deberta-v3-large,,,,cleaned,,5,0.8087,0.8123,0.8065,0.8093,2208.1
+ensemble,ens_4_deberta_swap,,"roberta-raw, bertweet, xlm, deberta-v3-large",mean,,raw,4,,0.8239,0.8273,0.8183,0.8212,
+ensemble,ens_4_sent_deberta,,"roberta-raw, bertweet-sent, xlm, deberta-v3-large",mean,,raw,4,,0.8254,0.8286,0.824,0.8267,
+ensemble,ens_4_no_roberta,,"bertweet, bertweet-sent, xlm, deberta-v3-large",mean,,raw,4,,0.8225,0.8258,0.8223,0.8249,
+ensemble,ens_lo_db_no_xlm,,"roberta-raw, bertweet-sent, deberta-v3-large",mean,,raw,3,,0.8232,0.8264,0.8209,0.8240,
+ensemble,ens_lo_db_no_roberta,,"bertweet-sent, xlm, deberta-v3-large",mean,,raw,3,,0.8210,0.8241,0.8212,0.8239,
+ensemble,ens_lo_db_no_deberta,,"roberta-raw, bertweet-sent, xlm",mean,,raw,3,,0.8236,0.8266,0.8178,0.8209,
+ensemble,ens_lo_db_no_sent,,"roberta-raw, xlm, deberta-v3-large",mean,,raw,3,,0.8250,0.8283,0.8161,0.8190,
+ensemble,ens_2_ab,,"roberta-raw, bertweet",mean,,raw,2,,0.8188,0.8225,0.8175,0.8207,
+ensemble,ens_2_ad,,"roberta-raw, xlm",mean,,raw,2,,0.8207,0.8241,0.8172,0.8200,
+ensemble,ens_2_ae,,"roberta-raw, deberta-v3-large",mean,,raw,2,,0.8159,0.8195,0.8175,0.8205,
+ensemble,ens_2_be,,"bertweet, deberta-v3-large",mean,,raw,2,,0.8156,0.8190,0.8113,0.8141,
+ensemble,ens_2_de,,"xlm, deberta-v3-large",mean,,raw,2,,0.8181,0.8214,0.8161,0.8186,
+ensemble,ens_4_abce,,"roberta-raw, bertweet, bertweet-sent, deberta-v3-large",mean,,raw,4,,0.8225,0.8258,0.8237,0.8267,
+ensemble,ens_5_abcde,,"roberta-raw, bertweet, bertweet-sent, xlm, deberta-v3-large",mean,,raw,5,,0.8254,0.8285,0.8248,0.8276,
+ensemble,ens_5_acdef,,"roberta-raw, bertweet-sent, xlm, deberta-v3-large, roberta-large-raw",mean,,raw,5,,0.8258,0.8290,0.8220,0.8248,
+ensemble,ens_5_abcdf,,"roberta-raw, bertweet, bertweet-sent, xlm, roberta-large-raw",mean,,raw,5,,0.8276,0.8307,0.8214,0.8245,
+ensemble,ens_5_bcdef,,"bertweet, bertweet-sent, xlm, deberta-v3-large, roberta-large-raw",mean,,raw,5,,0.8261,0.8294,0.8212,0.8238,

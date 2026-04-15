@@ -1,0 +1,318 @@
+{
+  "job_id": "job_raw_20260414_174716",
+  "timestamp": "2026-04-14T17:53:31.348566",
+  "train_csv": "data/train_cleaned.csv",
+  "test_csv": "data/test_cleaned.csv",
+  "val_size": 0.1,
+  "random_state": 42,
+  "text_col": "text",
+  "device": "cuda",
+  "cuml_available": false,
+  "total_elapsed_seconds": 350.41,
+  "num_experiments": 10,
+  "num_failed": 0,
+  "results": [
+    {
+      "experiment": "LightGBM__tfidf_bigram_all",
+      "model": "LightGBM",
+      "features": "tfidf_bigram_all",
+      "feature_config": {
+        "name": "tfidf_bigram_all",
+        "tfidf_ngram_range": [
+          1,
+          2
+        ],
+        "tfidf_max_features": 10000,
+        "tfidf_sublinear_tf": true,
+        "use_vader": true,
+        "use_afinn": true,
+        "use_pos_broad_counts": true,
+        "use_pos_specific_counts": false
+      },
+      "elapsed_seconds": 16.43,
+      "val_accuracy": 0.737,
+      "val_f1_macro": 0.7398,
+      "val_f1_weighted": 0.7369,
+      "test_accuracy": 0.7431,
+      "test_f1_macro": 0.7454,
+      "test_f1_weighted": 0.7425,
+      "val_report": "              precision    recall  f1-score   support\n\n    negative       0.72      0.75      0.74       778\n     neutral       0.72      0.70      0.71      1112\n    positive       0.78      0.77      0.78       859\n\n    accuracy                           0.74      2749\n   macro avg       0.74      0.74      0.74      2749\nweighted avg       0.74      0.74      0.74      2749\n",
+      "test_report": "              precision    recall  f1-score   support\n\n    negative       0.71      0.76      0.73      1001\n     neutral       0.74      0.68      0.71      1430\n    positive       0.78      0.80      0.79      1103\n\n    accuracy                           0.74      3534\n   macro avg       0.74      0.75      0.75      3534\nweighted avg       0.74      0.74      0.74      3534\n"
+    },
+    {
+      "experiment": "LightGBM__tfidf_char_all",
+      "model": "LightGBM",
+      "features": "tfidf_char_all",
+      "feature_config": {
+        "name": "tfidf_char_all",
+        "tfidf_ngram_range": [
+          1,
+          2
+        ],
+        "tfidf_max_features": 15000,
+        "tfidf_sublinear_tf": true,
+        "use_vader": true,
+        "use_afinn": true,
+        "use_pos_broad_counts": true,
+        "use_pos_specific_counts": false,
+        "use_char_ngrams": true,
+        "char_ngram_range": [
+          3,
+          5
+        ],
+        "char_max_features": 30000
+      },
+      "elapsed_seconds": 82.64,
+      "val_accuracy": 0.7472,
+      "val_f1_macro": 0.7499,
+      "val_f1_weighted": 0.7468,
+      "test_accuracy": 0.7391,
+      "test_f1_macro": 0.7422,
+      "test_f1_weighted": 0.7385,
+      "val_report": "              precision    recall  f1-score   support\n\n    negative       0.74      0.77      0.75       778\n     neutral       0.73      0.70      0.72      1112\n    positive       0.77      0.78      0.78       859\n\n    accuracy                           0.75      2749\n   macro avg       0.75      0.75      0.75      2749\nweighted avg       0.75      0.75      0.75      2749\n",
+      "test_report": "              precision    recall  f1-score   support\n\n    negative       0.70      0.77      0.73      1001\n     neutral       0.73      0.67      0.70      1430\n    positive       0.79      0.80      0.79      1103\n\n    accuracy                           0.74      3534\n   macro avg       0.74      0.75      0.74      3534\nweighted avg       0.74      0.74      0.74      3534\n"
+    },
+    {
+      "experiment": "MLP__tfidf_char_all",
+      "model": "MLP",
+      "features": "tfidf_char_all",
+      "feature_config": {
+        "name": "tfidf_char_all",
+        "tfidf_ngram_range": [
+          1,
+          2
+        ],
+        "tfidf_max_features": 15000,
+        "tfidf_sublinear_tf": true,
+        "use_vader": true,
+        "use_afinn": true,
+        "use_pos_broad_counts": true,
+        "use_pos_specific_counts": false,
+        "use_char_ngrams": true,
+        "char_ngram_range": [
+          3,
+          5
+        ],
+        "char_max_features": 30000
+      },
+      "elapsed_seconds": 81.25,
+      "val_accuracy": 0.7512,
+      "val_f1_macro": 0.7546,
+      "val_f1_weighted": 0.7511,
+      "test_accuracy": 0.7385,
+      "test_f1_macro": 0.742,
+      "test_f1_weighted": 0.7378,
+      "val_report": "              precision    recall  f1-score   support\n\n    negative       0.74      0.78      0.76       778\n     neutral       0.73      0.71      0.72      1112\n    positive       0.80      0.78      0.79       859\n\n    accuracy                           0.75      2749\n   macro avg       0.75      0.76      0.75      2749\nweighted avg       0.75      0.75      0.75      2749\n",
+      "test_report": "              precision    recall  f1-score   support\n\n    negative       0.70      0.79      0.74      1001\n     neutral       0.73      0.67      0.70      1430\n    positive       0.79      0.79      0.79      1103\n\n    accuracy                           0.74      3534\n   macro avg       0.74      0.75      0.74      3534\nweighted avg       0.74      0.74      0.74      3534\n",
+      "model_path": "results\\models\\job_raw_20260414_174716\\mlp_tfidf_char_all.pt"
+    },
+    {
+      "experiment": "LogisticRegression__tfidf_bigram_all",
+      "model": "LogisticRegression",
+      "features": "tfidf_bigram_all",
+      "feature_config": {
+        "name": "tfidf_bigram_all",
+        "tfidf_ngram_range": [
+          1,
+          2
+        ],
+        "tfidf_max_features": 10000,
+        "tfidf_sublinear_tf": true,
+        "use_vader": true,
+        "use_afinn": true,
+        "use_pos_broad_counts": true,
+        "use_pos_specific_counts": false
+      },
+      "elapsed_seconds": 1.03,
+      "val_accuracy": 0.7046,
+      "val_f1_macro": 0.7086,
+      "val_f1_weighted": 0.7042,
+      "test_accuracy": 0.7108,
+      "test_f1_macro": 0.7148,
+      "test_f1_weighted": 0.7102,
+      "val_report": "              precision    recall  f1-score   support\n\n    negative       0.69      0.75      0.72       778\n     neutral       0.68      0.65      0.66      1112\n    positive       0.75      0.73      0.74       859\n\n    accuracy                           0.70      2749\n   macro avg       0.71      0.71      0.71      2749\nweighted avg       0.70      0.70      0.70      2749\n",
+      "test_report": "              precision    recall  f1-score   support\n\n    negative       0.69      0.74      0.71      1001\n     neutral       0.69      0.64      0.66      1430\n    positive       0.77      0.77      0.77      1103\n\n    accuracy                           0.71      3534\n   macro avg       0.71      0.72      0.71      3534\nweighted avg       0.71      0.71      0.71      3534\n"
+    },
+    {
+      "experiment": "MLP__tfidf_bigram_all",
+      "model": "MLP",
+      "features": "tfidf_bigram_all",
+      "feature_config": {
+        "name": "tfidf_bigram_all",
+        "tfidf_ngram_range": [
+          1,
+          2
+        ],
+        "tfidf_max_features": 10000,
+        "tfidf_sublinear_tf": true,
+        "use_vader": true,
+        "use_afinn": true,
+        "use_pos_broad_counts": true,
+        "use_pos_specific_counts": false
+      },
+      "elapsed_seconds": 41.55,
+      "val_accuracy": 0.7206,
+      "val_f1_macro": 0.7238,
+      "val_f1_weighted": 0.7205,
+      "test_accuracy": 0.7088,
+      "test_f1_macro": 0.7133,
+      "test_f1_weighted": 0.7076,
+      "val_report": "              precision    recall  f1-score   support\n\n    negative       0.66      0.80      0.73       778\n     neutral       0.72      0.66      0.69      1112\n    positive       0.80      0.72      0.76       859\n\n    accuracy                           0.72      2749\n   macro avg       0.73      0.73      0.72      2749\nweighted avg       0.73      0.72      0.72      2749\n",
+      "test_report": "              precision    recall  f1-score   support\n\n    negative       0.64      0.82      0.72      1001\n     neutral       0.71      0.61      0.65      1430\n    positive       0.80      0.74      0.77      1103\n\n    accuracy                           0.71      3534\n   macro avg       0.72      0.72      0.71      3534\nweighted avg       0.72      0.71      0.71      3534\n",
+      "model_path": "results\\models\\job_raw_20260414_174716\\mlp_tfidf_bigram_all.pt"
+    },
+    {
+      "experiment": "LogisticRegression__tfidf_char_all",
+      "model": "LogisticRegression",
+      "features": "tfidf_char_all",
+      "feature_config": {
+        "name": "tfidf_char_all",
+        "tfidf_ngram_range": [
+          1,
+          2
+        ],
+        "tfidf_max_features": 15000,
+        "tfidf_sublinear_tf": true,
+        "use_vader": true,
+        "use_afinn": true,
+        "use_pos_broad_counts": true,
+        "use_pos_specific_counts": false,
+        "use_char_ngrams": true,
+        "char_ngram_range": [
+          3,
+          5
+        ],
+        "char_max_features": 30000
+      },
+      "elapsed_seconds": 3.29,
+      "val_accuracy": 0.6941,
+      "val_f1_macro": 0.6981,
+      "val_f1_weighted": 0.6943,
+      "test_accuracy": 0.6893,
+      "test_f1_macro": 0.6936,
+      "test_f1_weighted": 0.6889,
+      "val_report": "              precision    recall  f1-score   support\n\n    negative       0.70      0.71      0.71       778\n     neutral       0.66      0.66      0.66      1112\n    positive       0.74      0.72      0.73       859\n\n    accuracy                           0.69      2749\n   macro avg       0.70      0.70      0.70      2749\nweighted avg       0.69      0.69      0.69      2749\n",
+      "test_report": "              precision    recall  f1-score   support\n\n    negative       0.67      0.70      0.68      1001\n     neutral       0.65      0.63      0.64      1430\n    positive       0.75      0.76      0.76      1103\n\n    accuracy                           0.69      3534\n   macro avg       0.69      0.70      0.69      3534\nweighted avg       0.69      0.69      0.69      3534\n"
+    },
+    {
+      "experiment": "LinearSVC__tfidf_bigram_all",
+      "model": "LinearSVC",
+      "features": "tfidf_bigram_all",
+      "feature_config": {
+        "name": "tfidf_bigram_all",
+        "tfidf_ngram_range": [
+          1,
+          2
+        ],
+        "tfidf_max_features": 10000,
+        "tfidf_sublinear_tf": true,
+        "use_vader": true,
+        "use_afinn": true,
+        "use_pos_broad_counts": true,
+        "use_pos_specific_counts": false
+      },
+      "elapsed_seconds": 0.82,
+      "val_accuracy": 0.661,
+      "val_f1_macro": 0.6651,
+      "val_f1_weighted": 0.6607,
+      "test_accuracy": 0.6653,
+      "test_f1_macro": 0.6697,
+      "test_f1_weighted": 0.6649,
+      "val_report": "              precision    recall  f1-score   support\n\n    negative       0.66      0.69      0.68       778\n     neutral       0.63      0.61      0.62      1112\n    positive       0.70      0.69      0.70       859\n\n    accuracy                           0.66      2749\n   macro avg       0.66      0.67      0.67      2749\nweighted avg       0.66      0.66      0.66      2749\n",
+      "test_report": "              precision    recall  f1-score   support\n\n    negative       0.65      0.69      0.67      1001\n     neutral       0.63      0.61      0.62      1430\n    positive       0.73      0.72      0.72      1103\n\n    accuracy                           0.67      3534\n   macro avg       0.67      0.67      0.67      3534\nweighted avg       0.67      0.67      0.66      3534\n"
+    },
+    {
+      "experiment": "LinearSVC__tfidf_char_all",
+      "model": "LinearSVC",
+      "features": "tfidf_char_all",
+      "feature_config": {
+        "name": "tfidf_char_all",
+        "tfidf_ngram_range": [
+          1,
+          2
+        ],
+        "tfidf_max_features": 15000,
+        "tfidf_sublinear_tf": true,
+        "use_vader": true,
+        "use_afinn": true,
+        "use_pos_broad_counts": true,
+        "use_pos_specific_counts": false,
+        "use_char_ngrams": true,
+        "char_ngram_range": [
+          3,
+          5
+        ],
+        "char_max_features": 30000
+      },
+      "elapsed_seconds": 7.9,
+      "val_accuracy": 0.645,
+      "val_f1_macro": 0.6488,
+      "val_f1_weighted": 0.6448,
+      "test_accuracy": 0.646,
+      "test_f1_macro": 0.6505,
+      "test_f1_weighted": 0.6457,
+      "val_report": "              precision    recall  f1-score   support\n\n    negative       0.64      0.67      0.65       778\n     neutral       0.61      0.60      0.61      1112\n    positive       0.69      0.68      0.69       859\n\n    accuracy                           0.64      2749\n   macro avg       0.65      0.65      0.65      2749\nweighted avg       0.65      0.64      0.64      2749\n",
+      "test_report": "              precision    recall  f1-score   support\n\n    negative       0.63      0.66      0.65      1001\n     neutral       0.61      0.59      0.60      1430\n    positive       0.71      0.71      0.71      1103\n\n    accuracy                           0.65      3534\n   macro avg       0.65      0.65      0.65      3534\nweighted avg       0.65      0.65      0.65      3534\n"
+    },
+    {
+      "experiment": "NaiveBayes(GaussianNB)__tfidf_char_all",
+      "model": "NaiveBayes(GaussianNB)",
+      "features": "tfidf_char_all",
+      "feature_config": {
+        "name": "tfidf_char_all",
+        "tfidf_ngram_range": [
+          1,
+          2
+        ],
+        "tfidf_max_features": 15000,
+        "tfidf_sublinear_tf": true,
+        "use_vader": true,
+        "use_afinn": true,
+        "use_pos_broad_counts": true,
+        "use_pos_specific_counts": false,
+        "use_char_ngrams": true,
+        "char_ngram_range": [
+          3,
+          5
+        ],
+        "char_max_features": 30000
+      },
+      "elapsed_seconds": 55.02,
+      "val_accuracy": 0.502,
+      "val_f1_macro": 0.5017,
+      "val_f1_weighted": 0.4879,
+      "test_accuracy": 0.5054,
+      "test_f1_macro": 0.5051,
+      "test_f1_weighted": 0.4918,
+      "val_report": "              precision    recall  f1-score   support\n\n    negative       0.48      0.65      0.55       778\n     neutral       0.47      0.30      0.37      1112\n    positive       0.55      0.63      0.59       859\n\n    accuracy                           0.50      2749\n   macro avg       0.50      0.53      0.50      2749\nweighted avg       0.50      0.50      0.49      2749\n",
+      "test_report": "              precision    recall  f1-score   support\n\n    negative       0.49      0.64      0.56      1001\n     neutral       0.48      0.31      0.38      1430\n    positive       0.53      0.64      0.58      1103\n\n    accuracy                           0.51      3534\n   macro avg       0.50      0.53      0.51      3534\nweighted avg       0.50      0.51      0.49      3534\n"
+    },
+    {
+      "experiment": "NaiveBayes(GaussianNB)__tfidf_bigram_all",
+      "model": "NaiveBayes(GaussianNB)",
+      "features": "tfidf_bigram_all",
+      "feature_config": {
+        "name": "tfidf_bigram_all",
+        "tfidf_ngram_range": [
+          1,
+          2
+        ],
+        "tfidf_max_features": 10000,
+        "tfidf_sublinear_tf": true,
+        "use_vader": true,
+        "use_afinn": true,
+        "use_pos_broad_counts": true,
+        "use_pos_specific_counts": false
+      },
+      "elapsed_seconds": 4.26,
+      "val_accuracy": 0.5005,
+      "val_f1_macro": 0.4882,
+      "val_f1_weighted": 0.4692,
+      "test_accuracy": 0.5014,
+      "test_f1_macro": 0.4869,
+      "test_f1_weighted": 0.4667,
+      "val_report": "              precision    recall  f1-score   support\n\n    negative       0.46      0.71      0.56       778\n     neutral       0.51      0.22      0.30      1112\n    positive       0.54      0.68      0.60       859\n\n    accuracy                           0.50      2749\n   macro avg       0.50      0.53      0.49      2749\nweighted avg       0.51      0.50      0.47      2749\n",
+      "test_report": "              precision    recall  f1-score   support\n\n    negative       0.47      0.69      0.56      1001\n     neutral       0.50      0.21      0.29      1430\n    positive       0.53      0.71      0.61      1103\n\n    accuracy                           0.50      3534\n   macro avg       0.50      0.54      0.49      3534\nweighted avg       0.50      0.50      0.47      3534\n"
+    }
+  ]
+}

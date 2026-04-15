@@ -1,0 +1,33 @@
+{
+  "job_id": "deberta_01",
+  "timestamp": "2026-04-09T08:56:25.237423",
+  "model_name": "microsoft/deberta-v3-large",
+  "device": "cuda",
+  "total_elapsed_seconds": 1144.41,
+  "epochs": 5,
+  "best_epoch_val_f1": 0.1471,
+  "val_accuracy": 0.283,
+  "val_f1_macro": 0.1471,
+  "val_f1_weighted": 0.1249,
+  "val_report": "              precision    recall  f1-score   support\n\n    negative       0.28      1.00      0.44       778\n     neutral       0.00      0.00      0.00      1112\n    positive       0.00      0.00      0.00       859\n\n    accuracy                           0.28      2749\n   macro avg       0.09      0.33      0.15      2749\nweighted avg       0.08      0.28      0.12      2749\n",
+  "test_accuracy": 0.2832,
+  "test_f1_macro": 0.1472,
+  "test_f1_weighted": 0.125,
+  "test_report": "              precision    recall  f1-score   support\n\n    negative       0.28      1.00      0.44      1001\n     neutral       0.00      0.00      0.00      1430\n    positive       0.00      0.00      0.00      1103\n\n    accuracy                           0.28      3534\n   macro avg       0.09      0.33      0.15      3534\nweighted avg       0.08      0.28      0.13      3534\n",
+  "args": {
+    "train_csv": "data/train_cleaned.csv",
+    "test_csv": "data/test_cleaned.csv",
+    "text_col": "cleaned_text",
+    "val_size": 0.1,
+    "random_state": 42,
+    "job_id": "deberta_01",
+    "output_dir": "results",
+    "model_name": "microsoft/deberta-v3-large",
+    "max_length": 128,
+    "epochs": 5,
+    "batch_size": 16,
+    "lr": 1e-05,
+    "weight_decay": 0.01,
+    "warmup_ratio": 0.1
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "job_id": "wens_4model",
+  "timestamp": "2026-04-09T11:15:43.434202",
+  "models": [
+    "cardiffnlp/twitter-roberta-base-sentiment-latest:results/models/roberta_raw_01/best_model.pt:text",
+    "roberta-large:results/models/roberta_large_raw_01/best_model.pt:text",
+    "vinai/bertweet-base:results/models/bertweet_01/best_model.pt:text",
+    "cardiffnlp/twitter-xlm-roberta-base:results/models/xlm_01/best_model.pt:text"
+  ],
+  "weights": [
+    0.3,
+    0.4,
+    0.1,
+    0.2
+  ],
+  "model_names": [
+    "twitter-roberta-base-sentiment-latest",
+    "roberta-large",
+    "bertweet-base",
+    "twitter-xlm-roberta-base"
+  ],
+  "val_accuracy": 0.825,
+  "val_f1_macro": 0.8284,
+  "val_report": "              precision    recall  f1-score   support\n\n    negative       0.84      0.83      0.84       778\n     neutral       0.79      0.80      0.80      1112\n    positive       0.86      0.85      0.85       859\n\n    accuracy                           0.83      2749\n   macro avg       0.83      0.83      0.83      2749\nweighted avg       0.83      0.83      0.83      2749\n",
+  "test_accuracy": 0.8158,
+  "test_f1_macro": 0.8188,
+  "test_report": "              precision    recall  f1-score   support\n\n    negative       0.80      0.82      0.81      1001\n     neutral       0.78      0.79      0.79      1430\n    positive       0.87      0.85      0.86      1103\n\n    accuracy                           0.82      3534\n   macro avg       0.82      0.82      0.82      3534\nweighted avg       0.82      0.82      0.82      3534\n",
+  "uniform_test_f1": 0.8233
+}

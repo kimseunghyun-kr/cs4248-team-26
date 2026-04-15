@@ -1,0 +1,20 @@
+{
+  "job_id": "thresh_01",
+  "timestamp": "2026-04-09T09:45:10.061861",
+  "models": [
+    "cardiffnlp/twitter-roberta-base-sentiment-latest:results/models/roberta_raw_01/best_model.pt:text",
+    "roberta-large:results/models/roberta_large_01/best_model.pt:text"
+  ],
+  "bias": {
+    "negative": -0.3,
+    "neutral": -0.5,
+    "positive": 0.20000000000000007
+  },
+  "baseline_val_f1": 0.8171,
+  "baseline_test_f1": 0.8156,
+  "tuned_val_f1": 0.82,
+  "tuned_test_f1": 0.816,
+  "tuned_test_acc": 0.8132,
+  "val_report": "              precision    recall  f1-score   support\n\n    negative       0.82      0.83      0.83       778\n     neutral       0.80      0.76      0.78      1112\n    positive       0.84      0.87      0.85       859\n\n    accuracy                           0.82      2749\n   macro avg       0.82      0.82      0.82      2749\nweighted avg       0.82      0.82      0.82      2749\n",
+  "test_report": "              precision    recall  f1-score   support\n\n    negative       0.80      0.83      0.81      1001\n     neutral       0.80      0.76      0.78      1430\n    positive       0.84      0.87      0.86      1103\n\n    accuracy                           0.81      3534\n   macro avg       0.81      0.82      0.82      3534\nweighted avg       0.81      0.81      0.81      3534\n"
+}

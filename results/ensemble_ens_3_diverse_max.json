@@ -1,0 +1,15 @@
+{
+  "job_id": "ens_3_diverse_max",
+  "timestamp": "2026-04-09T13:06:08.265995",
+  "models": [
+    "vinai/bertweet-base:../results/models/bertweet_01/best_model.pt:text",
+    "cardiffnlp/twitter-xlm-roberta-base:../results/models/xlm_01/best_model.pt:text",
+    "microsoft/deberta-v3-large:../results/models/deberta_v3_large_fix/best_model.pt:text"
+  ],
+  "val_accuracy": 0.8163,
+  "val_f1_macro": 0.8197,
+  "val_report": "              precision    recall  f1-score   support\n\n    negative       0.86      0.79      0.82       778\n     neutral       0.77      0.80      0.79      1112\n    positive       0.84      0.86      0.85       859\n\n    accuracy                           0.82      2749\n   macro avg       0.82      0.82      0.82      2749\nweighted avg       0.82      0.82      0.82      2749\n",
+  "test_accuracy": 0.8169,
+  "test_f1_macro": 0.8195,
+  "test_report": "              precision    recall  f1-score   support\n\n    negative       0.83      0.79      0.81      1001\n     neutral       0.78      0.80      0.79      1430\n    positive       0.86      0.86      0.86      1103\n\n    accuracy                           0.82      3534\n   macro avg       0.82      0.82      0.82      3534\nweighted avg       0.82      0.82      0.82      3534\n"
+}

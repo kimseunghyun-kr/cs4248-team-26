@@ -1,0 +1,119 @@
+{
+  "job_id": "job_20260408_152024",
+  "timestamp": "2026-04-08T16:14:23.655425",
+  "train_results_file": "results/result_job_20260408_152024.json",
+  "n_trials": 50,
+  "total_elapsed_seconds": 2430.27,
+  "device": "cuda",
+  "results": [
+    {
+      "family": "LogisticRegression",
+      "model": "LogisticRegression",
+      "features": "tfidf_bigram_all",
+      "best_params": {
+        "C": 0.2702282973163614,
+        "solver": "lbfgs"
+      },
+      "error": "Traceback (most recent call last):\n  File \"C:\\Users\\yongl\\Code\\cs4248-team-26\\project\\tune_all.py\", line 458, in run_tuning\n    vm, tm = _retrain_final(\n             ^^^^^^^^^^^^^^^\n  File \"C:\\Users\\yongl\\Code\\cs4248-team-26\\project\\tune_all.py\", line 203, in _retrain_final\n    m = LogisticRegression(\n        ^^^^^^^^^^^^^^^^^^^\nTypeError: LogisticRegression.__init__() got an unexpected keyword argument 'multi_class'\n"
+    },
+    {
+      "family": "LinearSVC",
+      "model": "LinearSVC",
+      "features": "tfidf_unigram",
+      "n_trials": 50,
+      "n_completed": 50,
+      "n_pruned": 0,
+      "best_params": {
+        "C": 0.07711157934093166
+      },
+      "tune_elapsed_seconds": 25.16,
+      "baseline_val_f1": 0.6707,
+      "baseline_test_f1": 0.66,
+      "val_accuracy": 0.6988,
+      "val_f1_macro": 0.7022,
+      "val_f1_weighted": 0.6995,
+      "test_accuracy": 0.6978,
+      "test_f1_macro": 0.7012,
+      "test_f1_weighted": 0.6983,
+      "val_report": "              precision    recall  f1-score   support\n\n    negative       0.71      0.69      0.70       778\n     neutral       0.65      0.70      0.67      1112\n    positive       0.76      0.71      0.74       859\n\n    accuracy                           0.70      2749\n   macro avg       0.71      0.70      0.70      2749\nweighted avg       0.70      0.70      0.70      2749\n",
+      "test_report": "              precision    recall  f1-score   support\n\n    negative       0.68      0.69      0.68      1001\n     neutral       0.66      0.67      0.66      1430\n    positive       0.77      0.75      0.76      1103\n\n    accuracy                           0.70      3534\n   macro avg       0.70      0.70      0.70      3534\nweighted avg       0.70      0.70      0.70      3534\n"
+    },
+    {
+      "family": "NaiveBayes",
+      "model": "NaiveBayes(MultinomialNB)",
+      "features": "tfidf_bigram",
+      "n_trials": 50,
+      "n_completed": 50,
+      "n_pruned": 0,
+      "best_params": {
+        "alpha": 0.2537815508265665
+      },
+      "tune_elapsed_seconds": 0.21,
+      "baseline_val_f1": 0.6317,
+      "baseline_test_f1": 0.6426,
+      "val_accuracy": 0.6366,
+      "val_f1_macro": 0.636,
+      "val_f1_weighted": 0.6366,
+      "test_accuracy": 0.6454,
+      "test_f1_macro": 0.6446,
+      "test_f1_weighted": 0.6455,
+      "val_report": "              precision    recall  f1-score   support\n\n    negative       0.71      0.55      0.62       778\n     neutral       0.56      0.74      0.64      1112\n    positive       0.74      0.58      0.65       859\n\n    accuracy                           0.64      2749\n   macro avg       0.67      0.62      0.64      2749\nweighted avg       0.66      0.64      0.64      2749\n",
+      "test_report": "              precision    recall  f1-score   support\n\n    negative       0.69      0.54      0.61      1001\n     neutral       0.57      0.73      0.64      1430\n    positive       0.76      0.62      0.68      1103\n\n    accuracy                           0.65      3534\n   macro avg       0.67      0.63      0.64      3534\nweighted avg       0.66      0.65      0.65      3534\n"
+    },
+    {
+      "family": "LightGBM",
+      "model": "LightGBM",
+      "features": "tfidf_bigram_afinn",
+      "n_trials": 50,
+      "n_completed": 50,
+      "n_pruned": 0,
+      "best_params": {
+        "n_estimators": 925,
+        "learning_rate": 0.02825396920624574,
+        "num_leaves": 131,
+        "min_child_samples": 9,
+        "subsample": 0.782560865958579,
+        "colsample_bytree": 0.6320083219924532,
+        "reg_alpha": 0.15345653446430368,
+        "reg_lambda": 0.0003375033750501339
+      },
+      "tune_elapsed_seconds": 1491.73,
+      "baseline_val_f1": 0.7365,
+      "baseline_test_f1": 0.7371,
+      "val_accuracy": 0.7461,
+      "val_f1_macro": 0.7482,
+      "val_f1_weighted": 0.7459,
+      "test_accuracy": 0.7431,
+      "test_f1_macro": 0.7456,
+      "test_f1_weighted": 0.7426,
+      "val_report": "              precision    recall  f1-score   support\n\n    negative       0.73      0.75      0.74       778\n     neutral       0.73      0.71      0.72      1112\n    positive       0.78      0.79      0.78       859\n\n    accuracy                           0.75      2749\n   macro avg       0.75      0.75      0.75      2749\nweighted avg       0.75      0.75      0.75      2749\n",
+      "test_report": "              precision    recall  f1-score   support\n\n    negative       0.72      0.76      0.74      1001\n     neutral       0.73      0.69      0.71      1430\n    positive       0.78      0.80      0.79      1103\n\n    accuracy                           0.74      3534\n   macro avg       0.74      0.75      0.75      3534\nweighted avg       0.74      0.74      0.74      3534\n"
+    },
+    {
+      "family": "MLP",
+      "model": "MLP",
+      "features": "tfidf_bigram_afinn",
+      "n_trials": 50,
+      "n_completed": 50,
+      "n_pruned": 0,
+      "best_params": {
+        "hidden_dim": 512,
+        "dropout": 0.49077866807693754,
+        "lr": 0.0013505961654802074,
+        "weight_decay": 4.3305881689626805e-05,
+        "batch_size": 256
+      },
+      "tune_elapsed_seconds": 773.92,
+      "baseline_val_f1": 0.7414,
+      "baseline_test_f1": 0.7362,
+      "val_accuracy": 0.7465,
+      "val_f1_macro": 0.749,
+      "val_f1_weighted": 0.7468,
+      "test_accuracy": 0.7354,
+      "test_f1_macro": 0.7382,
+      "test_f1_weighted": 0.7352,
+      "val_report": "              precision    recall  f1-score   support\n\n    negative       0.75      0.74      0.75       778\n     neutral       0.71      0.74      0.73      1112\n    positive       0.79      0.75      0.77       859\n\n    accuracy                           0.75      2749\n   macro avg       0.75      0.75      0.75      2749\nweighted avg       0.75      0.75      0.75      2749\n",
+      "test_report": "              precision    recall  f1-score   support\n\n    negative       0.72      0.74      0.73      1001\n     neutral       0.71      0.70      0.70      1430\n    positive       0.78      0.78      0.78      1103\n\n    accuracy                           0.74      3534\n   macro avg       0.74      0.74      0.74      3534\nweighted avg       0.74      0.74      0.74      3534\n"
+    }
+  ]
+}

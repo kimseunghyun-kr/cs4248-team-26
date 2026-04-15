@@ -1,0 +1,21 @@
+{
+  "job_id": "stacking_4model",
+  "timestamp": "2026-04-09T11:45:32.611400",
+  "models": [
+    "cardiffnlp/twitter-roberta-base-sentiment-latest:../results/models/roberta_raw_01/best_model.pt:text",
+    "roberta-large:../results/models/roberta_large_raw_01/best_model.pt:text",
+    "vinai/bertweet-base:../results/models/bertweet_01/best_model.pt:text",
+    "cardiffnlp/twitter-xlm-roberta-base:../results/models/xlm_01/best_model.pt:text"
+  ],
+  "meta_classifier": "LogisticRegression",
+  "meta_C": 1.0,
+  "meta_max_iter": 1000,
+  "val_accuracy": 0.8207,
+  "val_f1_macro": 0.824,
+  "val_report": "              precision    recall  f1-score   support\n\n    negative       0.84      0.81      0.83       778\n     neutral       0.78      0.81      0.79      1112\n    positive       0.86      0.84      0.85       859\n\n    accuracy                           0.82      2749\n   macro avg       0.83      0.82      0.82      2749\nweighted avg       0.82      0.82      0.82      2749\n",
+  "test_accuracy": 0.8209,
+  "test_f1_macro": 0.8238,
+  "test_report": "              precision    recall  f1-score   support\n\n    negative       0.82      0.81      0.81      1001\n     neutral       0.78      0.80      0.79      1430\n    positive       0.88      0.85      0.87      1103\n\n    accuracy                           0.82      3534\n   macro avg       0.83      0.82      0.82      3534\nweighted avg       0.82      0.82      0.82      3534\n",
+  "soft_vote_val_f1": 0.8252,
+  "soft_vote_test_f1": 0.8233
+}
