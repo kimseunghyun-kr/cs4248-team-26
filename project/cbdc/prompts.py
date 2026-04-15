@@ -863,6 +863,38 @@ def mine_topic_phrases_from_cache(
 # ---------------------------------------------------------------------------
 # Core Prompt Builders
 # ---------------------------------------------------------------------------
+CBDC_STYLE_BIAS_PAIRS = [
+    (
+        "A {text_unit} ending with ???",
+        "A {text_unit} ending with a plain period.",
+        "question-mark vs statement",
+    ),
+    (
+        "A {text_unit} with repeated question marks like ???",
+        "A {text_unit} with standard punctuation like .",
+        "repeated-question-marks vs standard punctuation",
+    ),
+    (
+        "A {text_unit} with lots of exclamation marks!!!",
+        "A {text_unit} with ordinary punctuation.",
+        "exclamation-mark vs no-exclamation-mark",
+    ),
+    (
+        "A very short {text_unit} like ok",
+        "A longer {text_unit} with more detail and context.",
+        "very-short vs longer-detailed",
+    ),
+    (
+        "A {text_unit} containing lol haha lmao",
+        "A {text_unit} with no laughter words.",
+        "internet-laughter vs no-laughter",
+    ),
+    (
+        "A {text_unit} containing emoticons like :) :D <3",
+        "A {text_unit} with no emoticons.",
+        "emoticon vs no-emoticon",
+    ),
+]
 
 # Data-calibrated synthetic style poles for D2/D2.5 CBDC.
 #
@@ -872,73 +904,79 @@ def mine_topic_phrases_from_cache(
 # The pairs below keep content/register close while toggling one style cue.
 # This makes the pole difference more like a style direction and less like a
 # generic natural-language description direction.
-CBDC_STYLE_BIAS_PAIRS = [
-    # Emoticon present vs absent, median-length casual tweets.
-    (
-        "I am heading home after work today :) okay?",
-        "I am heading home after work today okay.",
-        "emoticon vs no-emoticon / median length",
-    ),
-    (
-        "Meeting friends after class later :D sounds nice.",
-        "Meeting friends after class later sounds nice.",
-        "smiley-face vs no-smiley / median length",
-    ),
-    (
-        "Coffee before the bus comes <3 I can wait.",
-        "Coffee before the bus comes I can wait.",
-        "heart-emoticon vs no-heart / median length",
-    ),
-    # Consecutive punctuation present vs ordinary punctuation.
-    (
-        "I have to finish this before tonight!!!",
-        "I have to finish this before tonight.",
-        "many-exclamations vs ordinary punctuation",
-    ),
-    (
-        "Are we still meeting at the station???",
-        "Are we still meeting at the station.",
-        "many-question-marks vs ordinary punctuation",
-    ),
-    (
-        "The movie starts after dinner?!?",
-        "The movie starts after dinner.",
-        "mixed-consecutive-punctuation vs ordinary punctuation",
-    ),
-    # Short vs longer tweets using otherwise ordinary punctuation.
-    (
-        "ok then.",
-        "I will check the message again after lunch today.",
-        "q1-length vs q3-length / ordinary punctuation",
-    ),
-    (
-        "home now.",
-        "I am finally back home and sorting out plans for tomorrow.",
-        "very-short vs longer-context / ordinary punctuation",
-    ),
-    # Internet laughter present vs absent.
-    (
-        "I forgot my charger at home lol.",
-        "I forgot my charger at home.",
-        "laughter-word vs no-laughter-word",
-    ),
-    (
-        "That phone call was awkward haha.",
-        "That phone call was awkward.",
-        "haha-token vs no-haha-token",
-    ),
-    # Capitalization present vs ordinary casing.
-    (
-        "I need to leave for WORK soon.",
-        "I need to leave for work soon.",
-        "all-caps-token vs ordinary casing",
-    ),
-    (
-        "This bus is SO late today.",
-        "This bus is so late today.",
-        "caps-emphasis vs ordinary casing",
-    ),
-]
+
+### this was attempted, but not tried
+
+# ---------------------------------------------------------------------------
+# Core Prompt Builders
+# ---------------------------------------------------------------------------
+# CBDC_STYLE_BIAS_PAIRS = [
+#     # Emoticon present vs absent, median-length casual tweets.
+#     (
+#         "I am heading home after work today :) okay?",
+#         "I am heading home after work today okay.",
+#         "emoticon vs no-emoticon / median length",
+#     ),
+#     (
+#         "Meeting friends after class later :D sounds nice.",
+#         "Meeting friends after class later sounds nice.",
+#         "smiley-face vs no-smiley / median length",
+#     ),
+#     (
+#         "Coffee before the bus comes <3 I can wait.",
+#         "Coffee before the bus comes I can wait.",
+#         "heart-emoticon vs no-heart / median length",
+#     ),
+#     # Consecutive punctuation present vs ordinary punctuation.
+#     (
+#         "I have to finish this before tonight!!!",
+#         "I have to finish this before tonight.",
+#         "many-exclamations vs ordinary punctuation",
+#     ),
+#     (
+#         "Are we still meeting at the station???",
+#         "Are we still meeting at the station.",
+#         "many-question-marks vs ordinary punctuation",
+#     ),
+#     (
+#         "The movie starts after dinner?!?",
+#         "The movie starts after dinner.",
+#         "mixed-consecutive-punctuation vs ordinary punctuation",
+#     ),
+#     # Short vs longer tweets using otherwise ordinary punctuation.
+#     (
+#         "ok then.",
+#         "I will check the message again after lunch today.",
+#         "q1-length vs q3-length / ordinary punctuation",
+#     ),
+#     (
+#         "home now.",
+#         "I am finally back home and sorting out plans for tomorrow.",
+#         "very-short vs longer-context / ordinary punctuation",
+#     ),
+#     # Internet laughter present vs absent.
+#     (
+#         "I forgot my charger at home lol.",
+#         "I forgot my charger at home.",
+#         "laughter-word vs no-laughter-word",
+#     ),
+#     (
+#         "That phone call was awkward haha.",
+#         "That phone call was awkward.",
+#         "haha-token vs no-haha-token",
+#     ),
+#     # Capitalization present vs ordinary casing.
+#     (
+#         "I need to leave for WORK soon.",
+#         "I need to leave for work soon.",
+#         "all-caps-token vs ordinary casing",
+#     ),
+#     (
+#         "This bus is SO late today.",
+#         "This bus is so late today.",
+#         "caps-emphasis vs ordinary casing",
+#     ),
+# ]
 
 
 def _build_debias_candidate_and_pairs(
