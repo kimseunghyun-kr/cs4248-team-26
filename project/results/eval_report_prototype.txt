@@ -1,0 +1,102 @@
+========================================================================
+CBDC Sentiment Debiasing — Prototype Evaluation Report
+========================================================================
+
+--- Prototype Results ---
+Condition                  Val Acc  Test Acc   Val F1   Test F1
+--------------------------------------------------------------------
+B1 (raw)                    0.2918    0.3104   0.2459    0.2670
+D1 (debias_vl)              0.3401    0.3478   0.2908    0.3048
+D2 (CBDC)                   0.3993    0.4063   0.2182    0.2250
+D2.5 (CBDC no-label-select)   0.3984    0.4069   0.2171    0.2253
+D3 (debias_vl->CBDC)        0.2918    0.3087   0.2459    0.2650
+D4 (adv-discovery->CBDC)    0.2914    0.3081   0.2454    0.2644
+
+--- Detailed Test Reports ---
+
+B1 (raw):
+  precision    recall  f1-score   support
+  
+      negative     0.2829    0.7333    0.4082      1001
+       neutral     0.3876    0.1881    0.2533      1430
+      positive     0.3837    0.0852    0.1395      1103
+  
+      accuracy                         0.3104      3534
+     macro avg     0.3514    0.3355    0.2670      3534
+  weighted avg     0.3567    0.3104    0.2617      3534
+
+D1 (debias_vl):
+  precision    recall  f1-score   support
+  
+      negative     0.3000    0.1199    0.1713      1001
+       neutral     0.3815    0.5580    0.4532      1430
+      positive     0.2985    0.2820    0.2900      1103
+  
+      accuracy                         0.3478      3534
+     macro avg     0.3266    0.3200    0.3048      3534
+  weighted avg     0.3325    0.3478    0.3224      3534
+
+D2 (CBDC):
+  precision    recall  f1-score   support
+  
+      negative     0.4074    0.0110    0.0214      1001
+       neutral     0.4081    0.9615    0.5730      1430
+      positive     0.3623    0.0453    0.0806      1103
+  
+      accuracy                         0.4063      3534
+     macro avg     0.3926    0.3393    0.2250      3534
+  weighted avg     0.3936    0.4063    0.2631      3534
+
+D2.5 (CBDC no-label-select):
+  precision    recall  f1-score   support
+  
+      negative     0.4138    0.0120    0.0233      1001
+       neutral     0.4081    0.9629    0.5733      1430
+      positive     0.3740    0.0444    0.0794      1103
+  
+      accuracy                         0.4069      3534
+     macro avg     0.3987    0.3398    0.2253      3534
+  weighted avg     0.3991    0.4069    0.2634      3534
+
+D3 (debias_vl->CBDC):
+  precision    recall  f1-score   support
+  
+      negative     0.2826    0.7333    0.4080      1001
+       neutral     0.3860    0.1846    0.2498      1430
+      positive     0.3676    0.0843    0.1372      1103
+  
+      accuracy                         0.3087      3534
+     macro avg     0.3454    0.3341    0.2650      3534
+  weighted avg     0.3510    0.3087    0.2594      3534
+
+D4 (adv-discovery->CBDC):
+  precision    recall  f1-score   support
+  
+      negative     0.2825    0.7333    0.4079      1001
+       neutral     0.3853    0.1832    0.2483      1430
+      positive     0.3633    0.0843    0.1369      1103
+  
+      accuracy                         0.3081      3534
+     macro avg     0.3437    0.3336    0.2644      3534
+  weighted avg     0.3493    0.3081    0.2587      3534
+
+--- Direction Interpretability ---
+(Lower pos-neg gap = direction is more sentiment-neutral)
+Condition                 Direction              neg_mean   neu_mean   pos_mean      gap
+----------------------------------------------------------------------------------------
+D1 (debias_vl)            debias_vl_directions    -0.0000    -0.0000    -0.0000   0.0000
+D2 (CBDC)                 cbdc_directions          0.0134     0.0148     0.0140   0.0006
+D2.5 (CBDC no-label-select) cbdc_directions         -0.0206    -0.0216    -0.0213   0.0007
+D3 (debias_vl->CBDC)      debias_vl_directions     0.0577     0.0587     0.0579   0.0002
+D4 (adv-discovery->CBDC)  cbdc_directions          0.0475     0.0525     0.0485   0.0010
+
+--- Comparative Analysis ---
+  D1 vs B1 test accuracy: +0.0374
+  D2 vs B1 test accuracy: +0.0959
+  D2.5 vs B1 test accuracy: +0.0965
+  D3 vs B1 test accuracy: -0.0017
+  D2.5 vs D2 test accuracy: +0.0006
+  D3 vs D2 test accuracy: -0.0976
+  D3 vs D1 test accuracy: -0.0390
+  D4 vs B1 test accuracy: -0.0023
+  D4 vs D3 test accuracy: -0.0006

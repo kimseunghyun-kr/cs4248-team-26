@@ -1,0 +1,386 @@
+Job ID:  542369
+Node:    xgpi2
+Time:    Sat Apr  4 02:29:31 AM +08 2026
+GPU:     NVIDIA H100 NVL, 95830 MiB
+Packages ready.
+torch 2.10.0+cu128 | cuda: True
+transformers 5.3.0
+Running phases from 1 with classifier=prototype model=bert-large-uncased
+======================================================================
+CBDC Sentiment Debiasing Pipeline
+======================================================================
+Model:         google-bert/bert-large-uncased  (--model bert-large-uncased)
+Text unit:     text
+Classifier:    prototype
+Cache dir:     /home/k/kimsh/cs4248/project/cache/bert_large_uncased
+Running phases: [1, 2, 3, 4]
+Include D2.5:  True
+
+######################################################################
+# PHASE: [1/4] Embedding extraction
+# Script: data/embed.py
+######################################################################
+
+Device: cuda
+Loading model from 'google-bert/bert-large-uncased' ...
+  model_type=bert | hidden_size=1024 | all backbone params frozen | dtype=float32
+Loading local dataset from '/home/k/kimsh/cs4248/project/data/train.csv' ...
+  encoding=utf-8 failed, trying next ...
+  Loaded with encoding=latin-1
+  Local train dataset: using text_col='text', label_col='sentiment'
+  Local train dataset: selected_text_col='selected_text'
+  Local train dataset loaded: 27480 samples | neg=7781 neu=11117 pos=8582
+Loading local test dataset from '/home/k/kimsh/cs4248/project/data/test.csv' ...
+  encoding=utf-8 failed, trying next ...
+  Loaded with encoding=latin-1
+  Local test dataset: using text_col='text', label_col='sentiment'
+  Local test dataset loaded: 3534 samples | neg=1001 neu=1430 pos=1103
+  split -> train=23358 | val=4122
+  using fixed test split from 'test.csv'
+
+Encoding train (23358 samples) ...
+  Saved → /home/k/kimsh/cs4248/project/cache/bert_large_uncased/z_tweet_train.pt  shape=(23358, 1024)
+
+Encoding val (4122 samples) ...
+  Saved → /home/k/kimsh/cs4248/project/cache/bert_large_uncased/z_tweet_val.pt  shape=(4122, 1024)
+
+Encoding test (3534 samples) ...
+  Saved → /home/k/kimsh/cs4248/project/cache/bert_large_uncased/z_tweet_test.pt  shape=(3534, 1024)
+
+Embedding extraction complete.
+
+[OK] Phase '[1/4] Embedding extraction' completed in 118.1s
+
+######################################################################
+# PHASE: [2/4] Materialize D1 / D2 / D2.5 / D3
+# Script: cbdc/refine.py
+######################################################################
+
+Device: cuda
+Loading model from 'google-bert/bert-large-uncased' ...
+  model_type=bert | hidden_size=1024 | all backbone params frozen | dtype=float32
+
+========================================================================
+Materializing B1 (raw)
+========================================================================
+Loading model from 'google-bert/bert-large-uncased' ...
+  model_type=bert | hidden_size=1024 | all backbone params frozen | dtype=float32
+
+========================================================================
+Materializing D1 (debias_vl)
+========================================================================
+
+=== debias_vl confound map discovery ===
+  spurious_cb:  (32, 1024)
+  candidate_cb: (96, 1024)
+  S_pairs: 1488
+  topic source: mined topic phrases (32 topics)
+  topic preview: today, work, sleep, people, twitter, friends, food, plans for tomorrow
+  Top-4 SVD singular values: [1.110458254814148, 1.1037414073944092, 1.0943193435668945, 1.0928518772125244]
+  bias_anchors: (4, 1024)
+  D1 (debias_vl) train: saved -> /home/k/kimsh/cs4248/project/cache/bert_large_uncased/conditions/d1_debias_vl/z_tweet_train.pt
+  D1 (debias_vl) val: saved -> /home/k/kimsh/cs4248/project/cache/bert_large_uncased/conditions/d1_debias_vl/z_tweet_val.pt
+  D1 (debias_vl) test: saved -> /home/k/kimsh/cs4248/project/cache/bert_large_uncased/conditions/d1_debias_vl/z_tweet_test.pt
+Loading model from 'google-bert/bert-large-uncased' ...
+  model_type=bert | hidden_size=1024 | all backbone params frozen | dtype=float32
+
+========================================================================
+Materializing D2 (CBDC)
+========================================================================
+
+=== CBDC text_iccv training ===
+  n_epochs=100 | lr=1e-05 | PGD: epsilon=1.0 steps=20 restarts=10 | grad_clip=1.0
+  Checkpoint selector: labeled val centroid macro-F1
+  Sentiment-orthogonal PGD: ON
+  Epoch 1/100: match=0.0016 ck=1.5161 total=1.5177 selector_f1=0.5167
+  Epoch 10/100: match=0.0059 ck=0.8619 total=0.8678 selector_f1=0.5182
+  Epoch 20/100: match=0.0210 ck=0.3460 total=0.3671 selector_f1=0.5214
+  Epoch 30/100: match=0.0880 ck=0.1018 total=0.1898 selector_f1=0.5221
+  Epoch 40/100: match=0.0793 ck=0.0486 total=0.1279 selector_f1=0.5223
+  Epoch 50/100: match=0.0451 ck=0.0276 total=0.0727 selector_f1=0.5237
+  Epoch 60/100: match=0.0497 ck=0.0090 total=0.0587 selector_f1=0.5258
+  Epoch 70/100: match=0.0336 ck=0.0088 total=0.0423 selector_f1=0.5235
+  Epoch 80/100: match=0.0287 ck=0.0050 total=0.0337 selector_f1=0.5240
+  Epoch 90/100: match=0.0254 ck=0.0035 total=0.0289 selector_f1=0.5227
+  Epoch 100/100: match=0.0189 ck=0.0028 total=0.0217 selector_f1=0.5227
+
+  Restored best CBDC epoch: 60/100 (selector_f1=0.5258)
+  D2 (CBDC) train: saved -> /home/k/kimsh/cs4248/project/cache/bert_large_uncased/conditions/d2_cbdc/z_tweet_train.pt
+  D2 (CBDC) val: saved -> /home/k/kimsh/cs4248/project/cache/bert_large_uncased/conditions/d2_cbdc/z_tweet_val.pt
+  D2 (CBDC) test: saved -> /home/k/kimsh/cs4248/project/cache/bert_large_uncased/conditions/d2_cbdc/z_tweet_test.pt
+Loading model from 'google-bert/bert-large-uncased' ...
+  model_type=bert | hidden_size=1024 | all backbone params frozen | dtype=float32
+
+========================================================================
+Materializing D2.5 (CBDC no-label-select)
+========================================================================
+
+=== CBDC text_iccv training ===
+  n_epochs=100 | lr=1e-05 | PGD: epsilon=1.0 steps=20 restarts=10 | grad_clip=1.0
+  Checkpoint selector: prompt loss only (label-free)
+  Sentiment-orthogonal PGD: ON
+  Epoch 1/100: match=0.0018 ck=1.5161 total=1.5179 selector_loss=1.5179
+  Epoch 10/100: match=0.0063 ck=0.8619 total=0.8682 selector_loss=0.8682
+  Epoch 20/100: match=0.0208 ck=0.3461 total=0.3669 selector_loss=0.3669
+  Epoch 30/100: match=0.0929 ck=0.1018 total=0.1947 selector_loss=0.1947
+  Epoch 40/100: match=0.0767 ck=0.0482 total=0.1249 selector_loss=0.1249
+  Epoch 50/100: match=0.0442 ck=0.0272 total=0.0714 selector_loss=0.0714
+  Epoch 60/100: match=0.0466 ck=0.0090 total=0.0556 selector_loss=0.0556
+  Epoch 70/100: match=0.0355 ck=0.0088 total=0.0442 selector_loss=0.0442
+  Epoch 80/100: match=0.0284 ck=0.0049 total=0.0333 selector_loss=0.0333
+  Epoch 90/100: match=0.0249 ck=0.0035 total=0.0284 selector_loss=0.0284
+  Epoch 100/100: match=0.0177 ck=0.0028 total=0.0205 selector_loss=0.0205
+
+  Restored best CBDC epoch: 100/100 (selector_loss=0.0205)
+  D2.5 (CBDC no-label-select) train: saved -> /home/k/kimsh/cs4248/project/cache/bert_large_uncased/conditions/d25_cbdc_no_label_select/z_tweet_train.pt
+  D2.5 (CBDC no-label-select) val: saved -> /home/k/kimsh/cs4248/project/cache/bert_large_uncased/conditions/d25_cbdc_no_label_select/z_tweet_val.pt
+  D2.5 (CBDC no-label-select) test: saved -> /home/k/kimsh/cs4248/project/cache/bert_large_uncased/conditions/d25_cbdc_no_label_select/z_tweet_test.pt
+Loading model from 'google-bert/bert-large-uncased' ...
+  model_type=bert | hidden_size=1024 | all backbone params frozen | dtype=float32
+
+=== debias_vl confound map discovery ===
+  spurious_cb:  (32, 1024)
+  candidate_cb: (96, 1024)
+  S_pairs: 1488
+  topic source: mined topic phrases (32 topics)
+  topic preview: today, work, sleep, people, twitter, friends, food, plans for tomorrow
+  Top-4 SVD singular values: [1.110458254814148, 1.1037414073944092, 1.0943193435668945, 1.0928518772125244]
+  bias_anchors: (4, 1024)
+
+========================================================================
+Materializing D3 (debias_vl->CBDC)
+========================================================================
+
+=== CBDC text_iccv training ===
+  n_epochs=100 | lr=1e-05 | PGD: epsilon=1.0 steps=20 restarts=10 | grad_clip=1.0
+  Checkpoint selector: labeled val centroid macro-F1
+  Sentiment-orthogonal PGD: ON
+  Epoch 1/100: match=0.0012 ck=0.1207 total=0.1219 selector_f1=0.5164
+  Epoch 10/100: match=0.0043 ck=0.0285 total=0.0329 selector_f1=0.5171
+  Epoch 20/100: match=0.0068 ck=0.0157 total=0.0225 selector_f1=0.5195
+  Epoch 30/100: match=0.0045 ck=0.0064 total=0.0109 selector_f1=0.5198
+  Epoch 40/100: match=0.0022 ck=0.0038 total=0.0060 selector_f1=0.5215
+  Epoch 50/100: match=0.0017 ck=0.0016 total=0.0033 selector_f1=0.5210
+  Epoch 60/100: match=0.0010 ck=0.0008 total=0.0018 selector_f1=0.5220
+  Epoch 70/100: match=0.0005 ck=0.0005 total=0.0010 selector_f1=0.5215
+  Epoch 80/100: match=0.0004 ck=0.0003 total=0.0006 selector_f1=0.5218
+  Epoch 90/100: match=0.0005 ck=0.0002 total=0.0007 selector_f1=0.5216
+  Epoch 100/100: match=0.0003 ck=0.0001 total=0.0004 selector_f1=0.5214
+
+  Restored best CBDC epoch: 60/100 (selector_f1=0.5220)
+  D3 (debias_vl->CBDC) train: saved -> /home/k/kimsh/cs4248/project/cache/bert_large_uncased/conditions/d3_debias_vl_cbdc/z_tweet_train.pt
+  D3 (debias_vl->CBDC) val: saved -> /home/k/kimsh/cs4248/project/cache/bert_large_uncased/conditions/d3_debias_vl_cbdc/z_tweet_val.pt
+  D3 (debias_vl->CBDC) test: saved -> /home/k/kimsh/cs4248/project/cache/bert_large_uncased/conditions/d3_debias_vl_cbdc/z_tweet_test.pt
+
+Phase 2 materialization complete.
+
+[OK] Phase '[2/4] Materialize D1 / D2 / D2.5 / D3' completed in 994.6s
+
+######################################################################
+# PHASE: [3/4] Prototype-based evaluation
+# Script: pipeline/prototype_classify.py
+######################################################################
+
+
+========================================================================
+Condition: B1 (raw)
+========================================================================
+  val_acc=0.3600 val_f1=0.3597 | test_acc=0.3656 test_f1=0.3654
+
+  Test classification report:
+    precision    recall  f1-score   support
+    
+        negative     0.3376    0.4246    0.3761      1001
+         neutral     0.4184    0.2706    0.3287      1430
+        positive     0.3556    0.4352    0.3914      1103
+    
+        accuracy                         0.3656      3534
+       macro avg     0.3705    0.3768    0.3654      3534
+    weighted avg     0.3759    0.3656    0.3617      3534
+  Saved 2242 disagreements -> /home/k/kimsh/cs4248/project/cache/bert_large_uncased/conditions/b1_raw/prototype_test_disagreements.csv
+
+========================================================================
+Condition: D1 (debias_vl)
+========================================================================
+  val_acc=0.4185 val_f1=0.4072 | test_acc=0.4211 test_f1=0.4080
+
+  Test classification report:
+    precision    recall  f1-score   support
+    
+        negative     0.5267    0.2557    0.3443      1001
+         neutral     0.4352    0.3755    0.4032      1430
+        positive     0.3831    0.6301    0.4765      1103
+    
+        accuracy                         0.4211      3534
+       macro avg     0.4484    0.4205    0.4080      3534
+    weighted avg     0.4449    0.4211    0.4094      3534
+  Saved 2046 disagreements -> /home/k/kimsh/cs4248/project/cache/bert_large_uncased/conditions/d1_debias_vl/prototype_test_disagreements.csv
+
+========================================================================
+Condition: D2 (CBDC)
+========================================================================
+  val_acc=0.3789 val_f1=0.3244 | test_acc=0.3687 test_f1=0.3135
+
+  Test classification report:
+    precision    recall  f1-score   support
+    
+        negative     0.3689    0.5734    0.4490      1001
+         neutral     0.4048    0.0119    0.0231      1430
+        positive     0.3678    0.6455    0.4686      1103
+    
+        accuracy                         0.3687      3534
+       macro avg     0.3805    0.4103    0.3135      3534
+    weighted avg     0.3831    0.3687    0.2828      3534
+  Saved 2231 disagreements -> /home/k/kimsh/cs4248/project/cache/bert_large_uncased/conditions/d2_cbdc/prototype_test_disagreements.csv
+
+========================================================================
+Condition: D2.5 (CBDC no-label-select)
+========================================================================
+  val_acc=0.4085 val_f1=0.3716 | test_acc=0.3995 test_f1=0.3620
+
+  Test classification report:
+    precision    recall  f1-score   support
+    
+        negative     0.3881    0.5944    0.4696      1001
+         neutral     0.5051    0.0699    0.1229      1430
+        positive     0.3977    0.6500    0.4935      1103
+    
+        accuracy                         0.3995      3534
+       macro avg     0.4303    0.4381    0.3620      3534
+    weighted avg     0.4384    0.3995    0.3367      3534
+  Saved 2122 disagreements -> /home/k/kimsh/cs4248/project/cache/bert_large_uncased/conditions/d25_cbdc_no_label_select/prototype_test_disagreements.csv
+
+========================================================================
+Condition: D3 (debias_vl->CBDC)
+========================================================================
+  val_acc=0.4081 val_f1=0.4066 | test_acc=0.3947 test_f1=0.3931
+
+  Test classification report:
+    precision    recall  f1-score   support
+    
+        negative     0.3614    0.5355    0.4316      1001
+         neutral     0.4274    0.2469    0.3129      1430
+        positive     0.4131    0.4587    0.4347      1103
+    
+        accuracy                         0.3947      3534
+       macro avg     0.4006    0.4137    0.3931      3534
+    weighted avg     0.4042    0.3947    0.3845      3534
+  Saved 2139 disagreements -> /home/k/kimsh/cs4248/project/cache/bert_large_uncased/conditions/d3_debias_vl_cbdc/prototype_test_disagreements.csv
+
+========================================================================
+PROTOTYPE SUMMARY
+========================================================================
+Condition                  Val Acc  Test Acc   Val F1   Test F1
+--------------------------------------------------------------------
+B1 (raw)                    0.3600    0.3656   0.3597    0.3654
+D1 (debias_vl)              0.4185    0.4211   0.4072    0.4080
+D2 (CBDC)                   0.3789    0.3687   0.3244    0.3135
+D2.5 (CBDC no-label-select)   0.4085    0.3995   0.3716    0.3620
+D3 (debias_vl->CBDC)        0.4081    0.3947   0.4066    0.3931
+
+Results saved -> /home/k/kimsh/cs4248/project/cache/bert_large_uncased/results_prototype.pt
+
+[OK] Phase '[3/4] Prototype-based evaluation' completed in 6.2s
+
+######################################################################
+# PHASE: [4/4] Full evaluation report
+# Script: pipeline/evaluate.py
+######################################################################
+
+========================================================================
+CBDC Sentiment Debiasing — Prototype Evaluation Report
+========================================================================
+
+--- Prototype Results ---
+Condition                  Val Acc  Test Acc   Val F1   Test F1
+--------------------------------------------------------------------
+B1 (raw)                    0.3600    0.3656   0.3597    0.3654
+D1 (debias_vl)              0.4185    0.4211   0.4072    0.4080
+D2 (CBDC)                   0.3789    0.3687   0.3244    0.3135
+D2.5 (CBDC no-label-select)   0.4085    0.3995   0.3716    0.3620
+D3 (debias_vl->CBDC)        0.4081    0.3947   0.4066    0.3931
+
+--- Detailed Test Reports ---
+
+B1 (raw):
+  precision    recall  f1-score   support
+  
+      negative     0.3376    0.4246    0.3761      1001
+       neutral     0.4184    0.2706    0.3287      1430
+      positive     0.3556    0.4352    0.3914      1103
+  
+      accuracy                         0.3656      3534
+     macro avg     0.3705    0.3768    0.3654      3534
+  weighted avg     0.3759    0.3656    0.3617      3534
+
+D1 (debias_vl):
+  precision    recall  f1-score   support
+  
+      negative     0.5267    0.2557    0.3443      1001
+       neutral     0.4352    0.3755    0.4032      1430
+      positive     0.3831    0.6301    0.4765      1103
+  
+      accuracy                         0.4211      3534
+     macro avg     0.4484    0.4205    0.4080      3534
+  weighted avg     0.4449    0.4211    0.4094      3534
+
+D2 (CBDC):
+  precision    recall  f1-score   support
+  
+      negative     0.3689    0.5734    0.4490      1001
+       neutral     0.4048    0.0119    0.0231      1430
+      positive     0.3678    0.6455    0.4686      1103
+  
+      accuracy                         0.3687      3534
+     macro avg     0.3805    0.4103    0.3135      3534
+  weighted avg     0.3831    0.3687    0.2828      3534
+
+D2.5 (CBDC no-label-select):
+  precision    recall  f1-score   support
+  
+      negative     0.3881    0.5944    0.4696      1001
+       neutral     0.5051    0.0699    0.1229      1430
+      positive     0.3977    0.6500    0.4935      1103
+  
+      accuracy                         0.3995      3534
+     macro avg     0.4303    0.4381    0.3620      3534
+  weighted avg     0.4384    0.3995    0.3367      3534
+
+D3 (debias_vl->CBDC):
+  precision    recall  f1-score   support
+  
+      negative     0.3614    0.5355    0.4316      1001
+       neutral     0.4274    0.2469    0.3129      1430
+      positive     0.4131    0.4587    0.4347      1103
+  
+      accuracy                         0.3947      3534
+     macro avg     0.4006    0.4137    0.3931      3534
+  weighted avg     0.4042    0.3947    0.3845      3534
+
+--- Direction Interpretability ---
+(Lower pos-neg gap = direction is more sentiment-neutral)
+Condition                 Direction              neg_mean   neu_mean   pos_mean      gap
+----------------------------------------------------------------------------------------
+D1 (debias_vl)            debias_vl_directions     0.0569     0.0592     0.0597   0.0028
+D2 (CBDC)                 cbdc_directions         -0.0488    -0.0486    -0.0558   0.0069
+D2.5 (CBDC no-label-select) cbdc_directions         -0.0391    -0.0381    -0.0470   0.0079
+D3 (debias_vl->CBDC)      debias_vl_directions    -0.3860    -0.3904    -0.3865   0.0006
+
+--- Comparative Analysis ---
+  D1 vs B1 test accuracy: +0.0555
+  D2 vs B1 test accuracy: +0.0031
+  D2.5 vs B1 test accuracy: +0.0340
+  D3 vs B1 test accuracy: +0.0291
+  D2.5 vs D2 test accuracy: +0.0308
+  D3 vs D2 test accuracy: +0.0260
+  D3 vs D1 test accuracy: -0.0263
+
+Full report saved -> /home/k/kimsh/cs4248/project/results/eval_report_prototype.txt
+
+[OK] Phase '[4/4] Full evaluation report' completed in 1.7s
+
+======================================================================
+All phases complete in 18.7 minutes.
+Results: /home/k/kimsh/cs4248/project/results/eval_report_prototype.txt
+======================================================================
+Done. Sat Apr  4 02:48:22 AM +08 2026

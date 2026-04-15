@@ -1,0 +1,72 @@
+========================================================================
+CBDC Sentiment Debiasing — Supervised Evaluation Report
+========================================================================
+
+--- Supervised Results ---
+Condition                  Val Acc  Test Acc   Val F1   Test F1
+--------------------------------------------------------------------
+B1 (raw)                    0.6885    0.6701   0.6919    0.6738
+D1 (debias_vl)              0.6892    0.6732   0.6925    0.6773
+D2 (CBDC)                   0.6861    0.6667   0.6894    0.6703
+D3 (debias_vl->CBDC)        0.6834    0.6696   0.6867    0.6733
+
+--- Detailed Test Reports ---
+
+B1 (raw):
+  precision    recall  f1-score   support
+  
+      negative     0.6602    0.6958    0.6775      1167
+       neutral     0.6319    0.6493    0.6404      1668
+      positive     0.7360    0.6737    0.7034      1287
+  
+      accuracy                         0.6701      4122
+     macro avg     0.6760    0.6729    0.6738      4122
+  weighted avg     0.6724    0.6701    0.6706      4122
+
+D1 (debias_vl):
+  precision    recall  f1-score   support
+  
+      negative     0.6530    0.7207    0.6851      1167
+       neutral     0.6407    0.6349    0.6378      1668
+      positive     0.7409    0.6799    0.7091      1287
+  
+      accuracy                         0.6732      4122
+     macro avg     0.6782    0.6785    0.6773      4122
+  weighted avg     0.6754    0.6732    0.6734      4122
+
+D2 (CBDC):
+  precision    recall  f1-score   support
+  
+      negative     0.6603    0.6829    0.6714      1167
+       neutral     0.6232    0.6583    0.6402      1668
+      positive     0.7398    0.6628    0.6992      1287
+  
+      accuracy                         0.6667      4122
+     macro avg     0.6744    0.6680    0.6703      4122
+  weighted avg     0.6701    0.6667    0.6675      4122
+
+D3 (debias_vl->CBDC):
+  precision    recall  f1-score   support
+  
+      negative     0.6623    0.6924    0.6770      1167
+       neutral     0.6357    0.6391    0.6374      1668
+      positive     0.7233    0.6884    0.7054      1287
+  
+      accuracy                         0.6696      4122
+     macro avg     0.6737    0.6733    0.6733      4122
+  weighted avg     0.6706    0.6696    0.6698      4122
+
+--- Direction Interpretability ---
+(Lower pos-neg gap = direction is more sentiment-neutral)
+Condition                 Direction              neg_mean   neu_mean   pos_mean      gap
+----------------------------------------------------------------------------------------
+D1 (debias_vl)            debias_vl_directions    -0.0001    -0.0001    -0.0001   0.0000
+D2 (CBDC)                 cbdc_directions          0.0052     0.0055     0.0052   0.0000
+D3 (debias_vl->CBDC)      debias_vl_directions     0.0067     0.0067     0.0066   0.0001
+
+--- Comparative Analysis ---
+  D1 vs B1 test accuracy: +0.0032
+  D2 vs B1 test accuracy: -0.0034
+  D3 vs B1 test accuracy: -0.0005
+  D3 vs D2 test accuracy: +0.0029
+  D3 vs D1 test accuracy: -0.0036

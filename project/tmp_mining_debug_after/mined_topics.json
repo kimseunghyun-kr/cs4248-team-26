@@ -1,0 +1,460 @@
+{
+  "using_mined_topics": true,
+  "topics": [
+    "trailing off with ellipsis",
+    "words in all caps",
+    "many exclamation marks",
+    "elongated words like sooo or yesss",
+    "very few words",
+    "a question",
+    "emoticons and smiley faces",
+    "informal conversational language",
+    "internet slang like lol or haha",
+    "a link or URL",
+    "today",
+    "work",
+    "direct and formal language",
+    "sleep",
+    "friends",
+    "people",
+    "twitter",
+    "food",
+    "school",
+    "home",
+    "a show",
+    "a phone call",
+    "the weekend",
+    "plans for tomorrow",
+    "family",
+    "music",
+    "woke up",
+    "wish could",
+    "not sure",
+    "wake up",
+    "looking forward",
+    "oh no"
+  ],
+  "metadata": [
+    {
+      "topic": "trailing off with ellipsis",
+      "kind": "style",
+      "source": "dataset_pattern",
+      "doc_freq": 2782,
+      "label_counts": [
+        942,
+        1058,
+        782
+      ],
+      "entropy": 0.993144787974015,
+      "score": 7.876914122847166
+    },
+    {
+      "topic": "words in all caps",
+      "kind": "style",
+      "source": "dataset_pattern",
+      "doc_freq": 2120,
+      "label_counts": [
+        610,
+        784,
+        726
+      ],
+      "entropy": 0.9951556814548335,
+      "score": 7.622537204150531
+    },
+    {
+      "topic": "many exclamation marks",
+      "kind": "style",
+      "source": "dataset_pattern",
+      "doc_freq": 2348,
+      "label_counts": [
+        567,
+        711,
+        1070
+      ],
+      "entropy": 0.9676124857353554,
+      "score": 7.510361358249739
+    },
+    {
+      "topic": "elongated words like sooo or yesss",
+      "kind": "style",
+      "source": "dataset_pattern",
+      "doc_freq": 1531,
+      "label_counts": [
+        455,
+        545,
+        531
+      ],
+      "entropy": 0.9972181108274398,
+      "score": 7.313926058892945
+    },
+    {
+      "topic": "very few words",
+      "kind": "style",
+      "source": "dataset_pattern",
+      "doc_freq": 2083,
+      "label_counts": [
+        435,
+        1065,
+        583
+      ],
+      "entropy": 0.9343269378654716,
+      "score": 7.140167945968537
+    },
+    {
+      "topic": "a question",
+      "kind": "style",
+      "source": "dataset_pattern",
+      "doc_freq": 2089,
+      "label_counts": [
+        530,
+        1095,
+        464
+      ],
+      "entropy": 0.9291226369537005,
+      "score": 7.103067621086529
+    },
+    {
+      "topic": "emoticons and smiley faces",
+      "kind": "style",
+      "source": "dataset_pattern",
+      "doc_freq": 1476,
+      "label_counts": [
+        300,
+        613,
+        563
+      ],
+      "entropy": 0.9615958641568116,
+      "score": 7.017503798056934
+    },
+    {
+      "topic": "informal conversational language",
+      "kind": "style",
+      "source": "dataset_pattern",
+      "doc_freq": 993,
+      "label_counts": [
+        402,
+        351,
+        240
+      ],
+      "entropy": 0.9802373599013499,
+      "score": 6.765340658185957
+    },
+    {
+      "topic": "internet slang like lol or haha",
+      "kind": "style",
+      "source": "dataset_pattern",
+      "doc_freq": 1167,
+      "label_counts": [
+        180,
+        528,
+        459
+      ],
+      "entropy": 0.923131176060987,
+      "score": 6.520119957643918
+    },
+    {
+      "topic": "a link or URL",
+      "kind": "style",
+      "source": "dataset_pattern",
+      "doc_freq": 908,
+      "label_counts": [
+        167,
+        431,
+        310
+      ],
+      "entropy": 0.9393858586055501,
+      "score": 6.399420645411218
+    },
+    {
+      "topic": "today",
+      "kind": "content",
+      "source": "dataset_pattern",
+      "doc_freq": 567,
+      "label_counts": [
+        262,
+        9,
+        296
+      ],
+      "entropy": 0.6934450385190377,
+      "score": 4.617808263072378
+    },
+    {
+      "topic": "work",
+      "kind": "content",
+      "source": "dataset_pattern",
+      "doc_freq": 520,
+      "label_counts": [
+        295,
+        9,
+        216
+      ],
+      "entropy": 0.688802694898374,
+      "score": 4.524426361738851
+    },
+    {
+      "topic": "direct and formal language",
+      "kind": "style",
+      "source": "dataset_pattern",
+      "doc_freq": 855,
+      "label_counts": [
+        61,
+        164,
+        630
+      ],
+      "entropy": 0.6645777637856589,
+      "score": 4.487408747052429
+    },
+    {
+      "topic": "sleep",
+      "kind": "content",
+      "source": "dataset_pattern",
+      "doc_freq": 282,
+      "label_counts": [
+        141,
+        4,
+        137
+      ],
+      "entropy": 0.6896517400486318,
+      "score": 4.0880618901274
+    },
+    {
+      "topic": "friends",
+      "kind": "content",
+      "source": "dataset_pattern",
+      "doc_freq": 172,
+      "label_counts": [
+        68,
+        7,
+        97
+      ],
+      "entropy": 0.7465771028790703,
+      "score": 4.039695984356778
+    },
+    {
+      "topic": "people",
+      "kind": "content",
+      "source": "dataset_pattern",
+      "doc_freq": 291,
+      "label_counts": [
+        142,
+        3,
+        146
+      ],
+      "entropy": 0.676602478130569,
+      "score": 4.032950974869442
+    },
+    {
+      "topic": "twitter",
+      "kind": "content",
+      "source": "dataset_pattern",
+      "doc_freq": 273,
+      "label_counts": [
+        104,
+        5,
+        164
+      ],
+      "entropy": 0.679991589726649,
+      "score": 4.007723899622267
+    },
+    {
+      "topic": "food",
+      "kind": "content",
+      "source": "dataset_pattern",
+      "doc_freq": 222,
+      "label_counts": [
+        86,
+        4,
+        132
+      ],
+      "entropy": 0.6816358432923949,
+      "score": 3.8700081947793534
+    },
+    {
+      "topic": "school",
+      "kind": "content",
+      "source": "dataset_pattern",
+      "doc_freq": 220,
+      "label_counts": [
+        126,
+        2,
+        92
+      ],
+      "entropy": 0.661312367018349,
+      "score": 3.748365341375414
+    },
+    {
+      "topic": "home",
+      "kind": "content",
+      "source": "dataset_pattern",
+      "doc_freq": 274,
+      "label_counts": [
+        136,
+        0,
+        138
+      ],
+      "entropy": 0.6309055048818729,
+      "score": 3.720834395438202
+    },
+    {
+      "topic": "a show",
+      "kind": "content",
+      "source": "dataset_pattern",
+      "doc_freq": 191,
+      "label_counts": [
+        79,
+        2,
+        110
+      ],
+      "entropy": 0.6650880214130109,
+      "score": 3.67153205429852
+    },
+    {
+      "topic": "a phone call",
+      "kind": "content",
+      "source": "dataset_pattern",
+      "doc_freq": 131,
+      "label_counts": [
+        79,
+        4,
+        48
+      ],
+      "entropy": 0.7094421418754028,
+      "score": 3.6372687270286597
+    },
+    {
+      "topic": "the weekend",
+      "kind": "content",
+      "source": "dataset_pattern",
+      "doc_freq": 227,
+      "label_counts": [
+        82,
+        2,
+        143
+      ],
+      "entropy": 0.6377272325232827,
+      "score": 3.6355636404837726
+    },
+    {
+      "topic": "plans for tomorrow",
+      "kind": "content",
+      "source": "dataset_pattern",
+      "doc_freq": 175,
+      "label_counts": [
+        72,
+        2,
+        101
+      ],
+      "entropy": 0.6678769448113293,
+      "score": 3.6259094064920547
+    },
+    {
+      "topic": "family",
+      "kind": "content",
+      "source": "dataset_pattern",
+      "doc_freq": 385,
+      "label_counts": [
+        101,
+        4,
+        280
+      ],
+      "entropy": 0.5735340414357555,
+      "score": 3.5866692504754267
+    },
+    {
+      "topic": "music",
+      "kind": "content",
+      "source": "dataset_pattern",
+      "doc_freq": 196,
+      "label_counts": [
+        64,
+        3,
+        129
+      ],
+      "entropy": 0.6414879316308598,
+      "score": 3.5585670039492077
+    },
+    {
+      "topic": "woke up",
+      "kind": "phrase",
+      "source": "cleaned_context",
+      "doc_freq": 36,
+      "label_counts": [
+        19,
+        0,
+        17
+      ],
+      "entropy": 0.6295243399361161,
+      "score": 2.841450894401067
+    },
+    {
+      "topic": "wish could",
+      "kind": "phrase",
+      "source": "cleaned_context",
+      "doc_freq": 40,
+      "label_counts": [
+        15,
+        0,
+        25
+      ],
+      "entropy": 0.6021808102656678,
+      "score": 2.7953022951349387
+    },
+    {
+      "topic": "not sure",
+      "kind": "phrase",
+      "source": "cleaned_context",
+      "doc_freq": 20,
+      "label_counts": [
+        11,
+        0,
+        9
+      ],
+      "entropy": 0.626370941606566,
+      "score": 2.3837504825739226
+    },
+    {
+      "topic": "wake up",
+      "kind": "phrase",
+      "source": "cleaned_context",
+      "doc_freq": 21,
+      "label_counts": [
+        16,
+        0,
+        5
+      ],
+      "entropy": 0.4996069952489026,
+      "score": 1.9303830403864306
+    },
+    {
+      "topic": "looking forward",
+      "kind": "phrase",
+      "source": "cleaned_context",
+      "doc_freq": 20,
+      "label_counts": [
+        4,
+        0,
+        16
+      ],
+      "entropy": 0.4554859150035952,
+      "score": 1.733421360369287
+    },
+    {
+      "topic": "oh no",
+      "kind": "phrase",
+      "source": "cleaned_context",
+      "doc_freq": 20,
+      "label_counts": [
+        16,
+        0,
+        4
+      ],
+      "entropy": 0.4554859150035952,
+      "score": 1.733421360369287
+    }
+  ],
+  "record_source": "dataset:load_records",
+  "phrase_topic_count": 6,
+  "entity_topic_count": 0,
+  "curated_topic_count": 31,
+  "reason": null
+}

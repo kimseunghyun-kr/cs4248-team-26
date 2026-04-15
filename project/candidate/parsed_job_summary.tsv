@@ -1,0 +1,20 @@
+job_id	model_key	hf_model	classifier	include_d25	include_d4	phases	elapsed_min	node	time	log
+537752	roberta	roberta-base	probe			[1, 2, 3, 4]	6.5	xgpi2	Thu Apr  2 07:23:32 AM +08 2026	candidate/logs/slurm_new_537752.log
+541350	roberta	roberta-base	probe			[1, 2, 3, 4]	9.4	xgpi10	Fri Apr  3 07:13:17 PM +08 2026	candidate/logs/slurm_new_541350.log
+541945	roberta	roberta-base	prototype			[1, 2, 3, 4]	5.9	xgpi2	Fri Apr  3 11:17:24 PM +08 2026	candidate/logs/slurm_new_541945.log
+542124	roberta	roberta-base	prototype	True		[1, 2, 3, 4]	8.0	xgpi7	Sat Apr  4 12:20:29 AM +08 2026	candidate/logs/slurm_new_542124.log
+542164	roberta	roberta-base	prototype	True		[1, 2, 3, 4]	8.0	xgpi7	Sat Apr  4 12:29:27 AM +08 2026	candidate/logs/slurm_new_542164.log
+542190	roberta	roberta-base	prototype	True		[1, 2, 3, 4]	7.3	xgpi7	Sat Apr  4 12:40:48 AM +08 2026	candidate/logs/slurm_new_542190.log
+542203	bert	bert-base-cased	prototype	True		[1, 2, 3, 4]	10.7	xgpi12	Sat Apr  4 12:43:30 AM +08 2026	candidate/logs/slurm_new_542203.log
+542240	bertweet	vinai/bertweet-base	prototype	True		[1, 2, 3, 4]	10.3	xgpi10	Sat Apr  4 01:01:35 AM +08 2026	candidate/logs/slurm_new_542240.log
+542338	roberta	roberta-base	prototype	False		[1, 2, 3, 4]	6.8	xgpi6	Sat Apr  4 02:03:14 AM +08 2026	candidate/logs/slurm_new_542338.log
+542339	bert-uncased	google-bert/bert-base-uncased	prototype	True		[1, 2, 3, 4]	11.5	xgpi11	Sat Apr  4 02:03:19 AM +08 2026	candidate/logs/slurm_new_542339.log
+542369	bert-large-uncased	google-bert/bert-large-uncased	prototype	True		[1, 2, 3, 4]	18.7	xgpi2	Sat Apr  4 02:29:31 AM +08 2026	candidate/logs/slurm_new_542369.log
+542370	roberta-large	FacebookAI/roberta-large	prototype	True		[1, 2, 3, 4]	24.8	xgpi11	Sat Apr  4 02:29:45 AM +08 2026	candidate/logs/slurm_new_542370.log
+542405	bert-large-cased	bert-large-cased	prototype	True		[1, 2, 3, 4]	18.2	xgpi2	Sat Apr  4 02:51:27 AM +08 2026	candidate/logs/slurm_new_542405.log
+542427	qwen25-3b	Qwen/Qwen2.5-3B	prototype	True		[1, 2, 3, 4]	123.3	xgpi6	Sat Apr  4 03:01:08 AM +08 2026	candidate/logs/slurm_new_542427.log
+568012	bert	bert-base-cased	prototype	True	False	[1, 2, 3, 4]	10.1	xgpi7	Fri Apr 10 05:04:33 PM +08 2026	candidate/logs/slurm_new_568012.log
+568237	qwen25-3b	Qwen/Qwen2.5-3B	prototype	True	False	[1, 2, 3, 4]	131.9	xgpi4	Fri Apr 10 05:52:50 PM +08 2026	candidate/logs/slurm_new_568237.log
+569424	gemma4-26b-it	google/gemma-4-26B-A4B-it	prototype	True	True	[1, 2, 3, 4]	81.4	xgpi8	Fri Apr 10 09:00:56 PM +08 2026	candidate/logs/slurm_new_569424.log
+570011	roberta-large	FacebookAI/roberta-large	prototype	True	True	[1, 2, 3, 4]	24.4	xgpi6	Fri Apr 10 10:30:07 PM +08 2026	candidate/logs/slurm_new_570011.log
+570012	bert-large-cased	bert-large-cased	prototype	True	True	[1, 2, 3, 4]	19.7	xgpi3	Fri Apr 10 10:30:10 PM +08 2026	candidate/logs/slurm_new_570012.log

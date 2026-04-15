@@ -1,0 +1,46 @@
+======================================================================
+Transformer Sentiment Classifier — Evaluation Report
+======================================================================
+Model: TinyLlama/TinyLlama-1.1B-Chat-v1.0
+Cache dir: /home/k/kimsh/cs4248/project/cache/tinyllama/tinyllama_u2_mlp_ce_std
+Data source: cache_tokens
+Best epoch: 5 | best val_f1=0.7085
+
+--- Split Summary ---
+Split          Loss   Macro F1   Accuracy
+------------------------------------------
+train        0.4171     0.8340     0.8317
+val          0.6665     0.7085     0.7040
+test         0.6481     0.7211     0.7173
+
+--- VAL Classification Report ---
+precision    recall  f1-score   support
+
+    negative     0.6872    0.7738    0.7279      1167
+     neutral     0.6838    0.6223    0.6516      1668
+    positive     0.7450    0.7467    0.7458      1287
+
+    accuracy                         0.7040      4122
+   macro avg     0.7053    0.7143    0.7085      4122
+weighted avg     0.7039    0.7040    0.7026      4122
+
+VAL confusion matrix:
+    903   216    48
+    349  1038   281
+     62   264   961
+
+--- TEST Classification Report ---
+precision    recall  f1-score   support
+
+    negative     0.6687    0.7782    0.7193      1001
+     neutral     0.7075    0.6378    0.6708      1430
+    positive     0.7815    0.7652    0.7732      1103
+
+    accuracy                         0.7173      3534
+   macro avg     0.7192    0.7271    0.7211      3534
+weighted avg     0.7196    0.7173    0.7165      3534
+
+TEST confusion matrix:
+    779   183    39
+    321   912   197
+     65   194   844

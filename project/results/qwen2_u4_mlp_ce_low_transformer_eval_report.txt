@@ -1,0 +1,46 @@
+======================================================================
+Transformer Sentiment Classifier — Evaluation Report
+======================================================================
+Model: Qwen/Qwen2.5-0.5B
+Cache dir: /home/k/kimsh/cs4248/project/cache/qwen2/qwen2_u4_mlp_ce_low
+Data source: cache_tokens
+Best epoch: 4 | best val_f1=0.7137
+
+--- Split Summary ---
+Split          Loss   Macro F1   Accuracy
+------------------------------------------
+train        0.6287     0.7350     0.7318
+val          0.6621     0.7137     0.7094
+test         0.6656     0.7086     0.7043
+
+--- VAL Classification Report ---
+precision    recall  f1-score   support
+
+    negative     0.6785    0.7669    0.7200      1167
+     neutral     0.6879    0.6355    0.6606      1668
+    positive     0.7678    0.7529    0.7603      1287
+
+    accuracy                         0.7094      4122
+   macro avg     0.7114    0.7184    0.7137      4122
+weighted avg     0.7102    0.7094    0.7086      4122
+
+VAL confusion matrix:
+    895   230    42
+    357  1060   251
+     67   251   969
+
+--- TEST Classification Report ---
+precision    recall  f1-score   support
+
+    negative     0.6714    0.7552    0.7109      1001
+     neutral     0.6807    0.6336    0.6563      1430
+    positive     0.7679    0.7498    0.7587      1103
+
+    accuracy                         0.7043      3534
+   macro avg     0.7067    0.7129    0.7086      3534
+weighted avg     0.7053    0.7043    0.7037      3534
+
+TEST confusion matrix:
+    756   207    38
+    312   906   212
+     58   218   827

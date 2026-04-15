@@ -1,0 +1,87 @@
+========================================================================
+Smoke Prototype Report
+========================================================================
+
+--- Prototype Results ---
+Condition                  Val Acc  Test Acc   Val F1   Test F1
+--------------------------------------------------------------------
+B1 (raw)                    0.5000    0.5000   0.4127    0.4127
+D1 (debias_vl)              1.0000    1.0000   1.0000    1.0000
+D2 (CBDC)                   0.5000    0.5000   0.4127    0.4127
+D2.5 (CBDC no-label-select)   0.5000    0.5000   0.4127    0.4127
+D3 (debias_vl->CBDC)        0.5000    0.5000   0.4127    0.4127
+
+--- Detailed Test Reports ---
+
+B1 (raw):
+  precision    recall  f1-score   support
+  
+      negative     0.0000    0.0000    0.0000         2
+       neutral     0.4000    1.0000    0.5714         2
+      positive     1.0000    0.5000    0.6667         2
+  
+      accuracy                         0.5000         6
+     macro avg     0.4667    0.5000    0.4127         6
+  weighted avg     0.4667    0.5000    0.4127         6
+
+D1 (debias_vl):
+  precision    recall  f1-score   support
+  
+      negative     1.0000    1.0000    1.0000         2
+       neutral     1.0000    1.0000    1.0000         2
+      positive     1.0000    1.0000    1.0000         2
+  
+      accuracy                         1.0000         6
+     macro avg     1.0000    1.0000    1.0000         6
+  weighted avg     1.0000    1.0000    1.0000         6
+
+D2 (CBDC):
+  precision    recall  f1-score   support
+  
+      negative     0.0000    0.0000    0.0000         2
+       neutral     0.4000    1.0000    0.5714         2
+      positive     1.0000    0.5000    0.6667         2
+  
+      accuracy                         0.5000         6
+     macro avg     0.4667    0.5000    0.4127         6
+  weighted avg     0.4667    0.5000    0.4127         6
+
+D2.5 (CBDC no-label-select):
+  precision    recall  f1-score   support
+  
+      negative     0.0000    0.0000    0.0000         2
+       neutral     0.4000    1.0000    0.5714         2
+      positive     1.0000    0.5000    0.6667         2
+  
+      accuracy                         0.5000         6
+     macro avg     0.4667    0.5000    0.4127         6
+  weighted avg     0.4667    0.5000    0.4127         6
+
+D3 (debias_vl->CBDC):
+  precision    recall  f1-score   support
+  
+      negative     0.0000    0.0000    0.0000         2
+       neutral     0.4000    1.0000    0.5714         2
+      positive     1.0000    0.5000    0.6667         2
+  
+      accuracy                         0.5000         6
+     macro avg     0.4667    0.5000    0.4127         6
+  weighted avg     0.4667    0.5000    0.4127         6
+
+--- Direction Interpretability ---
+(Lower pos-neg gap = direction is more sentiment-neutral)
+Condition                 Direction              neg_mean   neu_mean   pos_mean      gap
+----------------------------------------------------------------------------------------
+D1 (debias_vl)            debias_vl_directions     0.0700     0.0577     0.0581   0.0119
+D2 (CBDC)                 cbdc_directions          0.2147     0.1773     0.1931   0.0216
+D2.5 (CBDC no-label-select) cbdc_directions          0.2224     0.2002     0.2147   0.0077
+D3 (debias_vl->CBDC)      debias_vl_directions    -0.2867    -0.1828    -0.2273   0.0594
+
+--- Comparative Analysis ---
+  D1 vs B1 test accuracy: +0.5000
+  D2 vs B1 test accuracy: +0.0000
+  D2.5 vs B1 test accuracy: +0.0000
+  D3 vs B1 test accuracy: +0.0000
+  D2.5 vs D2 test accuracy: +0.0000
+  D3 vs D2 test accuracy: +0.0000
+  D3 vs D1 test accuracy: -0.5000
