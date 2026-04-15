@@ -5,98 +5,98 @@ CBDC Sentiment Debiasing — Prototype Evaluation Report
 --- Prototype Results ---
 Condition                  Val Acc  Test Acc   Val F1   Test F1
 --------------------------------------------------------------------
-B1 (raw)                    0.4190    0.4318   0.3604    0.3747
-D1 (debias_vl)              0.4670    0.4774   0.4552    0.4649
-D2 (CBDC)                   0.4808    0.4799   0.4757    0.4755
-D2.5 (CBDC no-label-select)   0.4694    0.4694   0.4722    0.4720
-D3 (debias_vl->CBDC)        0.4195    0.4318   0.3607    0.3742
-D4 (adv-discovery->CBDC)    0.4236    0.4318   0.3886    0.4006
+B1 (raw)                    0.4260    0.4287   0.3738    0.3785
+D1 (debias_vl)              0.4816    0.4810   0.4804    0.4782
+D2 (CBDC)                   0.4685    0.4677   0.4602    0.4602
+D2.5 (CBDC no-label-select)   0.4607    0.4584   0.4118    0.4077
+D3 (debias_vl->CBDC)        0.3971    0.4128   0.3427    0.3653
+D4 (adv-discovery->CBDC)    0.4282    0.4298   0.3760    0.3790
 
 --- Detailed Test Reports ---
 
 B1 (raw):
   precision    recall  f1-score   support
   
-      negative     0.5083    0.5185    0.5134      1001
-       neutral     0.5955    0.0371    0.0698      1430
-      positive     0.3936    0.8649    0.5410      1103
+      negative     0.5338    0.4575    0.4927      1001
+       neutral     0.5123    0.0580    0.1043      1430
+      positive     0.3874    0.8830    0.5386      1103
   
-      accuracy                         0.4318      3534
-     macro avg     0.4991    0.4735    0.3747      3534
-  weighted avg     0.5078    0.4318    0.3425      3534
+      accuracy                         0.4287      3534
+     macro avg     0.4779    0.4662    0.3785      3534
+  weighted avg     0.4794    0.4287    0.3499      3534
 
 D1 (debias_vl):
   precision    recall  f1-score   support
   
-      negative     0.4859    0.5165    0.5007      1001
-       neutral     0.5381    0.2371    0.3291      1430
-      positive     0.4516    0.7534    0.5647      1103
+      negative     0.4454    0.5784    0.5033      1001
+       neutral     0.4655    0.5049    0.4844      1430
+      positive     0.5842    0.3617    0.4468      1103
   
-      accuracy                         0.4774      3534
-     macro avg     0.4919    0.5023    0.4649      3534
-  weighted avg     0.4963    0.4774    0.4513      3534
+      accuracy                         0.4810      3534
+     macro avg     0.4984    0.4817    0.4782      3534
+  weighted avg     0.4968    0.4810    0.4780      3534
 
 D2 (CBDC):
   precision    recall  f1-score   support
   
-      negative     0.4341    0.4835    0.4575      1001
-       neutral     0.4648    0.5497    0.5037      1430
-      positive     0.5852    0.3862    0.4653      1103
+      negative     0.5462    0.4486    0.4926      1001
+       neutral     0.4830    0.2678    0.3446      1430
+      positive     0.4278    0.7443    0.5433      1103
   
-      accuracy                         0.4799      3534
-     macro avg     0.4947    0.4731    0.4755      3534
-  weighted avg     0.4937    0.4799    0.4786      3534
+      accuracy                         0.4677      3534
+     macro avg     0.4857    0.4869    0.4602      3534
+  weighted avg     0.4837    0.4677    0.4485      3534
 
 D2.5 (CBDC no-label-select):
   precision    recall  f1-score   support
   
-      negative     0.4208    0.5574    0.4796      1001
-       neutral     0.4756    0.3958    0.4321      1430
-      positive     0.5255    0.4850    0.5045      1103
+      negative     0.6547    0.1459    0.2386      1001
+       neutral     0.4366    0.6979    0.5371      1430
+      positive     0.4644    0.4316    0.4474      1103
   
-      accuracy                         0.4694      3534
-     macro avg     0.4740    0.4794    0.4720      3534
-  weighted avg     0.4757    0.4694    0.4681      3534
+      accuracy                         0.4584      3534
+     macro avg     0.5186    0.4251    0.4077      3534
+  weighted avg     0.5070    0.4584    0.4245      3534
 
 D3 (debias_vl->CBDC):
   precision    recall  f1-score   support
   
-      negative     0.5034    0.5245    0.5137      1001
-       neutral     0.5862    0.0357    0.0672      1430
-      positive     0.3952    0.8613    0.5418      1103
+      negative     0.6631    0.3067    0.4194      1001
+       neutral     0.5178    0.0916    0.1557      1430
+      positive     0.3623    0.9257    0.5208      1103
   
-      accuracy                         0.4318      3534
-     macro avg     0.4949    0.4738    0.3742      3534
-  weighted avg     0.5031    0.4318    0.3418      3534
+      accuracy                         0.4128      3534
+     macro avg     0.5144    0.4413    0.3653      3534
+  weighted avg     0.5104    0.4128    0.3443      3534
 
 D4 (adv-discovery->CBDC):
   precision    recall  f1-score   support
   
-      negative     0.5650    0.3516    0.4335      1001
-       neutral     0.5117    0.1531    0.2357      1430
-      positive     0.3846    0.8658    0.5326      1103
+      negative     0.5246    0.4685    0.4950      1001
+       neutral     0.5000    0.0559    0.1006      1430
+      positive     0.3911    0.8794    0.5414      1103
   
-      accuracy                         0.4318      3534
-     macro avg     0.4871    0.4569    0.4006      3534
-  weighted avg     0.4871    0.4318    0.3844      3534
+      accuracy                         0.4298      3534
+     macro avg     0.4719    0.4680    0.3790      3534
+  weighted avg     0.4730    0.4298    0.3499      3534
 
 --- Direction Interpretability ---
 (Lower pos-neg gap = direction is more sentiment-neutral)
 Condition                 Direction              neg_mean   neu_mean   pos_mean      gap
 ----------------------------------------------------------------------------------------
-D1 (debias_vl)            debias_vl_directions     0.0000     0.0000     0.0000   0.0000
-D2 (CBDC)                 cbdc_directions          0.0044     0.0044     0.0042   0.0003
-D2.5 (CBDC no-label-select) cbdc_directions         -0.0038    -0.0036    -0.0032   0.0006
-D3 (debias_vl->CBDC)      debias_vl_directions     0.0033     0.0039     0.0051   0.0018
-D4 (adv-discovery->CBDC)  cbdc_directions         -0.0264    -0.0268    -0.0268   0.0004
+D1 (debias_vl)            debias_vl_directions     0.0264     0.0246     0.0237   0.0027
+D2 (CBDC)                 cbdc_directions         -0.0099    -0.0140    -0.0160   0.0060
+D2.5 (CBDC no-label-select) cbdc_directions          0.0175     0.0177     0.0193   0.0018
+D3 (debias_vl->CBDC)      debias_vl_directions    -0.1819    -0.1765    -0.1797   0.0022
+D4 (adv-discovery->CBDC)  cbdc_directions          0.0886     0.0904     0.0879   0.0007
 
 --- Comparative Analysis ---
-  D1 vs B1 test accuracy: +0.0456
-  D2 vs B1 test accuracy: +0.0481
-  D2.5 vs B1 test accuracy: +0.0376
-  D3 vs B1 test accuracy: +0.0000
-  D2.5 vs D2 test accuracy: -0.0105
-  D3 vs D2 test accuracy: -0.0481
-  D3 vs D1 test accuracy: -0.0456
-  D4 vs B1 test accuracy: +0.0000
-  D4 vs D3 test accuracy: +0.0000
+  D1 vs B1 test accuracy: +0.0523
+  D2 vs B1 test accuracy: +0.0390
+  D2.5 vs B1 test accuracy: +0.0297
+  D3 vs B1 test accuracy: -0.0158
+  D2.5 vs D2 test accuracy: -0.0093
+  D3 vs D2 test accuracy: -0.0549
+  D3 vs D1 test accuracy: -0.0682
+  D4 vs B1 test accuracy: +0.0011
+  D4 vs D3 test accuracy: +0.0170
