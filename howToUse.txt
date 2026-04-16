@@ -1,0 +1,152 @@
+HOW TO USE DATASETS (TEAM QUICK GUIDE)
+======================================
+
+Project layout today:
+- datasets/
+  - classical_dataset.py
+  - sequence_dataset.py
+  - bert_dataset.py
+  - feature_utils.py
+
+1) Where teammates should add models
+------------------------------------
+This repository currently has no dedicated models folder. Please add model code in a new top-level folder:
+
+- models/
+  - train_lr.py
+  - train_nb.py
+  - train_lstm.py
+  - train_bert.py
+
+Keep dataset classes in datasets/ as reusable data/feature providers.
+
+2) Install requirements
+-----------------------
+From repo root:
+
+pip install -r requirements.txt
+
+Then download NLTK resources once (needed for POS features/tags):
+
+python -c "import nltk; nltk.download('punkt'); nltk.download('averaged_perceptron_tagger')"
+
+If you get a tagger lookup error on newer NLTK versions, also run:
+
+python -c "import nltk; nltk.download('averaged_perceptron_tagger_eng')"
+
+3) Which dataset class to use
+-----------------------------
+- ClassicalDataset:
+  Use when you want TF-IDF + optional handcrafted features directly for sklearn models.
+
+- SequenceDataset:
+  Use when you want token sequences and your own embeddings (Word2Vec/GloVe/FastText/custom encoder).
+  This is the class to use if you do NOT want TF-IDF and prefer embedding-based features.
+
+- BERTDataset:
+  Use when you will tokenize with a transformer tokenizer and run a transformer model.
+
+4) Logistic Regression / Naive Bayes with your own embeddings (using SequenceDataset)
+--------------------------------------------------------------------------------------
+Important: sklearn LogisticRegression and Naive Bayes expect a fixed-size vector per tweet.
+SequenceDataset returns variable-length token lists, so you must pool/compress each tweet's token
+embeddings into one vector first.
+
+Recommended simple pipeline:
+- Load SequenceDataset with use_pos_tags=False unless you specifically need POS embedding features.
+- Convert each tweet (list of tokens) into token embeddings with your embedding table.
+- Mean-pool (or max-pool) token embeddings to produce one vector per tweet.
+- Train sklearn model on those pooled vectors.
+
+Example (mean pooling):
+
+from datasets.sequence_dataset import SequenceDataset
+from sklearn.linear_model import LogisticRegression
+from sklearn.naive_bayes import GaussianNB
+import numpy as np
+
+# Placeholder embedding lookup; replace with your own loader.
+EMBED_DIM = 300
+def embed_token(token: str) -> np.ndarray:
+    # Return shape (EMBED_DIM,). Unknown tokens should map to zeros or UNK vector.
+    return np.zeros(EMBED_DIM, dtype=np.float32)
+
+def tweet_to_vector(tokens):
+    if not tokens:
+        return np.zeros(EMBED_DIM, dtype=np.float32)
+    arr = np.vstack([embed_token(tok) for tok in tokens])
+    return arr.mean(axis=0)  # Mean pool
+
+train_ds = SequenceDataset(
+    csv_path='path/to/output_file.csv',
+    split='train',
+    val_size=0.1,
+    use_vader=False,
+    use_afinn=False,
+    use_pos_tags=False,
+    text_col='cleaned_text',
+    random_state=42,
+)
+
+val_ds = SequenceDataset(
+    csv_path='path/to/output_file.csv',
+    split='val',
+    val_size=0.1,
+    use_vader=False,
+    use_afinn=False,
+    use_pos_tags=False,
+    text_col='cleaned_text',
+    random_state=42,
+)
+
+X_train = np.vstack([tweet_to_vector(tokens) for tokens in train_ds.tokens])
+y_train = train_ds.labels
+X_val = np.vstack([tweet_to_vector(tokens) for tokens in val_ds.tokens])
+y_val = val_ds.labels
+
+# Logistic Regression
+lr = LogisticRegression(max_iter=2000)
+lr.fit(X_train, y_train)
+print('LR val acc:', (lr.predict(X_val) == y_val).mean())
+
+# Naive Bayes (embedding vectors can include negatives, so use GaussianNB)
+nb = GaussianNB()
+nb.fit(X_train, y_train)
+print('NB val acc:', (nb.predict(X_val) == y_val).mean())
+
+5) If you want tweet-level features together with embeddings
+------------------------------------------------------------
+SequenceDataset can also return VADER/AFINN as tweet_features.
+You can concatenate pooled embedding vector + tweet_features before sklearn training.
+
+Pseudo-step:
+- pooled = tweet_to_vector(tokens)
+- combined = np.concatenate([pooled, tweet_features], axis=0)
+
+6) Warnings and common mistakes
+-------------------------------
+- Split consistency warning:
+  For fair comparisons, keep val_size and random_state identical across experiments.
+  Different values create different train/val splits.
+
+- Label column requirement:
+  Current dataset classes map labels from sentiment using:
+  {'negative': 0, 'neutral': 1, 'positive': 2}
+  Your CSV must contain a sentiment column with these exact strings.
+
+- Text column warning:
+  Default is cleaned_text. If your CSV does not have cleaned_text, set text_col='text'
+  (or your actual column name).
+
+- Naive Bayes choice warning:
+  MultinomialNB requires non-negative features (counts/frequencies).
+  If your features contain negatives (e.g., embeddings, VADER compound, AFINN totals),
+  use GaussianNB or ComplementNB instead.
+
+- POS features warning:
+  Enabling both broad and specific POS counts in ClassicalDataset is redundant and can hurt models.
+  Pick one POS representation.
+
+- Test set warning:
+  Current get_test() methods expect sentiment labels to exist in test CSV.
+  If your true test file has no labels, you will need a separate inference-only path.
